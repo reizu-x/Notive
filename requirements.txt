@@ -1,0 +1,3 @@
+Flask>=3.0
+cryptography>=40
+argon2-cffi>=23  # Argon2id KDF: server-side bootstrap/upgrade hashing + KDF interop tests
