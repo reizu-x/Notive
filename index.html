@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
     <meta name="referrer" content="no-referrer" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'" />
     <title>Notely - private notes</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -33,6 +33,7 @@
           <button class="icon-button tiny" id="logout-button" aria-label="Log out" title="Log out" data-icon="logout"></button>
         </div>
 
+        <!-- Scrollable middle: folders scroll; brand/profile, nav and footer stay pinned -->
         <nav class="primary-nav" aria-label="Main navigation">
           <a href="#" class="nav-item active" data-view="notes" title="All notes">
             <span class="nav-icon" data-icon="inbox"></span><span class="nav-label">All notes</span><span class="nav-count" id="nav-all-count">12</span>
@@ -51,9 +52,10 @@
           </a>
         </nav>
 
+        <div class="sidebar-scroll">
         <!-- Collections: user folders, editable via hover buttons or double-click -->
         <div class="sidebar-section" data-section="collections">
-          <div class="section-label"><span class="section-initial" title="Collections" aria-hidden="true">C</span><span class="section-label-text">Collections</span><button class="text-icon-button" id="new-collection" aria-label="Add folder" title="Add folder">+</button></div>
+          <div class="section-label"><span class="section-initial" title="Collections" aria-hidden="true">C</span><span class="section-label-text">Collections</span><span class="section-actions"><button class="text-icon-button" id="new-collection" aria-label="Add folder" title="Add folder">+</button><button class="section-delete" data-del-section="collections" aria-label="Delete section" title="Delete section">×</button></span></div>
           <div class="collection-list" id="collection-list">
             <a href="#" class="collection-item" title="Work" data-collection="Work"><span class="collection-dot coral"></span><span class="collection-label">Work</span></a>
             <a href="#" class="collection-item" title="Personal" data-collection="Personal"><span class="collection-dot yellow"></span><span class="collection-label">Personal</span></a>
@@ -61,10 +63,17 @@
           </div>
         </div>
 
+        <!-- Recipes: same folder mechanics as Collections, separate namespace -->
+        <div class="sidebar-section" data-section="recipes">
+          <div class="section-label"><span class="section-initial" title="Recipes" aria-hidden="true">R</span><span class="section-label-text">Recipes</span><span class="section-actions"><button class="text-icon-button" id="new-recipe" aria-label="Add recipe folder" title="Add recipe folder">+</button><button class="section-delete" data-del-section="recipes" aria-label="Delete section" title="Delete section">×</button></span></div>
+          <div class="collection-list" id="recipe-list"></div>
+        </div>
+
         <!-- Custom sections, rendered by renderCustomSections -->
         <div id="custom-sections"></div>
         <div class="sidebar-section add-section-wrap">
           <button class="add-section-button" id="new-section" title="Add section"><span>+</span> Add section</button>
+        </div>
         </div>
 
         <div class="sidebar-footer">
@@ -184,10 +193,6 @@
           </span>
           <span class="brand-name">Notely</span>
         </div>
-        <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
-          <button type="button" class="auth-tab active" id="tab-login" role="tab" aria-selected="true">Log in</button>
-          <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
-        </div>
         <p class="eyebrow">Welcome back</p>
         <h2 id="login-title">Log in</h2>
         <p class="modal-desc">Sign in to open your private notes.</p>
@@ -213,6 +218,31 @@
           <p class="login-error" id="register-error" hidden></p>
           <button class="btn btn-primary login-submit" type="submit">Create account</button>
         </form>
+        <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
+          <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
+        </div>
+      </div>
+      <div class="login-theme-float">
+        <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
+          <button type="button" class="login-theme-item" role="option" data-theme-value="light" aria-selected="true">
+            <span class="theme-swatches theme-swatches-light" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Light</span>
+            <span class="theme-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="login-theme-item" role="option" data-theme-value="dark" aria-selected="false">
+            <span class="theme-swatches theme-swatches-dark" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Dark</span>
+            <span class="theme-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="login-theme-item" role="option" data-theme-value="dracula" aria-selected="false">
+            <span class="theme-swatches theme-swatches-dracula" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Dracula</span>
+            <span class="theme-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+        </div>
+        <button type="button" class="login-theme-fab" id="login-theme-toggle" aria-label="Choose a theme" aria-haspopup="listbox" aria-expanded="false">
+          <span data-icon="contrast" aria-hidden="true"></span>
+        </button>
       </div>
     </div>
     <!-- Settings modal: left nav (Appearance / Change Password / Side Menu), options on the right -->
@@ -264,6 +294,8 @@
             <h3 class="settings-pane-title">Side Menu</h3>
             <p class="modal-desc">Choose how the sidebar looks when Notely opens.</p>
             <label class="setting-row"><input type="checkbox" id="start-collapsed" /><span class="setting-row-text"><strong>Start collapsed</strong><span>Open with the icon-only sidebar. Uncheck to start expanded.</span></span></label>
+            <label class="setting-row"><input type="checkbox" id="show-collections" checked /><span class="setting-row-text"><strong>Show Collections</strong><span>Uncheck to hide the Collections section. Deleting it hides it here too.</span></span></label>
+            <label class="setting-row"><input type="checkbox" id="show-recipes" checked /><span class="setting-row-text"><strong>Show Recipes</strong><span>Uncheck to hide the Recipes section. You can bring it back here anytime.</span></span></label>
           </div>
         </div>
       </div>
@@ -296,6 +328,20 @@
             <span class="theme-check" data-icon="check"></span>
           </button>
         </div>
+      </div>
+    </div>
+    <!-- New-note folder chooser: shown when creating from a bare section view -->
+    <div class="modal-overlay" id="folder-pick-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="folder-pick-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">New note</p>
+            <h2 id="folder-pick-title">Choose a folder</h2>
+          </div>
+          <button class="icon-button" id="close-folder-pick" aria-label="Close folder picker" data-icon="x"></button>
+        </div>
+        <p class="modal-desc" id="folder-pick-desc">Where should this note land?</p>
+        <div class="template-options" id="folder-pick-options"></div>
       </div>
     </div>
     <!-- Shared delete-confirm popup (note / folder / Bin variants, filled by setDeleteDialog) -->

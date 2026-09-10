@@ -512,7 +512,9 @@ def security_headers(response):
         response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
-        "script-src 'self'; "
+        # wasm-unsafe-eval: required to compile the vendored Argon2 WASM
+        # module (strictly narrower than unsafe-eval: JS eval stays blocked).
+        "script-src 'self' 'wasm-unsafe-eval'; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "img-src 'self' https:; "
         "font-src 'self' https://fonts.gstatic.com; "
@@ -955,6 +957,11 @@ def validate_note_object(note):
         if not isinstance(collection, str):
             raise ValueError('Invalid note collection.')
         collection = collection.strip()[:180] or None
+    recipe = note.get('recipe')
+    if recipe is not None:
+        if not isinstance(recipe, str):
+            raise ValueError('Invalid note recipe folder.')
+        recipe = recipe.strip()[:180] or None
     sections = note.get('sections')
     if sections is None:
         sections = {}
@@ -992,6 +999,7 @@ def validate_note_object(note):
         'body': body,
         'tags': cleaned_tags,
         'collection': collection,
+        'recipe': recipe,
         'sections': sections,
         'ext': ext,
         'date': date[:40],
