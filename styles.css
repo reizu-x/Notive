@@ -733,6 +733,8 @@ at the bottom, only the nav + folder lists scroll. */
 .context-separator { height: 1px; margin: 5px 4px; background: var(--line); }
 
 .modal-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(20, 18, 16, 0.5); }
+/* Recovery popup must sit above the login overlay (z-100) which stays up behind it. */
+#recover-modal { z-index: 120; }
 .modal { width: min(430px, 94vw); padding: 22px 22px 18px; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--paper); box-shadow: var(--shadow); }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
 .modal-head h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.03em; }
@@ -859,13 +861,14 @@ at the bottom, only the nav + folder lists scroll. */
 .password-policy { margin: 0 0 12px; padding-left: 18px; color: var(--ink-muted); font-size: 11px; line-height: 1.6; }
 .settings-security { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .settings-security h3 { margin: 0 0 6px; font-size: 14px; }
-.modal-wide { width: min(640px, 94vw); }
-.settings-layout { display: flex; gap: 18px; margin-top: 12px; }
+.modal-wide { width: min(760px, 96vw); height: min(680px, 94vh); max-height: 94vh; display: flex; flex-direction: column; }
+.settings-layout { display: flex; gap: 18px; margin-top: 12px; flex: 1; min-height: 0; }
 .settings-nav { display: flex; flex: 0 0 150px; flex-direction: column; gap: 4px; }
 .settings-nav-item { padding: 9px 11px; border: 0; border-radius: 8px; color: var(--ink-muted); background: transparent; font-size: 12px; font-weight: 600; text-align: left; transition: color .18s ease, background .18s ease; }
 .settings-nav-item:hover { color: var(--ink); background: var(--tree-hover-bg); }
 .settings-nav-item.active { color: var(--chip-active-ink); background: var(--chip-active-bg); }
-.settings-pane { flex: 1; min-width: 0; }
+.settings-nav-header { padding: 10px 11px 3px; color: var(--ink-faint); font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.settings-pane { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; }
 .settings-pane-title { margin: 0 0 6px; font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
 .setting-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-bg); cursor: pointer; }
 .setting-row input { width: 16px; height: 16px; margin-top: 2px; accent-color: var(--mint-dark); }

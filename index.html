@@ -4,10 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
+    <meta name="notely-build" content="dev13" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=dev13" />
   </head>
   <body>
     <div class="app-shell">
@@ -200,8 +201,21 @@
           <p class="login-error" id="login-error" hidden>Incorrect username or password.</p>
           <button class="btn btn-primary login-submit" type="submit">Log in</button>
         </form>
+        <div id="login-helpers">
+        <button class="btn btn-secondary login-submit" id="passkey-login-btn" type="button">Sign in with passkey</button>
+        <p class="modal-desc" style="text-align:center" id="recover-link-wrap"><button class="link-button" id="recover-link" type="button">Forgot password?</button></p>
+        <div id="recover-block" hidden>
+          <p><button class="link-button" id="recover-back" type="button">← Back to log in</button></p>
+          <p class="modal-desc">Choose how to recover your password.</p>
+          <div class="template-options" id="recover-options" style="margin-bottom:12px">
+            <button class="template-option" id="recover-opt-email" type="button"><span class="theme-option-text"><strong>Email</strong><span>Reset link to your account email</span></span></button>
+            <button class="template-option" id="recover-opt-code" type="button"><span class="theme-option-text"><strong>Recovery Code</strong><span>Offline code generated in Settings</span></span></button>
+          </div>
+        </div>
+        </div>
         <form id="register-form" autocomplete="on" hidden>
           <label class="login-field"><span>Username</span><input id="register-username" name="username" type="text" autocomplete="username" placeholder="3-32 chars: letters, numbers, _ -" maxlength="32" required /></label>
+          <label class="login-field"><span>Email</span><input id="register-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" maxlength="254" required /></label>
           <label class="login-field"><span>First name</span><input id="register-first" name="firstName" type="text" autocomplete="given-name" maxlength="40" required /></label>
           <label class="login-field"><span>Last name</span><input id="register-last" name="lastName" type="text" autocomplete="family-name" maxlength="40" required /></label>
           <label class="login-field"><span>Password</span><input id="register-password" name="new-password" type="password" autocomplete="new-password" maxlength="256" required aria-describedby="password-policy" /></label>
@@ -219,6 +233,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
           <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
         </div>
+        <p class="login-hint" id="build-tag">dev build dev13</p>
       </div>
       <div class="login-theme-float">
         <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
@@ -255,9 +270,12 @@
         </div>
         <div class="settings-layout">
           <nav class="settings-nav" aria-label="Settings sections">
+            <div class="settings-nav-header">Account</div>
+            <button type="button" class="settings-nav-item" data-settings-tab="profile">Profile</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="security">Authentication</button>
+            <div class="settings-nav-header">Customization</div>
             <button type="button" class="settings-nav-item active" data-settings-tab="appearance">Appearance</button>
-            <button type="button" class="settings-nav-item" data-settings-tab="password">Change Password</button>
-            <button type="button" class="settings-nav-item" data-settings-tab="sidemenu">Side Menu</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="behaviour">Behaviour</button>
           </nav>
           <div class="settings-pane" data-settings-pane="appearance">
             <h3 class="settings-pane-title" id="settings-title">Appearance</h3>
@@ -280,16 +298,63 @@
               </button>
             </div>
           </div>
-          <div class="settings-pane" data-settings-pane="password" hidden>
+          <div class="settings-pane" data-settings-pane="profile" hidden>
+            <h3 class="settings-pane-title">Profile</h3>
+            <p class="modal-desc">Your Notely account details.</p>
+            <label class="login-field"><span>Username</span><input id="account-username" type="text" readonly autocomplete="username" /></label>
+            <label class="login-field"><span>Email</span><input id="account-email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" /></label>
+            <p class="login-error" id="account-error" hidden></p>
+            <button class="btn btn-secondary" id="account-save-btn" type="button">Save email</button>
+            <hr />
+            <h3 class="settings-pane-title">Delete account</h3>
+            <p class="modal-desc">Permanently deletes your account, notes, vault, keys and sessions. This cannot be undone.</p>
+            <button class="btn btn-danger" id="account-delete-btn" type="button">Delete my account…</button>
+          </div>
+          <div class="settings-pane" data-settings-pane="security" hidden>
             <h3 class="settings-pane-title">Change password</h3>
             <p class="modal-desc">Min 12 chars with 1 capital, 1 small, 1 number, 1 special character.</p>
             <label class="login-field"><span>Current password</span><input id="change-current" type="password" autocomplete="current-password" maxlength="256" /></label>
             <label class="login-field"><span>New password</span><input id="change-new" type="password" autocomplete="new-password" maxlength="256" /></label>
             <p class="login-error" id="change-error" hidden></p>
             <button class="btn btn-secondary" id="change-password-btn" type="button">Update password</button>
+            <hr />
+            <h3 class="settings-pane-title">Two-factor authentication</h3>
+            <p class="modal-desc">Authenticator-app codes (TOTP). Optional — logins stay unchanged until enabled.</p>
+            <p class="modal-desc" id="mfa-status">Checking status…</p>
+            <div id="mfa-setup-block" hidden>
+              <p class="modal-desc">Scan into your authenticator app, or enter the secret manually:</p>
+              <div id="mfa-qr" style="display:flex;justify-content:center;padding:8px"></div>
+              <p class="modal-desc" style="text-align:center">Secret: <code id="mfa-secret" style="user-select:all"></code></p>
+              <p class="modal-desc" style="overflow-wrap:anywhere"><small id="mfa-otpauth"></small></p>
+              <label class="login-field"><span>6-digit code</span><input id="mfa-confirm-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" /></label>
+              <p class="login-error" id="mfa-error" hidden></p>
+              <button class="btn btn-secondary" id="mfa-confirm-btn" type="button">Verify &amp; enable</button>
+            </div>
+            <div id="mfa-manage-block">
+              <button class="btn btn-secondary" id="mfa-setup-btn" type="button">Start setup</button>
+              <button class="btn btn-secondary" id="mfa-disable-btn" type="button" hidden>Disable MFA</button>
+            </div>
+            <div id="mfa-recovery-block" hidden>
+              <p class="modal-desc">Recovery codes (single-use MFA bypass, <span id="mfa-recovery-left">0</span> left):</p>
+              <p class="modal-desc"><code id="mfa-recovery-list" style="user-select:all"></code></p>
+              <button class="btn btn-secondary" id="mfa-recovery-btn" type="button">Generate new codes</button>
+            </div>
+            <hr />
+            <h3 class="settings-pane-title">Password recovery</h3>
+            <p class="modal-desc">Recovery codes unlock a lost password: each code unwraps your notes key. Generate while logged in, store offline. Each code works once.</p>
+            <p class="modal-desc" id="acct-rec-status">No recovery codes stored on this account.</p>
+            <p class="modal-desc"><code id="acct-rec-list" style="user-select:all"></code></p>
+            <p class="login-error" id="acct-rec-error" hidden></p>
+            <button class="btn btn-secondary" id="acct-rec-generate-btn" type="button">Generate recovery codes</button>
+            <hr />
+            <h3 class="settings-pane-title">Passkeys</h3>
+            <p class="modal-desc">Sign in with your device instead of typing a verifier. Your password is still needed once per device to unlock notes.</p>
+            <div id="passkey-list" class="modal-desc"></div>
+            <p class="login-error" id="passkey-error" hidden></p>
+            <button class="btn btn-secondary" id="passkey-add-btn" type="button">Add this device as passkey</button>
           </div>
-          <div class="settings-pane" data-settings-pane="sidemenu" hidden>
-            <h3 class="settings-pane-title">Side Menu</h3>
+          <div class="settings-pane" data-settings-pane="behaviour" hidden>
+            <h3 class="settings-pane-title">Behaviour</h3>
             <p class="modal-desc">Choose how the sidebar looks when Notely opens.</p>
             <label class="setting-row"><input type="checkbox" id="start-collapsed" /><span class="setting-row-text"><strong>Start collapsed</strong><span>Open with the icon-only sidebar. Uncheck to start expanded.</span></span></label>
           </div>
@@ -357,6 +422,42 @@
         </div>
       </div>
     </div>
+    <!-- Recover account popup: one recovery method per view -->
+    <div class="modal-overlay" id="recover-modal" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="recover-modal-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Recover account</p>
+            <h2 id="recover-modal-title">Recover with code</h2>
+          </div>
+          <button class="icon-button" id="close-recover-modal" aria-label="Close recovery" data-icon="x"></button>
+        </div>
+        <div id="recover-email-block" hidden>
+          <label class="login-field"><span>Email address</span><input id="recover-email-address" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" /></label>
+          <p class="modal-desc" id="recover-email-note">We’ll send a reset link to the email on your account, valid 15 minutes.</p>
+          <p class="login-error" id="recover-email-error" hidden></p>
+          <button class="btn btn-secondary login-submit" id="recover-email-btn" type="button">Send reset email</button>
+        </div>
+        <div id="recover-code-block" hidden>
+          <label class="login-field"><span>Username</span><input id="recover-code-username" type="text" autocomplete="username" maxlength="32" placeholder="your-name" /></label>
+          <label class="login-field"><span>Recovery code</span><input id="recover-code" type="password" autocomplete="off" maxlength="64" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" /></label>
+          <p class="login-error" id="recover-error" hidden></p>
+          <button class="btn btn-secondary login-submit" id="recover-verify-btn" type="button">Verify</button>
+          <div id="recover-newpw-block" hidden>
+          <label class="login-field"><span>New password</span><input id="recover-new" type="password" autocomplete="new-password" maxlength="256" /></label>
+          <label class="login-field"><span>Confirm new password</span><input id="recover-confirm" type="password" autocomplete="new-password" maxlength="256" /></label>
+          <button class="btn btn-secondary login-submit" id="recover-btn" type="button">Recover account</button>
+          </div>
+        </div>
+        <div id="recover-token-block" hidden>
+          <p class="modal-desc">Set a new password for your account. Your existing notes stay encrypted under the same key.</p>
+          <label class="login-field"><span>New password</span><input id="recover-token-new" type="password" autocomplete="new-password" maxlength="256" /></label>
+          <label class="login-field"><span>Confirm new password</span><input id="recover-token-confirm" type="password" autocomplete="new-password" maxlength="256" /></label>
+          <p class="login-error" id="recover-token-error" hidden></p>
+          <button class="btn btn-secondary login-submit" id="recover-token-btn" type="button">Set new password</button>
+        </div>
+      </div>
+    </div>
     <!-- Transient status toast -->
     <div class="modal-overlay" id="vault-overlay" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="vault-title">
@@ -408,6 +509,8 @@
       <button type="button" class="context-item danger" data-folder-action="delete" role="menuitem"><span data-icon="trash"></span><span id="folder-delete-label">Delete</span></button>
     </div>
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
-    <script src="app.js"></script>
+    <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
+    <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
+    <script src="app.js?v=dev13"></script>
   </body>
 </html>

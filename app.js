@@ -16,6 +16,22 @@
 // ============================================================================
 'use strict';
 (() => {
+// Build guard: index.html carries <meta name="notely-build">. If this script
+// is older/newer than the page (stale cache mix), reload once for a matching
+// pair instead of running half-bound handlers that silently do nothing.
+try {
+  const tag = document.querySelector('meta[name="notely-build"]');
+  const build = tag ? tag.getAttribute('content') : null;
+  if (build !== 'dev13') {
+    if (!sessionStorage.getItem('notely-build-reloaded')) {
+      sessionStorage.setItem('notely-build-reloaded', '1');
+      window.location.reload();
+      return;
+    }
+  } else {
+    sessionStorage.removeItem('notely-build-reloaded');
+  }
+} catch (error) {}
 // Frame-busting: refuse to run inside a foreign iframe (clickjacking defense).
 // The server also sends frame-ancestors 'self'.
 try {
@@ -433,6 +449,21 @@ async function e2eeWrapMasterKeyArgon2id(password, saltEncBytes, masterKeyRaw) {
   const iv = e2eeRandomBytes(12);
   const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, masterKeyRaw);
   return { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) };
+}
+// Preflight (anti-brick): trial-decrypt a fresh wrap with the same password
+// before uploading. Honest clients never send an undecryptable wrap; without
+// this a client bug (or test script) bricks the account into login-200 yet
+// unlock-impossible. Returns true when the wrap round-trips to 32 bytes.
+async function e2eeTrialUnwrapArgon2id(password, saltEncBytes, wrapped) {
+  try {
+    const rawKek = await argon2id32(password, saltEncBytes);
+    const kek = await window.crypto.subtle.importKey('raw', rawKek, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    const raw = await window.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: e2eeB64ToBytes(wrapped.iv) }, kek, e2eeB64ToBytes(wrapped.data));
+    return raw instanceof ArrayBuffer ? raw.byteLength === 32 : new Uint8Array(raw).length === 32;
+  } catch (error) {
+    return false;
+  }
 }
 
 // Uint8Array -> base64 string (for JSON-safe key material).
@@ -4176,7 +4207,7 @@ document.getElementById('close-folder-pick').addEventListener('click', closeFold
 document.getElementById('folder-pick-overlay').addEventListener('click', (event) => {
   if (event.target.id === 'folder-pick-overlay') closeFolderPicker();
 });
-document.querySelectorAll('.template-option').forEach((option) => option.addEventListener('click', () => {
+document.querySelectorAll('#template-overlay .template-option').forEach((option) => option.addEventListener('click', () => {
   closeTemplatePicker();
   createNoteFromTemplate(option.dataset.template);
 }));
@@ -4670,8 +4701,22 @@ function passwordPolicyCheck(password) {
 // on the login form and "Log in" on the register form.
 function setAuthTab(mode) {
   const isRegister = mode === 'register';
-  document.getElementById('login-form').hidden = isRegister;
+  const isRecover = mode === 'recover';
+  document.getElementById('login-form').hidden = isRegister || isRecover;
   document.getElementById('register-form').hidden = !isRegister;
+  // Passkey / recovery helpers belong to signing in, never to registering.
+  // Recovery mode shows only the recovery options (no password, login,
+  // passkey or forgot-link chrome).
+  const helpers = document.getElementById('login-helpers');
+  if (helpers) helpers.hidden = isRegister;
+  const passkeyBtn = document.getElementById('passkey-login-btn');
+  if (passkeyBtn) passkeyBtn.hidden = isRecover;
+  const linkWrap = document.getElementById('recover-link-wrap');
+  if (linkWrap) linkWrap.hidden = isRecover;
+  const block = document.getElementById('recover-block');
+  if (block) block.hidden = !isRecover;
+  const tabs = document.querySelector('.auth-tabs');
+  if (tabs) tabs.hidden = isRecover;
   const tabLoginEl = document.getElementById('tab-login');
   if (tabLoginEl) {
     tabLoginEl.classList.toggle('active', !isRegister);
@@ -4683,7 +4728,7 @@ function setAuthTab(mode) {
     tabRegisterEl.setAttribute('aria-selected', String(isRegister));
     tabRegisterEl.textContent = isRegister ? 'Log in' : 'Create account';
   }
-  document.getElementById('login-title').textContent = isRegister ? 'Create account' : 'Log in';
+  document.getElementById('login-title').textContent = isRecover ? 'Recover account' : isRegister ? 'Create account' : 'Log in';
 }
 
 const tabLogin = document.getElementById('tab-login');
@@ -4782,19 +4827,87 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
         method: 'POST',
         body: JSON.stringify({ username, authHash: e2eeBytesToB64(authBits) })
       });
-      if (!loginResponse.ok) {
-        done();
-        if (loginResponse.status === 429) loginFail('Too many attempts — try again in a few minutes.');
-        else loginFail();
-        return;
+      if (loginResponse.status === 202) {
+        // MFA enrolled: password verifier passed, TOTP still required.
+        // Unlock the vault now (keys already in 202 body), then prove TOTP
+        // to mint the session cookie. Old non-MFA logins never hit this.
+        data = await loginResponse.json();
+        try {
+          await e2eeUnlockWithPassword(username, password, {
+            kdf: data.kdf || kdf.kdf || 'pbkdf2',
+            saltAuth: kdf.saltAuth, saltEnc: data.saltEnc,
+            iterations: data.iterations || (kdf.params && kdf.params.i) || 0,
+            encMasterKey: data.encMasterKey,
+          });
+        } catch (error) { done(); loginFail('Could not unlock notes with this password.'); return; }
+        const ticket = data.mfaTicket;
+        const codeInput = window.prompt('Enter your 6-digit authenticator code (or a recovery code XXXX-XXXX):');
+        if (!codeInput) { e2eeLock(); done(); loginFail('MFA code required.'); return; }
+        const trimmed = String(codeInput).trim();
+        const challengeBody = trimmed.indexOf('-') >= 0
+          ? { ticket, recoveryCode: trimmed.toUpperCase() }
+          : { ticket, code: trimmed };
+        const challenge = await apiFetch('/api/mfa/challenge', { method: 'POST', body: JSON.stringify(challengeBody) });
+        if (!challenge.ok) { e2eeLock(); done(); loginFail('Incorrect MFA code.'); return; }
+        data = await challenge.json();
+        // data is the profile; keys already unlocked above from the 202 body.
+        data.kdf = data.kdf || kdf.kdf;
+        data.saltEnc = data.saltEnc || null;
+        data.iterations = data.iterations || 0;
+        data.encMasterKey = data.encMasterKey || null;
+      } else {
+        if (!loginResponse.ok) {
+          done();
+          if (loginResponse.status === 429) loginFail('Too many attempts — try again in a few minutes.');
+          else loginFail();
+          return;
+        }
+        data = await loginResponse.json();
+        try {
+          await e2eeUnlockWithPassword(username, password, {
+            kdf: data.kdf || kdf.kdf || 'pbkdf2',
+            saltAuth: kdf.saltAuth, saltEnc: data.saltEnc,
+            iterations: data.iterations || (kdf.params && kdf.params.i) || 0,
+            encMasterKey: data.encMasterKey,
+          });
+        } catch (error) {
+          // Email-reset rewrap: verifier is new but the wrapped key still
+          // answers to the OLD password. Unlock with it once, then re-wrap
+          // under the new password via the normal rotation endpoint.
+          if (!pendingRewrap || !pendingRewrap.password) throw error;
+          const oldPw = window.prompt('Enter your OLD password once to re-encrypt notes under the new one:');
+          if (!oldPw) throw error;
+          await e2eeUnlockWithPassword(username, oldPw, {
+            kdf: data.kdf || kdf.kdf || 'pbkdf2',
+            saltAuth: kdf.saltAuth, saltEnc: data.saltEnc,
+            iterations: data.iterations || (kdf.params && kdf.params.i) || 0,
+            encMasterKey: data.encMasterKey,
+          });
+          const freshSaltAuth = e2eeRandomBytes(16);
+          const freshSaltEnc = e2eeRandomBytes(16);
+          const freshAuth = await argon2id32(pendingRewrap.password, freshSaltAuth);
+          const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
+          const freshWrap = await e2eeWrapMasterKeyArgon2id(pendingRewrap.password, freshSaltEnc, masterRaw);
+          const curBits = await argon2id32(pendingRewrap.password, pendingRewrap.saltAuth);
+          await apiFetch('/api/change-password', {
+            method: 'POST',
+            body: JSON.stringify({
+              currentAuth: e2eeBytesToB64(curBits),
+              kdf: 'argon2id',
+              params: { t: E2EE_KDF_ARGON2ID.t, m: E2EE_KDF_ARGON2ID.m, p: E2EE_KDF_ARGON2ID.p },
+              authHash: e2eeBytesToB64(freshAuth),
+              saltAuth: e2eeBytesToB64(freshSaltAuth),
+              saltEnc: e2eeBytesToB64(freshSaltEnc),
+              encMasterKey: freshWrap,
+            }),
+          });
+          e2ee.kdf = 'argon2id';
+          e2ee.saltAuth = freshSaltAuth;
+          e2ee.saltEnc = freshSaltEnc;
+          e2ee.iterations = 0;
+          pendingRewrap = null;
+        }
       }
-      data = await loginResponse.json();
-      await e2eeUnlockWithPassword(username, password, {
-        kdf: data.kdf || kdf.kdf || 'pbkdf2',
-        saltAuth: kdf.saltAuth, saltEnc: data.saltEnc,
-        iterations: data.iterations || (kdf.params && kdf.params.i) || 0,
-        encMasterKey: data.encMasterKey,
-      });
       if (e2ee.kdf !== 'argon2id') {
         try {
           await e2eeUpgradeKdf(username, password);
@@ -4818,7 +4931,7 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
         await e2eeUnlockWithPassword(username, password, data);
       }
     }
-    cachedProfile = { username: data.username, firstName: data.firstName, lastName: data.lastName, subtitle: data.subtitle };
+    cachedProfile = { username: data.username, firstName: data.firstName, lastName: data.lastName, subtitle: data.subtitle, email: data.email || '' };
     const errorEl = document.getElementById('login-error');
     if (errorEl) errorEl.hidden = true;
     passwordEl.value = '';
@@ -4865,6 +4978,7 @@ if (registerForm) registerForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (authBusy) return;
   const username = String(document.getElementById('register-username').value || '').trim();
+  const email = String(document.getElementById('register-email').value || '').trim().slice(0, 254);
   const first = String(document.getElementById('register-first').value || '').trim().slice(0, 40);
   const last = String(document.getElementById('register-last').value || '').trim().slice(0, 40);
   const password = String(document.getElementById('register-password').value || '');
@@ -4872,6 +4986,7 @@ if (registerForm) registerForm.addEventListener('submit', async (event) => {
   const errorEl = document.getElementById('register-error');
   const fail = (msg) => { if (errorEl) { errorEl.textContent = msg; errorEl.hidden = false; } };
   if (!/^[A-Za-z0-9_-]{3,32}$/.test(username)) { fail('Username must be 3-32 chars: letters, numbers, _ or -.'); return; }
+  if (!/^[^@\s<>\"]+@[^@\s<>\"]+\.[^@\s<>\"]+$/.test(email)) { fail('A valid email address is required.'); return; }
   if (!first || !last) { fail('First and last name are required.'); return; }
   if (password !== confirm) { fail('Passwords do not match.'); return; }
   const missing = passwordPolicyCheck(password);
@@ -4887,10 +5002,16 @@ if (registerForm) registerForm.addEventListener('submit', async (event) => {
     const authBits = await argon2id32(password, saltAuthBytes);
     const masterRaw = e2eeRandomBytes(32);
     const wrapped = await e2eeWrapMasterKeyArgon2id(password, saltEncBytes, masterRaw);
+    if (!await e2eeTrialUnwrapArgon2id(password, saltEncBytes, wrapped)) {
+      fail('Key setup failed locally — not uploaded. Retry.');
+      authBusy = false;
+      return;
+    }
     response = await apiFetch('/api/register', {
       method: 'POST',
       body: JSON.stringify({
         username,
+        email,
         kdf: 'argon2id',
         params: { t: E2EE_KDF_ARGON2ID.t, m: E2EE_KDF_ARGON2ID.m, p: E2EE_KDF_ARGON2ID.p },
         authHash: e2eeBytesToB64(authBits),
@@ -4931,6 +5052,126 @@ if (registerForm) registerForm.addEventListener('submit', async (event) => {
       fail('Could not create account.');
     }
   }
+});
+// Passkey login (option-1): assertion replaces the password verifier for the
+// session; the password is still asked locally afterwards to unwrap the E2EE
+// master key and is never sent. Old password logins are untouched.
+const passkeyLoginBtn = document.getElementById('passkey-login-btn');
+if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
+  const usernameEl = document.getElementById('login-username');
+  const passwordEl = document.getElementById('login-password');
+  const username = String(usernameEl.value || '').trim().slice(0, 32);
+  if (!/^[A-Za-z0-9_-]{3,32}$/.test(username)) { loginFail(); return; }
+  if (authBusy) return;
+  authBusy = true;
+  try {
+    if (!window.PublicKeyCredential) throw new Error('passkeys unsupported');
+    const begin = await apiFetch('/api/passkey/login-begin', {
+      method: 'POST', body: JSON.stringify({ username }),
+    });
+    const opts = await begin.json();
+    if (!begin.ok) throw new Error(opts.error || 'No passkeys.');
+    const cred = await navigator.credentials.get({
+      publicKey: {
+        challenge: b64urlToBuf(opts.challenge),
+        rpId: opts.rpId,
+        allowCredentials: (opts.allowCredentials || []).map((c) => ({ ...c, id: b64urlToBuf(c.id) })),
+        timeout: opts.timeout,
+        userVerification: opts.userVerification,
+      },
+    });
+    const finish = await apiFetch('/api/passkey/login-finish', {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        id: cred.id,
+        rawId: bufToB64url(cred.rawId),
+        type: cred.type,
+        response: {
+          clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+          authenticatorData: bufToB64url(cred.response.authenticatorData),
+          signature: bufToB64url(cred.response.signature),
+          userHandle: cred.response.userHandle ? bufToB64url(cred.response.userHandle) : null,
+        },
+      }),
+    });
+    let data;
+    let passkeyKeys = null;
+    if (finish.status === 202) {
+      // MFA still required on top of passkey.
+      data = await finish.json();
+      passkeyKeys = {
+        kdf: data.kdf, saltEnc: data.saltEnc,
+        iterations: data.iterations, encMasterKey: data.encMasterKey,
+      };
+      const codeInput = window.prompt('Enter your 6-digit authenticator code (or recovery code XXXX-XXXX):');
+      if (!codeInput) throw new Error('mfa required');
+      const t = String(codeInput).trim();
+      const ch = await apiFetch('/api/mfa/challenge', {
+        method: 'POST',
+        body: JSON.stringify(t.indexOf('-') >= 0
+          ? { ticket: data.mfaTicket, recoveryCode: t.toUpperCase() }
+          : { ticket: data.mfaTicket, code: t }),
+      });
+      if (!ch.ok) throw new Error('mfa failed');
+      const profile = await ch.json();
+      data = { ...profile, ...passkeyKeys };
+    } else {
+      if (!finish.ok) {
+        const d = await finish.json().catch(() => ({}));
+        throw new Error(d.error || 'Passkey failed.');
+      }
+      data = await finish.json();
+    }
+    // Unlock E2EE locally: password never leaves the device. Reuse typed
+    // password if present, else ask once.
+    let password = String(passwordEl.value || '');
+    if (!password) {
+      const asked = window.prompt('Enter your password to unlock notes on this device (stays local):');
+      if (!asked) throw new Error('password required');
+      password = asked;
+    }
+    const kdfR = await apiFetch(`/api/kdf-params?username=${encodeURIComponent(username)}`);
+    const kdf = await kdfR.json();
+    await e2eeUnlockWithPassword(username, password, {
+      kdf: data.kdf || kdf.kdf || 'pbkdf2',
+      saltAuth: kdf.saltAuth, saltEnc: data.saltEnc,
+      iterations: data.iterations || (kdf.params && kdf.params.i) || 0,
+      encMasterKey: data.encMasterKey,
+    });
+    cachedProfile = { username: data.username, firstName: data.firstName, lastName: data.lastName, subtitle: data.subtitle, email: data.email || '' };
+    passwordEl.value = '';
+    hideLogin();
+    applyProfile();
+    serverUiLoaded = false;
+    collapsedFolders = new Set();
+    customSections = [];
+    deletedCustomSections = [];
+    activeCustom = null;
+    await loadNotesFromServer();
+    if (purgeExpiredBin()) persistNotes();
+    await loadUiVault();
+    try { ensureMigratedCollectionsSection([], null); } catch (error) {}
+    syncCustomSections();
+    if (!serverUiLoaded) {
+      try { await writeUiVaultLocal(); } catch (error) {}
+      persistNotes();
+    }
+    renderCustomSections();
+    const firstActiveNote = notes.find((note) => !note.deleted && !note.archived)
+      || notes.find((note) => !note.deleted)
+      || notes[0];
+    currentId = firstActiveNote ? firstActiveNote.id : null;
+    if (currentId) selectNote(currentId);
+    else clearEditor();
+    refreshEditorLock();
+    showToast(`Welcome back, ${fullNameOf(cachedProfile)}`);
+  } catch (error) {
+    e2eeLock();
+    loginFail(error && error.message === 'mfa required' ? 'MFA code required.'
+      : 'Cannot reach the Notely server. Is it running?');
+  }
+  authBusy = false;
 });
 
 const changeBtn = document.getElementById('change-password-btn');
@@ -4997,6 +5238,442 @@ if (changeBtn) changeBtn.addEventListener('click', async () => {
   }
 });
 document.getElementById('logout-button').addEventListener('click', logout);
+// --- MFA settings (Two-Factor pane under Change Password) ---
+async function refreshMfaStatus() {
+  const statusEl = document.getElementById('mfa-status');
+  const setupBtn = document.getElementById('mfa-setup-btn');
+  const disableBtn = document.getElementById('mfa-disable-btn');
+  const recBlock = document.getElementById('mfa-recovery-block');
+  const recLeft = document.getElementById('mfa-recovery-left');
+  try {
+    const r = await apiFetch('/api/mfa/status');
+    if (!r.ok) throw new Error();
+    const s = await r.json();
+    if (statusEl) statusEl.textContent = s.enabled
+      ? `MFA is ON (${s.recoveryLeft} recovery codes left).`
+      : 'MFA is OFF. Logins need only your password.';
+    if (setupBtn) setupBtn.hidden = Boolean(s.enabled);
+    if (disableBtn) disableBtn.hidden = !s.enabled;
+    if (recBlock) recBlock.hidden = !s.enabled;
+    if (recLeft) recLeft.textContent = String(s.recoveryLeft || 0);
+  } catch (error) {
+    if (statusEl) statusEl.textContent = 'Could not load MFA status.';
+  }
+}
+const mfaSetupBtn = document.getElementById('mfa-setup-btn');
+if (mfaSetupBtn) mfaSetupBtn.addEventListener('click', async () => {
+  const err = document.getElementById('mfa-error');
+  try {
+    const r = await apiFetch('/api/mfa/setup', { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'setup failed');
+    document.getElementById('mfa-secret').textContent = data.secret;
+    document.getElementById('mfa-otpauth').textContent = data.otpauth;
+    // QR first, secret under it (local-only render; secret never fetched remotely).
+    try {
+      const qrEl = document.getElementById('mfa-qr');
+      if (qrEl) {
+        qrEl.innerHTML = '';
+        if (typeof QRCode !== 'undefined') {
+          new QRCode(qrEl, { text: data.otpauth, width: 180, height: 180, correctLevel: QRCode.CorrectLevel.M });
+        }
+      }
+    } catch (error) { /* text secret still usable */ }
+    document.getElementById('mfa-setup-block').hidden = false;
+    if (err) err.hidden = true;
+  } catch (error) {
+    if (err) { err.textContent = error.message || 'Could not start setup.'; err.hidden = false; }
+  }
+});
+const mfaConfirmBtn = document.getElementById('mfa-confirm-btn');
+if (mfaConfirmBtn) mfaConfirmBtn.addEventListener('click', async () => {
+  const err = document.getElementById('mfa-error');
+  const code = String(document.getElementById('mfa-confirm-code').value || '').trim();
+  try {
+    const r = await apiFetch('/api/mfa/confirm', { method: 'POST', body: JSON.stringify({ code }) });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'Incorrect code.');
+    }
+    document.getElementById('mfa-setup-block').hidden = true;
+    document.getElementById('mfa-confirm-code').value = '';
+    showToast('MFA enabled');
+    await refreshMfaStatus();
+  } catch (error) {
+    if (err) { err.textContent = error.message; err.hidden = false; }
+  }
+});
+const mfaDisableBtn = document.getElementById('mfa-disable-btn');
+if (mfaDisableBtn) mfaDisableBtn.addEventListener('click', async () => {
+  const code = window.prompt('Enter a 6-digit code (or recovery code) to disable MFA:');
+  if (!code) return;
+  const t = String(code).trim();
+  const body = t.indexOf('-') >= 0 ? { recoveryCode: t.toUpperCase() } : { code: t };
+  const r = await apiFetch('/api/mfa/disable', { method: 'POST', body: JSON.stringify(body) });
+  showToast(r.ok ? 'MFA disabled' : 'Incorrect code.');
+  await refreshMfaStatus();
+});
+const mfaRecBtn = document.getElementById('mfa-recovery-btn');
+if (mfaRecBtn) mfaRecBtn.addEventListener('click', async () => {
+  const r = await apiFetch('/api/recovery/generate', { method: 'POST' });
+  if (!r.ok) { showToast('Could not generate codes.'); return; }
+  const data = await r.json();
+  document.getElementById('mfa-recovery-list').textContent = (data.codes || []).join('  ');
+  showToast('Copy recovery codes now — shown once.');
+  await refreshMfaStatus();
+});
+// --- Passkeys (option-1 login factor; password still unlocks E2EE notes) ---
+function bufToB64url(buf) {
+  const bytes = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 1) s += String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64urlToBuf(b64url) {
+  let s = String(b64url || '').replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function refreshPasskeys() {
+  const listEl = document.getElementById('passkey-list');
+  const errEl = document.getElementById('passkey-error');
+  try {
+    const r = await apiFetch('/api/passkey/list');
+    if (!r.ok) throw new Error();
+    const data = await r.json();
+    const keys = (data && data.keys) || [];
+    if (listEl) {
+      listEl.innerHTML = '';
+      if (!keys.length) listEl.textContent = 'No passkeys yet.';
+      keys.forEach((k) => {
+        const row = document.createElement('div');
+        row.textContent = `${String(k.id).slice(0, 16)}… (added ${new Date((k.created_at || 0) * 1000).toLocaleDateString()}) `;
+        const del = document.createElement('button');
+        del.textContent = 'Remove';
+        del.className = 'btn btn-secondary';
+        del.addEventListener('click', async () => {
+          await apiFetch('/api/passkey/remove', { method: 'POST', body: JSON.stringify({ id: k.id }) });
+          await refreshPasskeys();
+        });
+        row.appendChild(del);
+        listEl.appendChild(row);
+      });
+    }
+    if (errEl) errEl.hidden = true;
+  } catch (error) {
+    if (listEl) listEl.textContent = 'Could not load passkeys.';
+  }
+}
+const passkeyAddBtn = document.getElementById('passkey-add-btn');
+if (passkeyAddBtn) passkeyAddBtn.addEventListener('click', async () => {
+  const errEl = document.getElementById('passkey-error');
+  try {
+    if (!window.PublicKeyCredential) throw new Error('Passkeys not supported in this browser.');
+    const begin = await apiFetch('/api/passkey/register-begin', { method: 'POST' });
+    const opts = await begin.json();
+    if (!begin.ok) throw new Error(opts.error || 'Could not start enrolment.');
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge: b64urlToBuf(opts.challenge),
+        rp: opts.rp,
+        user: { id: b64urlToBuf(opts.user.id), name: opts.user.name, displayName: opts.user.displayName },
+        pubKeyCredParams: opts.pubKeyCredParams,
+        timeout: opts.timeout,
+        attestation: opts.attestation,
+        authenticatorSelection: opts.authenticatorSelection,
+        excludeCredentials: (opts.excludeCredentials || []).map((c) => ({ ...c, id: b64urlToBuf(c.id) })),
+      },
+    });
+    const finish = await apiFetch('/api/passkey/register-finish', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: cred.id,
+        rawId: bufToB64url(cred.rawId),
+        type: cred.type,
+        response: {
+          clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+          attestationObject: bufToB64url(cred.response.attestationObject),
+        },
+        transports: (cred.response.getTransports && cred.response.getTransports()) || [],
+      }),
+    });
+    if (!finish.ok) {
+      const d = await finish.json().catch(() => ({}));
+      throw new Error(d.error || 'Enrolment failed.');
+    }
+    showToast('Passkey added');
+    await refreshPasskeys();
+  } catch (error) {
+    if (errEl) { errEl.textContent = error.message || 'Could not add passkey.'; errEl.hidden = false; }
+  }
+});
+document.getElementById('open-settings').addEventListener('click', () => {
+  try { refreshMfaStatus(); } catch (error) {}
+  try { refreshPasskeys(); } catch (error) {}
+  try { refreshAccountPane(); } catch (error) {}
+});
+// --- Account pane (username/email/delete) ---
+function refreshAccountPane() {
+  try {
+    const u = document.getElementById('account-username');
+    if (u) u.value = (cachedProfile && cachedProfile.username) || '';
+    const e = document.getElementById('account-email');
+    if (e && document.activeElement !== e) e.value = (cachedProfile && cachedProfile.email) || '';
+  } catch (error) {}
+}
+const accountSaveBtn = document.getElementById('account-save-btn');
+if (accountSaveBtn) accountSaveBtn.addEventListener('click', async () => {
+  const errEl = document.getElementById('account-error');
+  const email = String(document.getElementById('account-email').value || '').trim().slice(0, 254);
+  try {
+    const r = await apiFetch('/api/account/email', { method: 'POST', body: JSON.stringify({ email }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'Could not save email.');
+    if (cachedProfile) cachedProfile.email = data.email || email;
+    if (errEl) errEl.hidden = true;
+    try { applyProfile(); } catch (error) {}
+    showToast('Email saved');
+  } catch (error) {
+    if (errEl) { errEl.textContent = error.message; errEl.hidden = false; }
+  }
+});
+const accountDeleteBtn = document.getElementById('account-delete-btn');
+if (accountDeleteBtn) accountDeleteBtn.addEventListener('click', async () => {
+  const errEl = document.getElementById('account-error');
+  try {
+    const uname = (cachedProfile && cachedProfile.username) || '';
+    const typed = window.prompt(`Type your username (${uname}) to confirm deletion:`);
+    if (typed !== uname) { showToast('Deletion cancelled.'); return; }
+    const current = window.prompt('Enter your current password to confirm deletion:');
+    if (!current) return;
+    if (!e2ee.saltAuth) throw new Error('Please log in again, then retry.');
+    const saltBytes = (e2ee.saltAuth instanceof Uint8Array) ? e2ee.saltAuth : e2eeB64ToBytes(e2ee.saltAuth);
+    const raw = e2ee.kdf === 'argon2id'
+      ? await argon2id32(current, saltBytes)
+      : await e2eeDeriveBits(current, saltBytes, e2ee.iterations);
+    const r = await apiFetch('/api/account', {
+      method: 'DELETE', body: JSON.stringify({ confirmUsername: uname, currentAuth: e2eeBytesToB64(raw) }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'Could not delete account.');
+    }
+    await logout();
+    showToast('Account deleted');
+  } catch (error) {
+    if (errEl) { errEl.textContent = error.message; errEl.hidden = false; }
+  }
+});
+// --- Password-loss recovery codes (E2EE-safe wraps, server stores hashes only) ---
+async function sha256Hex(text) {
+  const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text)));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+const REC_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function newRecoveryCode() {
+  const bytes = e2eeRandomBytes(20);
+  let s = '';
+  for (let i = 0; i < 20; i += 1) s += REC_ALPHABET[bytes[i] % REC_ALPHABET.length];
+  return `${s.slice(0, 5)}-${s.slice(5, 10)}-${s.slice(10, 15)}-${s.slice(15, 20)}`;
+}
+const acctRecBtn = document.getElementById('acct-rec-generate-btn');
+if (acctRecBtn) acctRecBtn.addEventListener('click', async () => {
+  const errEl = document.getElementById('acct-rec-error');
+  try {
+    if (!cachedProfile || !e2ee.masterKey) throw new Error('Log in and unlock notes first.');
+    const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
+    const wraps = [];
+    const plain = [];
+    for (let i = 0; i < 8; i += 1) {
+      const code = newRecoveryCode();
+      const salt = e2eeRandomBytes(16);
+      const kekRaw = await argon2id32(code, salt);
+      const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+      const iv = e2eeRandomBytes(12);
+      const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, masterRaw);
+      wraps.push({
+        codeHash: await sha256Hex(code),
+        salt: e2eeBytesToB64(salt),
+        wrappedKey: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) },
+      });
+      plain.push(code);
+    }
+    const r = await apiFetch('/api/recovery/account/generate', { method: 'POST', body: JSON.stringify({ wraps }) });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'Could not store codes.');
+    }
+    document.getElementById('acct-rec-list').textContent = plain.join('   ');
+    const st = document.getElementById('acct-rec-status');
+    if (st) st.textContent = '8 unused codes. Copy now — shown once. Each works once.';
+    showToast('Recovery codes generated — copy now.');
+  } catch (error) {
+    if (errEl) { errEl.textContent = error.message; errEl.hidden = false; }
+  }
+});
+// --- Login-overlay forgot-password flow (lookup by hash, unwrap locally) ---
+const recoverLink = document.getElementById('recover-link');
+if (recoverLink) recoverLink.addEventListener('click', () => {
+  setAuthTab('recover');
+});
+const recoverBack = document.getElementById('recover-back');
+if (recoverBack) recoverBack.addEventListener('click', () => setAuthTab('login'));
+// Recover popup: one method per view (email / code / email-link token).
+function openRecoverModal(kind) {
+  const blockId = kind === 'email' ? 'recover-email-block'
+    : kind === 'token' ? 'recover-token-block' : 'recover-code-block';
+  const modal = document.getElementById('recover-modal');
+  if (!modal) {
+    // Fallback for mixed cached layouts: toggle the form inline.
+    ['recover-email-block', 'recover-code-block', 'recover-token-block'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.hidden = id !== blockId;
+    });
+    return;
+  }
+  const title = document.getElementById('recover-modal-title');
+  if (title) title.textContent = kind === 'email' ? 'Recover with email'
+    : kind === 'token' ? 'Set a new password' : 'Recover with code';
+  ['recover-email-block', 'recover-code-block', 'recover-token-block'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = true;
+  });
+  const show = document.getElementById(blockId);
+  if (show) show.hidden = false;
+  modal.hidden = false;
+}
+function closeRecoverModal() {
+  const modal = document.getElementById('recover-modal');
+  if (modal) modal.hidden = true;
+  verifiedRecovery = null;
+  const block = document.getElementById('recover-newpw-block');
+  if (block) block.hidden = true;
+}
+const closeRecoverModalBtn = document.getElementById('close-recover-modal');
+if (closeRecoverModalBtn) closeRecoverModalBtn.addEventListener('click', closeRecoverModal);
+const recoverModalOverlay = document.getElementById('recover-modal');
+if (recoverModalOverlay) recoverModalOverlay.addEventListener('click', (event) => {
+  if (event.target === recoverModalOverlay) closeRecoverModal();
+});
+const recoverOptEmail = document.getElementById('recover-opt-email');
+if (recoverOptEmail) recoverOptEmail.addEventListener('click', () => openRecoverModal('email'));
+const recoverOptCode = document.getElementById('recover-opt-code');
+if (recoverOptCode) recoverOptCode.addEventListener('click', () => openRecoverModal('code'));
+const recoverEmailBtn = document.getElementById('recover-email-btn');
+if (recoverEmailBtn) recoverEmailBtn.addEventListener('click', async () => {
+  const errEl = document.getElementById('recover-email-error');
+  const fail = (m) => { if (errEl) { errEl.textContent = m; errEl.hidden = false; } };
+  try {
+    const email = String(document.getElementById('recover-email-address').value || '').trim().slice(0, 254);
+    if (!/^[^@\s<>\"]+@[^@\s<>\"]+\.[^@\s<>\"]+$/.test(email)) throw new Error('Enter your email address first.');
+    const r = await apiFetch('/api/recovery/email/start', {
+      method: 'POST', body: JSON.stringify({ email }),
+    });
+    if (!r.ok) throw new Error('Could not send email. Try again later.');
+    if (errEl) errEl.hidden = true;
+    const note = document.getElementById('recover-email-note');
+    if (note) note.textContent = 'If the account exists, a reset link is on its way. It expires in 15 minutes.';
+    showToast('Reset email sent if the account exists.');
+  } catch (error) {
+    fail(error.message || 'Could not send email.');
+  }
+});
+let verifiedRecovery = null;
+const recoverVerifyBtn = document.getElementById('recover-verify-btn');
+if (recoverVerifyBtn) recoverVerifyBtn.addEventListener('click', async () => {
+  const errEl = document.getElementById('recover-error');
+  const fail = (m) => { if (errEl) { errEl.textContent = m; errEl.hidden = false; } };
+  try {
+    const username = String(document.getElementById('recover-code-username').value || '').trim();
+    const code = String(document.getElementById('recover-code').value || '').trim().toUpperCase();
+    if (!/^[A-Za-z0-9_-]{3,32}$/.test(username)) throw new Error('Enter your username first.');
+    if (!code) throw new Error('Enter a recovery code.');
+    const codeHash = await sha256Hex(code);
+    // Cross-search: the code must belong to this username before the
+    // new-password fields are revealed.
+    const lookup = await apiFetch('/api/recovery/account/lookup', {
+      method: 'POST', body: JSON.stringify({ username, codeHash }),
+    });
+    if (lookup.status === 429) {
+      const d = await lookup.json().catch(() => ({}));
+      throw new Error((d && d.error) || 'Too many attempts — try again later.');
+    }
+    if (!lookup.ok) throw new Error('Username and recovery code do not match an account.');
+    const wrap = await lookup.json();
+    const kekRaw = await argon2id32(code, e2eeB64ToBytes(wrap.salt));
+    const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    let masterRaw;
+    try {
+      masterRaw = await window.crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: e2eeB64ToBytes(wrap.wrappedKey.iv) },
+        kek, e2eeB64ToBytes(wrap.wrappedKey.data));
+    } catch (error) { throw new Error('Username and recovery code do not match an account.'); }
+    verifiedRecovery = { username, code, codeHash, masterRaw };
+    if (errEl) errEl.hidden = true;
+    document.getElementById('recover-newpw-block').hidden = false;
+    showToast('Code verified — set a new password.');
+  } catch (error) {
+    verifiedRecovery = null;
+    document.getElementById('recover-newpw-block').hidden = true;
+    fail(error.message || 'Verification failed.');
+  }
+});
+const recoverBtn = document.getElementById('recover-btn');
+if (recoverBtn) recoverBtn.addEventListener('click', async () => {
+  const errEl = document.getElementById('recover-error');
+  const fail = (m) => { if (errEl) { errEl.textContent = m; errEl.hidden = false; } };
+  try {
+    if (!verifiedRecovery) throw new Error('Verify your username and code first.');
+    const next = String(document.getElementById('recover-new').value || '');
+    const confirm = String(document.getElementById('recover-confirm').value || '');
+    const missing = passwordPolicyCheck(next);
+    if (missing.length) throw new Error(`New password needs ${missing.join(', ')}.`);
+    if (next !== confirm) throw new Error('New passwords do not match.');
+    const { username, codeHash, masterRaw } = verifiedRecovery;
+    const newSaltAuth = e2eeRandomBytes(16);
+    const newSaltEnc = e2eeRandomBytes(16);
+    const newAuthBits = await argon2id32(next, newSaltAuth);
+    const newWrapped = await e2eeWrapMasterKeyArgon2id(next, newSaltEnc, masterRaw);
+    const reset = await apiFetch('/api/recovery/account/reset', {
+      method: 'POST',
+      body: JSON.stringify({
+        username, codeHash,
+        authHash: e2eeBytesToB64(newAuthBits),
+        saltAuth: e2eeBytesToB64(newSaltAuth),
+        saltEnc: e2eeBytesToB64(newSaltEnc),
+        encMasterKey: newWrapped,
+        kdf: 'argon2id',
+        params: { t: E2EE_KDF_ARGON2ID.t, m: E2EE_KDF_ARGON2ID.m, p: E2EE_KDF_ARGON2ID.p },
+      }),
+    });
+    if (!reset.ok) {
+      const d = await reset.json().catch(() => ({}));
+      throw new Error(d.error || 'Could not reset password.');
+    }
+    if (errEl) errEl.hidden = true;
+    const loginName = document.getElementById('login-username');
+    if (loginName) loginName.value = username;
+    verifiedRecovery = null;
+    document.getElementById('recover-code-username').value = '';
+    document.getElementById('recover-code').value = '';
+    document.getElementById('recover-new').value = '';
+    document.getElementById('recover-confirm').value = '';
+    document.getElementById('recover-newpw-block').hidden = true;
+    closeRecoverModal();
+    setAuthTab('login');
+    showToast('Password reset — log in with the new password.');
+  } catch (error) {
+    fail(error.message || 'Recovery failed.');
+  }
+});
+document.getElementById('open-settings').addEventListener('click', () => {
+  try { refreshMfaStatus(); } catch (error) {}
+  try { refreshPasskeys(); } catch (error) {}
+  try { refreshAccountPane(); } catch (error) {}
+});
 // Apply a theme (light/dark/dracula), persist the choice and update the meta theme-color.
 function applyTheme(theme, announce = false) {
   const normalized = THEMES.includes(theme) ? theme : 'light';
@@ -5148,6 +5825,57 @@ window.addEventListener('pagehide', () => {
   }
 });
 boot();
+// --- Email-link password reset (?emailToken=...) ---
+// The link proves email ownership; the new verifier is derived locally and
+// the wrapped master key is untouched server-side. After reset the user logs
+// in with the new password, then enters the OLD password once to re-wrap.
+let emailRecoveryToken = null;
+let pendingRewrap = null;
+try {
+  const params = new URLSearchParams(window.location.search || '');
+  const tok = params.get('emailToken');
+  if (tok && tok.length <= 256) emailRecoveryToken = tok;
+} catch (error) {}
+const recoverTokenBtn = document.getElementById('recover-token-btn');
+if (recoverTokenBtn) recoverTokenBtn.addEventListener('click', async () => {
+  const errEl = document.getElementById('recover-token-error');
+  const fail = (m) => { if (errEl) { errEl.textContent = m; errEl.hidden = false; } };
+  try {
+    if (!emailRecoveryToken) throw new Error('This link is invalid. Request a new email.');
+    const next = String(document.getElementById('recover-token-new').value || '');
+    const confirm = String(document.getElementById('recover-token-confirm').value || '');
+    const missing = passwordPolicyCheck(next);
+    if (missing.length) throw new Error(`New password needs ${missing.join(', ')}.`);
+    if (next !== confirm) throw new Error('New passwords do not match.');
+    const newSaltAuth = e2eeRandomBytes(16);
+    const newAuthBits = await argon2id32(next, newSaltAuth);
+    const r = await apiFetch('/api/recovery/email/complete', {
+      method: 'POST',
+      body: JSON.stringify({
+        token: emailRecoveryToken,
+        authHash: e2eeBytesToB64(newAuthBits),
+        saltAuth: e2eeBytesToB64(newSaltAuth),
+      }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'Link invalid or expired.');
+    }
+    pendingRewrap = { password: next, saltAuth: newSaltAuth };
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('emailToken');
+      window.history.replaceState({}, '', url.toString());
+    } catch (error) {}
+    emailRecoveryToken = null;
+    if (errEl) errEl.hidden = true;
+    closeRecoverModal();
+    setAuthTab('login');
+    showToast('Password reset — log in with the new password, then enter the old one once.');
+  } catch (error) {
+    fail(error.message || 'Recovery failed.');
+  }
+});
 // Startup: session check (vault stays locked, so the password gate always shows), empty locked workspace, folder sync, first-note selection, purge timer.
 async function boot() {
   await refreshSession();
@@ -5158,6 +5886,13 @@ async function boot() {
   notes = [];
   clearEditor();
   showLogin();
+  // Email-reset landing: open recovery with only the token popup visible.
+  try {
+    if (emailRecoveryToken) {
+      setAuthTab('recover');
+      openRecoverModal('token');
+    }
+  } catch (error) {}
   refreshEditorLock();
   syncCustomSections();
   renderCustomSections();
