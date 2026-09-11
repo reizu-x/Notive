@@ -90,6 +90,11 @@ LOGIN_MAX_FAILURES = 5
 # so the account message, not the generic one, is what users see.
 RECOVERY_FAIL_WINDOW_SECONDS = 3600
 RECOVERY_MAX_FAILURES = 5
+# Lifetimes for second-factor artifacts. Short on purpose: a stolen ticket or
+# emailed link is only useful inside these windows.
+MFA_TICKET_TTL_SECONDS = 300
+EMAIL_TOKEN_TTL_SECONDS = 900
+PASSKEY_CHALLENGE_TTL_SECONDS = 300
 CHANGE_WINDOW_SECONDS = 900
 CHANGE_MAX_FAILURES = 5
 NOTES_PUT_WINDOW_SECONDS = 60
@@ -458,7 +463,7 @@ def verify_auth_hash(candidate_bytes, row):
     return None
 
 
-def issue_mfa_ticket(conn, username, ttl_seconds=300):
+def issue_mfa_ticket(conn, username, ttl_seconds=MFA_TICKET_TTL_SECONDS):
     """Mint single-use MFA ticket hash; returns plaintext ticket to client."""
     ticket = secrets.token_urlsafe(32)
     digest = hashlib.sha256(ticket.encode('utf-8')).hexdigest()
@@ -707,13 +712,10 @@ def init_db():
         'ticket_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
         'expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)'
     )
-    # Single-use recovery codes for MFA bypass (SHA256 hashes only).
-    conn.execute(
-        'CREATE TABLE IF NOT EXISTS recovery_codes ('
-        'code_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
-        'created_at INTEGER NOT NULL, used_at INTEGER)'
-    )
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_recovery_user ON recovery_codes (username)')
+    # Retired table (MFA-bypass codes, removed 2026-09): account recovery now
+    # clears MFA itself, so the second code system is unnecessary. Drop once
+    # if left over from an older database; nothing references it anymore.
+    conn.execute('DROP TABLE IF EXISTS recovery_codes')
     # Email password-reset tokens (hashes only, 15-min expiry, single-use).
     conn.execute(
         'CREATE TABLE IF NOT EXISTS email_recovery ('
@@ -740,7 +742,18 @@ def init_db():
         'pubkey BLOB NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0, '
         'transports TEXT NOT NULL DEFAULT \'\', created_at INTEGER NOT NULL)'
     )
+    # Migration for PRF passwordless unlock (nullable: older creds lack it and
+    # keep the password-unlock fallback).
+    cred_cols = {row['name'] for row in conn.execute('PRAGMA table_info(passkey_creds)')}
+    if 'prf_wrap' not in cred_cols:
+        conn.execute('ALTER TABLE passkey_creds ADD COLUMN prf_wrap BLOB')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_passkey_user ON passkey_creds (username)')
+    # PRF salt for passwordless unlock (one per user; each credential yields
+    # its own secret from it, so per-cred wraps stay independent).
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS passkey_prf ('
+        'username TEXT PRIMARY KEY, salt BLOB NOT NULL, created_at INTEGER NOT NULL)'
+    )
     conn.execute(
         'CREATE TABLE IF NOT EXISTS passkey_challenges ('
         'chash TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT NOT NULL, '
@@ -939,8 +952,7 @@ def issue_session_token(conn, username, now):
 # Whether the session cookie carries the Secure flag: explicit
 # NOTELY_COOKIE_SECURE=1/0 always wins (default Secure ON, even for
 # loopback — modern browsers accept Secure on http://localhost as a secure
-# context; plain-HTTP LAN test uses NOTELY_COOKIE_SECURE=0 with the
-# non-prefixed cookie, isolated network only).
+# context; plain-HTTP LAN deployments must set up TLS).
 def session_cookie_secure():
     env = os.environ.get('NOTELY_COOKIE_SECURE')
     if env is not None:
@@ -948,20 +960,13 @@ def session_cookie_secure():
     return True
 
 
-# Set the session cookie. HTTPS prod: HttpOnly __Host- SameSite=Lax Secure.
-# Plain-HTTP LAN test (NOTELY_COOKIE_SECURE=0): __Host- without Secure is
-# rejected by browsers, so fall back to the legacy non-prefixed name.
+# Set the HttpOnly __Host- SameSite=Lax session cookie (Secure always unless
+# NOTELY_COOKIE_SECURE=0). __Host- requires Secure + Path=/ + no Domain.
 def set_session_cookie(response, token):
-    if session_cookie_secure():
-        response.set_cookie(
-            SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS,
-            httponly=True, samesite='Lax', secure=True, path='/',
-        )
-    else:
-        response.set_cookie(
-            LEGACY_SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS,
-            httponly=True, samesite='Lax', secure=False, path='/',
-        )
+    response.set_cookie(
+        SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS,
+        httponly=True, samesite='Lax', secure=session_cookie_secure(), path='/',
+    )
     return response
 
 
@@ -1115,9 +1120,10 @@ def request_too_large(error):
     return jsonify({'error': 'Request too large.'}), 413
 
 
-# Fixed dummy KDF material so unknown usernames get an indistinguishable
-# kdf-params shape (no account-enumeration oracle).
-_DUMMY_KDF_SALT = base64.b64encode(b'notely-kdf-dummy-01').decode('ascii')
+# NOTE: unknown usernames get per-name dummy salts from dummy_kdf_salt_for()
+# (defined near the top with the other KDF helpers). There is deliberately no
+# global dummy constant anymore: one shared value let attackers enumerate
+# accounts by equality (see pentest finding #1).
 
 
 @app.route('/api/kdf-params', methods=['GET'])
@@ -1810,6 +1816,39 @@ def api_put_notes():
     return jsonify({'ok': True, 'updated_at': now})
 
 
+# Shared proof check for vault overwrite (POST) and reset (DELETE).
+#
+# Why it exists: the session cookie alone must never be enough to destroy the
+# vault (stolen-cookie DoS). The caller proves password knowledge with EITHER:
+#   * currentVaultAuth — the existing vault verifier (knows vault password), or
+#   * currentAccountAuth — the login verifier (knows login password, e.g. the
+#     forgot-vault-password reset path).
+# Returns True only on a constant-time match. Never raises.
+def vault_proof_ok(conn, username, data, vault_verifier):
+    """Check vault/account password proof from a vault-meta request body."""
+    try:
+        cur_vault = data.get('currentVaultAuth')
+        cur_acct = data.get('currentAccountAuth')
+        if cur_vault is not None:
+            try:
+                if hmac.compare_digest(b64decode_strict(cur_vault, 32), bytes(vault_verifier)):
+                    return True
+            except ValueError:
+                pass
+        if cur_acct is not None:
+            acct = conn.execute('SELECT auth_hash, auth_hash2 FROM users WHERE username = ?',
+                                (username,)).fetchone()
+            if acct is not None and (acct['auth_hash'] or acct['auth_hash2']):
+                try:
+                    if verify_auth_hash(b64decode_strict(cur_acct, 32), acct):
+                        return True
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+    return False
+
+
 @app.route('/api/vault-meta', methods=['GET'])
 def api_vault_meta_get():
     """Return the vault verifier material (salts + wrapped key) for unlocking.
@@ -1881,33 +1920,11 @@ def api_vault_meta_set():
         return jsonify({'error': 'Vault password too weak: choose a longer, less common password.'}), 400
     existing = conn.execute('SELECT verifier FROM vault_meta WHERE username = ?',
                             (user['username'],)).fetchone()
-    if existing:
-        # Proof required for overwrite.
-        proved = False
-        try:
-            cur_vault = data.get('currentVaultAuth')
-            cur_acct = data.get('currentAccountAuth')
-            if cur_vault is not None:
-                cand = b64decode_strict(cur_vault, 32)
-                if hmac.compare_digest(cand, bytes(existing['verifier'])):
-                    proved = True
-            if not proved and cur_acct is not None:
-                acct = conn.execute('SELECT auth_hash, auth_hash2, salt_auth FROM users WHERE username = ?',
-                                    (user['username'],)).fetchone()
-                if acct is not None and (acct['auth_hash'] or acct['auth_hash2']):
-                    try:
-                        cand2 = b64decode_strict(cur_acct, 32)
-                        if verify_auth_hash(cand2, acct):
-                            proved = True
-                    except ValueError:
-                        pass
-        except Exception:
-            proved = False
-        if not proved:
-            rate_hit(conn, ip_bucket('vault'))
-            rate_hit(conn, 'vault:' + user['username'].lower())
-            conn.close()
-            return jsonify({'error': 'Vault overwrite requires current vault or account password proof.'}), 401
+    if existing and not vault_proof_ok(conn, user['username'], data, existing['verifier']):
+        rate_hit(conn, ip_bucket('vault'))
+        rate_hit(conn, 'vault:' + user['username'].lower())
+        conn.close()
+        return jsonify({'error': 'Vault overwrite requires current vault or account password proof.'}), 401
     now = int(time.time())
     conn.execute(
         'INSERT INTO vault_meta (username, salt_auth, verifier, salt_enc, enc_dek, created_at)'
@@ -1937,30 +1954,7 @@ def api_vault_meta_delete():
         conn.close()
         return jsonify({'ok': True})
     data = request.get_json(silent=True) or {}
-    proved = False
-    try:
-        cur_vault = data.get('currentVaultAuth')
-        cur_acct = data.get('currentAccountAuth')
-        if cur_vault is not None:
-            try:
-                cand = b64decode_strict(cur_vault, 32)
-                if hmac.compare_digest(cand, bytes(existing['verifier'])):
-                    proved = True
-            except ValueError:
-                pass
-        if not proved and cur_acct is not None:
-            acct = conn.execute('SELECT auth_hash, auth_hash2 FROM users WHERE username = ?',
-                                (user['username'],)).fetchone()
-            if acct is not None and (acct['auth_hash'] or acct['auth_hash2']):
-                try:
-                    cand2 = b64decode_strict(cur_acct, 32)
-                    if verify_auth_hash(cand2, acct):
-                        proved = True
-                except ValueError:
-                    pass
-    except Exception:
-        proved = False
-    if not proved:
+    if not vault_proof_ok(conn, user['username'], data, existing['verifier']):
         rate_hit(conn, ip_bucket('vault'))
         rate_hit(conn, 'vault:' + user['username'].lower())
         conn.close()
@@ -1995,10 +1989,8 @@ def api_mfa_status():
     conn = get_db()
     row = conn.execute('SELECT confirmed FROM mfa_totp WHERE username = ?',
                        (user['username'],)).fetchone()
-    n = conn.execute('SELECT COUNT(*) AS n FROM recovery_codes WHERE username = ? AND used_at IS NULL',
-                     (user['username'],)).fetchone()['n']
     conn.close()
-    return jsonify({'enabled': bool(row and row['confirmed']), 'recoveryLeft': int(n or 0)})
+    return jsonify({'enabled': bool(row and row['confirmed'])})
 
 
 @app.route('/api/mfa/setup', methods=['POST'])
@@ -2040,6 +2032,11 @@ def api_mfa_confirm():
     data = json_object()
     code = str(data.get('code', '')).strip()
     conn = get_db()
+    # Brute-force gate: 6-digit codes fall fast without one, even though a
+    # valid session is already required to reach here.
+    if rate_exceeded(conn, [ip_bucket('mfa'), 'mfa:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
+        conn.close()
+        return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
     row = conn.execute('SELECT enc_secret, confirmed FROM mfa_totp WHERE username = ?',
                        (user['username'],)).fetchone()
     if not row:
@@ -2063,7 +2060,8 @@ def api_mfa_confirm():
 
 @app.route('/api/mfa/disable', methods=['POST'])
 def api_mfa_disable():
-    """Disable MFA: requires session + TOTP code OR recovery code."""
+    """Disable MFA: requires session + current TOTP code. Lost device? Use
+    account recovery (email/recovery code), which clears MFA as well."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
@@ -2078,21 +2076,7 @@ def api_mfa_disable():
         secret = bytes(decrypt_blob(bytes(row['enc_secret'])))
     except Exception:
         secret = None
-    ok = bool(secret and totp_verify(secret, str(data.get('code', ''))))
-    if not ok:
-        # Recovery-code fallback (single-use).
-        try:
-            rc = str(data.get('recoveryCode', '')).strip().upper()
-            dh = hashlib.sha256(rc.encode('utf-8')).hexdigest() if rc else ''
-            hit = conn.execute('SELECT used_at FROM recovery_codes WHERE code_hash = ? AND username = ?',
-                               (dh, user['username'])).fetchone() if dh else None
-            if hit and not hit['used_at']:
-                conn.execute('UPDATE recovery_codes SET used_at = ? WHERE code_hash = ?',
-                             (int(time.time()), dh))
-                ok = True
-        except Exception:
-            pass
-    if not ok:
+    if not (secret and totp_verify(secret, str(data.get('code', '')))):
         rate_hit(conn, ip_bucket('mfa'))
         conn.close()
         return jsonify({'error': 'MFA proof required.'}), 401
@@ -2104,7 +2088,8 @@ def api_mfa_disable():
 
 @app.route('/api/mfa/challenge', methods=['POST'])
 def api_mfa_challenge():
-    """Complete password-first login: {ticket, code|recoveryCode} -> session."""
+    """Complete password-first login: {ticket, code} -> session. Lost device?
+    Recover the account instead (it clears MFA)."""
     data = json_object()
     ticket = str(data.get('ticket', '') or data.get('mfaTicket', ''))
     if not ticket or len(ticket) > 256:
@@ -2137,18 +2122,6 @@ def api_mfa_challenge():
         return jsonify({'error': 'MFA error.'}), 500
     ok = totp_verify(secret, str(data.get('code', '')))
     if not ok:
-        try:
-            rc = str(data.get('recoveryCode', '')).strip().upper()
-            dh = hashlib.sha256(rc.encode('utf-8')).hexdigest() if rc else ''
-            hit = conn.execute('SELECT used_at FROM recovery_codes WHERE code_hash = ? AND username = ?',
-                               (dh, username)).fetchone() if dh else None
-            if hit and not hit['used_at']:
-                conn.execute('UPDATE recovery_codes SET used_at = ? WHERE code_hash = ?',
-                             (int(time.time()), dh))
-                ok = True
-        except Exception:
-            pass
-    if not ok:
         rate_hit(conn, ip_bucket('mfa'))
         conn.close()
         return jsonify({'error': 'Incorrect code.'}), 401
@@ -2176,30 +2149,6 @@ def api_mfa_challenge():
     return set_session_cookie(resp, token)
 
 
-@app.route('/api/recovery/generate', methods=['POST'])
-def api_recovery_generate():
-    """Mint 10 single-use MFA-bypass codes (hashes stored, plaintext once)."""
-    user = current_session_user()
-    if not user:
-        return jsonify({'error': 'Not signed in.'}), 401
-    conn = get_db()
-    if rate_exceeded(conn, [ip_bucket('mfa'), 'mfa:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
-        conn.close()
-        return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
-    codes = []
-    now = int(time.time())
-    conn.execute('DELETE FROM recovery_codes WHERE username = ?', (user['username'],))
-    for _ in range(10):
-        raw = '-'.join(secrets.token_hex(2).upper() for _ in range(2))
-        codes.append(raw)
-        conn.execute('INSERT INTO recovery_codes (code_hash, username, created_at, used_at)'
-                     ' VALUES (?, ?, ?, NULL)',
-                     (hashlib.sha256(raw.encode('utf-8')).hexdigest(), user['username'], now))
-    conn.commit()
-    conn.close()
-    return jsonify({'codes': codes})
-
-
 @app.route('/api/passkey/register-begin', methods=['POST'])
 def api_passkey_register_begin():
     """Begin passkey enrolment (authed). Returns creation options (none attested)."""
@@ -2220,11 +2169,23 @@ def api_passkey_register_begin():
     conn.execute(
         'INSERT INTO passkey_challenges (chash, username, kind, expires_at, created_at)'
         ' VALUES (?, ?, ?, ?, ?)',
-        (hashlib.sha256(challenge).hexdigest(), user['username'], 'reg', now + 300, now),
+        (hashlib.sha256(challenge).hexdigest(), user['username'], 'reg', now + PASSKEY_CHALLENGE_TTL_SECONDS, now),
     )
     conn.commit()
     existing = conn.execute('SELECT cred_id, transports FROM passkey_creds WHERE username = ?',
                             (user['username'],)).fetchall()
+    # PRF salt for passwordless unlock: one per user, created once. The client
+    # asks the authenticator to evaluate it; the resulting secret never leaves
+    # the device and wraps a copy of the master key (see register-finish).
+    prf_row = conn.execute('SELECT salt FROM passkey_prf WHERE username = ?',
+                           (user['username'],)).fetchone()
+    if prf_row:
+        prf_salt = bytes(prf_row['salt'])
+    else:
+        prf_salt = secrets.token_bytes(32)
+        conn.execute('INSERT INTO passkey_prf (username, salt, created_at) VALUES (?, ?, ?)',
+                     (user['username'], prf_salt, int(time.time())))
+        conn.commit()
     conn.close()
     user_handle = b64url_encode(hashlib.sha256(b'notely-user-v1:' + user['username'].lower().encode('utf-8')).digest())
     return jsonify({
@@ -2236,6 +2197,7 @@ def api_passkey_register_begin():
         'attestation': 'none',
         'authenticatorSelection': {'userVerification': 'preferred'},
         'excludeCredentials': [{'type': 'public-key', 'id': row['cred_id']} for row in existing],
+        'prfSalt': b64url_encode(prf_salt),
     })
 
 
@@ -2304,17 +2266,32 @@ def api_passkey_register_finish():
         conn.close()
         return jsonify({'error': f'Invalid attestation: {error}'}), 400
     conn.execute('DELETE FROM passkey_challenges WHERE chash = ?', (chash,))
+    # Optional PRF wrap: the client wrapped its master key under a key derived
+    # from the authenticator's PRF evaluation of the user's PRF salt, enabling
+    # passwordless unlock later. Validated strictly; absent on authenticators
+    # without PRF support (those creds keep the password-unlock fallback).
+    prf_wrap = None
+    try:
+        prf_in = data.get('prfWrap')
+        if prf_in is not None:
+            prf_iv = b64decode_strict((prf_in or {}).get('iv'), 12)
+            prf_ct = b64decode_strict((prf_in or {}).get('data'), 48)
+            prf_wrap = bytes(prf_iv) + bytes(prf_ct)
+    except (ValueError, AttributeError):
+        conn.close()
+        return jsonify({'error': 'Invalid PRF wrap.'}), 400
     conn.execute(
-        'INSERT INTO passkey_creds (cred_id, username, pubkey, sign_count, transports, created_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?)'
+        'INSERT INTO passkey_creds (cred_id, username, pubkey, sign_count, transports, created_at, prf_wrap)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?)'
         ' ON CONFLICT(cred_id) DO UPDATE SET username = excluded.username,'
-        ' pubkey = excluded.pubkey, transports = excluded.transports',
+        ' pubkey = excluded.pubkey, transports = excluded.transports,'
+        ' prf_wrap = COALESCE(excluded.prf_wrap, passkey_creds.prf_wrap)',
         (cred_id, user['username'], bytes(pubkey), 0,
-         ','.join([str(t) for t in transports][:8]), int(time.time())),
+         ','.join([str(t) for t in transports][:8]), int(time.time()), prf_wrap),
     )
     conn.commit()
     conn.close()
-    return jsonify({'ok': True, 'credId': cred_id})
+    return jsonify({'ok': True, 'credId': cred_id, 'prf': bool(prf_wrap)})
 
 
 @app.route('/api/passkey/list', methods=['GET'])
@@ -2323,11 +2300,12 @@ def api_passkey_list():
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    rows = conn.execute('SELECT cred_id, created_at, transports FROM passkey_creds WHERE username = ?'
+    rows = conn.execute('SELECT cred_id, created_at, transports, prf_wrap FROM passkey_creds WHERE username = ?'
                         ' ORDER BY created_at', (user['username'],)).fetchall()
     conn.close()
     return jsonify({'keys': [{'id': r['cred_id'], 'created_at': r['created_at'],
-                              'transports': r['transports']} for r in rows]})
+                              'transports': r['transports'],
+                              'passwordless': bool(r['prf_wrap'])} for r in rows]})
 
 
 @app.route('/api/passkey/remove', methods=['POST'])
@@ -2347,6 +2325,8 @@ def api_passkey_remove():
 
 @app.route('/api/passkey/login-begin', methods=['POST'])
 def api_passkey_login_begin():
+    """Issue an assertion challenge. Username is REQUIRED: the credential must
+    belong to the named account (the match is enforced again at finish)."""
     data = json_object()
     username = str(data.get('username', '')).strip()
     conn = get_db()
@@ -2359,7 +2339,7 @@ def api_passkey_login_begin():
     if not validate_username(username):
         rate_hit(conn, ip_bucket('passkey'))
         conn.close()
-        return jsonify({'error': 'Incorrect username or password.'}), 401
+        return jsonify({'error': 'Username is required.'}), 401
     user = conn.execute('SELECT username FROM users WHERE username = ?', (username,)).fetchone()
     creds = conn.execute('SELECT cred_id, transports FROM passkey_creds WHERE username = ?',
                          (username,)).fetchall() if user else []
@@ -2370,6 +2350,7 @@ def api_passkey_login_begin():
         rate_hit(conn, ip_bucket('passkey'))
         conn.close()
         return jsonify({'error': 'No passkeys for this account.'}), 404
+    prf_row = conn.execute('SELECT salt FROM passkey_prf WHERE username = ?', (username,)).fetchone()
     rp_id = webauthn_rp_id()
     challenge = secrets.token_bytes(32)
     now = int(time.time())
@@ -2377,31 +2358,35 @@ def api_passkey_login_begin():
     conn.execute(
         'INSERT INTO passkey_challenges (chash, username, kind, expires_at, created_at)'
         ' VALUES (?, ?, ?, ?, ?)',
-        (hashlib.sha256(challenge).hexdigest(), username, 'auth', now + 300, now),
+        (hashlib.sha256(challenge).hexdigest(), username, 'auth', now + PASSKEY_CHALLENGE_TTL_SECONDS, now),
     )
     conn.commit()
     conn.close()
-    return jsonify({
-        'challenge': b64url_encode(challenge),
-        'rpId': rp_id,
-        'timeout': 60000,
-        'userVerification': 'preferred',
-        'allowCredentials': [{'type': 'public-key', 'id': r['cred_id'],
-                              'transports': [t for t in str(r['transports'] or '').split(',') if t]}
-                             for r in creds],
-    })
+    resp = {'challenge': b64url_encode(challenge),
+            'rpId': rp_id,
+            'timeout': 60000,
+            'userVerification': 'preferred',
+            'allowCredentials': [{'type': 'public-key', 'id': r['cred_id'],
+                                  'transports': [t for t in str(r['transports'] or '').split(',') if t]}
+                                 for r in creds]}
+    if prf_row:
+        # Salt for the PRF eval input; the secret it yields unlocks notes.
+        resp['prfSalt'] = b64url_encode(bytes(prf_row['salt']))
+    return jsonify(resp)
 
 
 @app.route('/api/passkey/login-finish', methods=['POST'])
 def api_passkey_login_finish():
-    """Verify assertion -> session (or MFA ticket). Password still unlocks E2EE
-    notes afterwards: client prompts for it locally, never sends it."""
+    """Verify assertion -> session (or MFA ticket). Username is REQUIRED and
+    the credential must belong to it: this is the username<->passkey check.
+    With a PRF-capable credential the response also carries that cred's wrap,
+    so the client unlocks notes with NO password (see below)."""
     data = json_object()
     username = str(data.get('username', '')).strip()
     conn = get_db()
     if not validate_username(username):
         conn.close()
-        return jsonify({'error': 'Incorrect username or password.'}), 401
+        return jsonify({'error': 'Username is required.'}), 401
     user_bucket = ip_user_bucket('passkey', username)
     try:
         cred_id = str(data.get('id', ''))
@@ -2434,7 +2419,7 @@ def api_passkey_login_finish():
     if str(client.get('origin', '')).lower() != webauthn_expected_origin():
         conn.close()
         return jsonify({'error': 'Origin mismatch.'}), 400
-    cred = conn.execute('SELECT pubkey, sign_count FROM passkey_creds WHERE cred_id = ? AND username = ?',
+    cred = conn.execute('SELECT pubkey, sign_count, prf_wrap FROM passkey_creds WHERE cred_id = ? AND username = ?',
                         (cred_id, username)).fetchone()
     if not cred:
         rate_hit(conn, ip_bucket('passkey'))
@@ -2489,9 +2474,14 @@ def api_passkey_login_finish():
         'iterations': full['iterations'] or PBKDF2_ITERATIONS,
         'encMasterKey': enc_master_key_parts(full['enc_master_key']),
     }
-    # kdf-params parity: E2EE clients also need saltAuth to derive nothing?
-    # Password is still required locally to unwrap, so expose saltAuth shape
-    # via the existing public endpoint instead of here (no secret added).
+    if cred['prf_wrap']:
+        # Passwordless unlock material for THIS credential: the client derives
+        # the KEK from its PRF evaluation and unwraps locally. Opaque to us.
+        raw = bytes(cred['prf_wrap'])
+        bundle['prfWrap'] = {
+            'iv': base64.b64encode(raw[:12]).decode('ascii'),
+            'data': base64.b64encode(raw[12:]).decode('ascii'),
+        }
     if mfa_on:
         ticket = issue_mfa_ticket(conn, username)
         conn.close()
@@ -2576,7 +2566,6 @@ def api_account_delete():
     conn.execute('DELETE FROM vault_meta WHERE username = ?', (uname,))
     conn.execute('DELETE FROM mfa_totp WHERE username = ?', (uname,))
     conn.execute('DELETE FROM mfa_challenges WHERE username = ?', (uname,))
-    conn.execute('DELETE FROM recovery_codes WHERE username = ?', (uname,))
     conn.execute('DELETE FROM account_recovery WHERE username = ?', (uname,))
     conn.execute('DELETE FROM passkey_creds WHERE username = ?', (uname,))
     conn.execute('DELETE FROM passkey_challenges WHERE username = ?', (uname,))
@@ -2634,7 +2623,7 @@ def api_recovery_email_start():
             conn.execute('DELETE FROM email_recovery WHERE expires_at < ?', (now,))
             conn.execute('INSERT INTO email_recovery (token_hash, username, expires_at, created_at, used_at)'
                          ' VALUES (?, ?, ?, ?, NULL)',
-                         (hashlib.sha256(token.encode('utf-8')).hexdigest(), resolved, now + 900, now))
+                         (hashlib.sha256(token.encode('utf-8')).hexdigest(), resolved, now + EMAIL_TOKEN_TTL_SECONDS, now))
             conn.commit()
             try:
                 send_recovery_email(resolved_email, resolved, token)
@@ -2724,11 +2713,30 @@ def api_recovery_email_complete():
                  (new_salt_auth, new_auth, new_hash2, username))
     conn.execute('UPDATE email_recovery SET used_at = ? WHERE token_hash = ?', (int(time.time()), thash))
     conn.execute('DELETE FROM sessions WHERE username = ?', (username,))
+    # Fresh start after a lost-password reset: MFA would otherwise lock the
+    # user out with the device they just lost. Passkeys stay (they need no
+    # secret the user can lose the same way — each is a separate device).
+    conn.execute('DELETE FROM mfa_totp WHERE username = ?', (username,))
     conn.execute('DELETE FROM mfa_challenges WHERE username = ?', (username,))
     conn.execute('DELETE FROM passkey_challenges WHERE username = ?', (username,))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
+
+
+@app.route('/api/recovery/account/count', methods=['GET'])
+def api_recovery_account_count():
+    """How many unused password-recovery wraps exist (count only — plaintext
+    codes are never re-fetchable by design)."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    n = conn.execute('SELECT COUNT(*) AS n FROM account_recovery'
+                     ' WHERE username = ? AND used_at IS NULL',
+                     (user['username'],)).fetchone()['n']
+    conn.close()
+    return jsonify({'count': int(n or 0)})
 
 
 @app.route('/api/recovery/account/generate', methods=['POST'])
@@ -2896,6 +2904,8 @@ def api_recovery_account_reset():
                   json.dumps(ARGON2_DESCRIPTOR), new_hash2, username))
     conn.execute('UPDATE account_recovery SET used_at = ? WHERE code_hash = ?', (int(time.time()), code_hash))
     conn.execute('DELETE FROM sessions WHERE username = ?', (username,))
+    # Same as email reset: a recovered account must not stay MFA-locked.
+    conn.execute('DELETE FROM mfa_totp WHERE username = ?', (username,))
     conn.execute('DELETE FROM mfa_challenges WHERE username = ?', (username,))
     conn.execute('DELETE FROM passkey_challenges WHERE username = ?', (username,))
     conn.commit()
@@ -2942,8 +2952,6 @@ if __name__ == '__main__':
     except Exception:
         pass
     port = int(os.environ.get('PORT', '5000'))
-    host = os.environ.get('HOST', os.environ.get('NOTELY_HOST', '127.0.0.1'))
     print('NOTELY: production use requires HTTPS reverse proxy + NOTELY_COOKIE_SECURE=1 '
           '(default Secure ON) + gunicorn (Werkzeug dev server is single-process).', flush=True)
-    print(f'NOTELY: listening on {host}:{port} (LAN test: HOST=0.0.0.0 NOTELY_COOKIE_SECURE=0).', flush=True)
-    app.run(host=host, port=port, threaded=True)
+    app.run(host='127.0.0.1', port=port, threaded=True)

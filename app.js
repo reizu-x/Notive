@@ -22,7 +22,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev13') {
+  if (build !== 'dev14') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -311,6 +311,18 @@ function migrateNote(note) {
   } else if ('deletedAt' in migrated) delete migrated.deletedAt;
   if (typeof migrated.favorite !== 'boolean') migrated.favorite = false;
   if (typeof migrated.date !== 'string') migrated.date = 'Now';
+  // Template markers: preserved only when 'recipe' or 'todo'. The recipe
+  // marker also carries an optional description (fixed hero under the meta
+  // row, max 2000 chars). Anything else is dropped so the envelope stays clean.
+  if (migrated.template === 'recipe' || migrated.template === 'todo') {
+    if (migrated.template === 'recipe') {
+      if (typeof migrated.description === 'string') migrated.description = migrated.description.slice(0, 2000);
+      else if ('description' in migrated) delete migrated.description;
+    } else if ('description' in migrated) delete migrated.description;
+  } else {
+    if ('template' in migrated) delete migrated.template;
+    if ('description' in migrated) delete migrated.description;
+  }
   // Built-in Collections/Recipes removed: drop legacy fields (migrated above into custom sections).
   if ('collection' in migrated) delete migrated.collection;
   if ('recipe' in migrated) delete migrated.recipe;
@@ -575,10 +587,10 @@ function refreshEditorLock() {
   markdownInput.disabled = readOnly;
   const newNoteBtn = document.getElementById('new-note');
   const importBtn = document.getElementById('import-notes');
-  if (newNoteBtn) newNoteBtn.hidden = locked || activeView === 'bin';
-  if (importBtn) importBtn.hidden = locked || activeView === 'bin';
+  if (newNoteBtn) newNoteBtn.hidden = locked || activeView === 'bin' || activeView === 'vault';
+  if (importBtn) importBtn.hidden = locked || activeView === 'bin' || activeView === 'vault';
   const coverAddBtn = document.getElementById('cover-add');
-  if (coverAddBtn) setCoverAddHidden(readOnly || activeView === 'vault' || !note || Boolean(note.cover));
+  if (coverAddBtn) setCoverAddHidden(readOnly || activeView === 'vault' || !note || Boolean(note.cover) || note.template === 'recipe');
   const coverChangeBtn = document.getElementById('cover-change');
   if (coverChangeBtn) coverChangeBtn.disabled = readOnly;
   const coverRemoveBtn = document.getElementById('cover-remove');
@@ -587,6 +599,10 @@ function refreshEditorLock() {
   if (coverReposBtn) coverReposBtn.disabled = readOnly;
   const coverDoneBtn = document.getElementById('cover-done');
   if (coverDoneBtn) coverDoneBtn.disabled = readOnly;
+  const recipeDesc = document.getElementById('recipe-desc');
+  if (recipeDesc) recipeDesc.disabled = readOnly;
+  const recipePhotoBtn = document.getElementById('recipe-photo-btn');
+  if (recipePhotoBtn) recipePhotoBtn.disabled = readOnly;
 }
 
 // Debounced encrypted upload of the workspace (notes + vault ciphertext +
@@ -600,7 +616,7 @@ async function syncNotesToServer() {
     return;
   }
   try {
-    const envelope = { v: 2, notes, vault: await currentVaultBlobs() };
+    const envelope = { v: 2, notes, vault: await currentVaultBlobs(), vaultFolders: [...vault.folders] };
     try {
       if (typeof uiSnapshot === 'function') envelope.ui = uiSnapshot();
     } catch (error) {}
@@ -655,6 +671,9 @@ async function loadNotesFromServer() {
         ? envelope.vault.filter(validVaultBlob).slice(0, 2000)
         : [];
       vault.blobs = incomingBlobs;
+      try {
+        vault.folders = (!Array.isArray(envelope) && envelope) ? cleanVaultFolders(envelope.vaultFolders) : [];
+      } catch (error) { vault.folders = []; }
       if (vault.unlocked) {
         try { vault.notes = await decryptAllVaultBlobs(); }
         catch (error) { vault.notes = []; }
@@ -675,11 +694,13 @@ async function loadNotesFromServer() {
       // debounced save re-uploads it encrypted.
       notes = data.notes.map(migrateNote).slice(0, 2000);
       vault.blobs = [];
+      vault.folders = [];
       await syncNotesToServer();
     } else {
       const legacy = readLegacyLocalNotes();
       notes = (legacy && legacy.length ? legacy : starterNotes.map(migrateNote)).slice(0, 2000);
       vault.blobs = [];
+      vault.folders = [];
       await syncNotesToServer();
       wipeLegacyLocalNotes();
     }
@@ -737,7 +758,7 @@ function uiSnapshot() {
   try {
     const current = document.documentElement.dataset.theme
       || localStorage.getItem('notely-theme') || 'light';
-    if (['light', 'dark', 'dracula'].includes(current)) theme = current;
+    if (THEMES.includes(current)) theme = current;
   } catch (error) {}
   return {
     collapsed: [...collapsedFolders],
@@ -783,7 +804,7 @@ function cleanUiSnapshot(value) {
     })).slice(0, 20);
     if (cleanSections.length) out.deletedCustomSections = cleanSections;
   }
-  if (typeof value.theme === 'string' && ['light', 'dark', 'dracula'].includes(value.theme)) {
+  if (typeof value.theme === 'string' && THEMES.includes(value.theme)) {
     out.theme = value.theme;
   }
   if (out.collapsed === null
@@ -819,7 +840,7 @@ async function writeUiVaultLocal() {
   try {
     const current = document.documentElement.dataset.theme
       || localStorage.getItem('notely-theme') || 'light';
-    if (['light', 'dark', 'dracula'].includes(current)) theme = current;
+    if (THEMES.includes(current)) theme = current;
   } catch (error) {}
   const snapshot = JSON.stringify({
     collapsed: [...collapsedFolders],
@@ -1156,6 +1177,16 @@ function bindSectionHeaderEvents() {
     event.preventDefault();
     if (section.dataset.customSection) startSectionRename({ kind: 'custom', id: section.dataset.customSection });
   });
+  // Collapsed slide menu shows section initials: clicking one opens the
+  // section in the workspace (empty sections stay put, like labels).
+  sidebar.addEventListener('click', (event) => {
+    const initial = event.target.closest('.section-initial');
+    if (!initial) return;
+    const section = initial.closest('.sidebar-section');
+    if (!section || !section.dataset.customSection) return;
+    event.preventDefault();
+    if (!isSectionEmpty('custom', section.dataset.customSection)) selectCustomSection(section.dataset.customSection);
+  });
 }
 
 // Render user-built sections: header (editable name, add/delete) + folders.
@@ -1167,10 +1198,6 @@ function renderCustomSections() {
       <div class="section-label">
         <span class="section-initial" title="${escapeHtml(section.name)}" aria-hidden="true">${escapeHtml(section.name.charAt(0).toUpperCase() || '?')}</span>
         <span class="section-label-text" data-section-name="${escapeHtml(section.id)}">${escapeHtml(section.name)}</span>
-        <span class="section-actions">
-          <button class="text-icon-button" data-custom-add="${escapeHtml(section.id)}" aria-label="Add folder" title="Add folder">+</button>
-          <button class="section-delete" data-custom-del-section="${escapeHtml(section.id)}" aria-label="Delete section" title="Delete section">×</button>
-        </span>
       </div>
       <div class="collection-list">
         ${section.folders.map((name) => `
@@ -1257,7 +1284,45 @@ function addCustomSection() {
 }
 
 // Inline rename for a section header (built-in or custom); Enter commits.
-function startSectionRename(target) {
+function startSectionRename(target, anchorEl) {
+  // Workspace-anchored rename (pencil/dblclick in the note list): edit inline
+  // in the list header where clicked — never in the slide menu.
+  if (anchorEl && anchorEl.isConnected && anchorEl.closest('#note-list')) {
+    const head = anchorEl.closest('.list-section-head');
+    if (head && !head.querySelector('.section-rename-input')) {
+      const section = customSections.find((entry) => entry.id === target.id);
+      const input = document.createElement('input');
+      input.className = 'section-rename-input';
+      input.value = (section || {}).name || '';
+      input.maxLength = 40;
+      input.setAttribute('aria-label', 'Section name');
+      anchorEl.hidden = true;
+      anchorEl.after(input);
+      input.focus();
+      input.select();
+      let done = false;
+      const finish = (commit) => {
+        if (done) return;
+        done = true;
+        input.remove();
+        anchorEl.hidden = false;
+        if (commit) renameSectionDisplay(target.id, input.value);
+        else renderNoteList();
+      };
+      input.onkeydown = (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+        if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+        event.stopPropagation();
+      };
+      input.onclick = (event) => event.stopPropagation();
+      input.onblur = () => finish(true);
+      return;
+    }
+    if (head) {
+      const pending = head.querySelector('.section-rename-input');
+      if (pending) { pending.focus(); pending.select(); return; }
+    }
+  }
   renderCustomSections();
   let label = null;
   if (target.kind === 'custom') {
@@ -1389,6 +1454,32 @@ function addCustomFolder(sectionId) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
   const section = customSections.find((entry) => entry.id === sectionId);
   if (!section) return;
+  if (slideMenuCollapsed()) {
+    // Inline naming lives in the slide menu and is hidden while collapsed.
+    askInput({ eyebrow: 'New folder', title: 'Name the folder', desc: `In ${section.name}`, label: 'Folder name', password: false, placeholder: 'e.g. Projects', okText: 'Create' }).then((value) => {
+      if (value == null) return;
+      const leaf = String(value).trim().slice(0, 60);
+      if (!leaf) { showToast('Give the folder a name'); return; }
+      if (/[/\\]/.test(leaf)) { showToast('Use a plain name without slashes'); return; }
+      if (section.folders.some((entry) => entry.toLowerCase() === leaf.toLowerCase())) {
+        showToast('A folder with that name already exists');
+        return;
+      }
+      section.folders.push(leaf);
+      persistCustomSections();
+      activeView = 'notes';
+      activeCustom = null;
+      activeFilter = 'all';
+      document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+      document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
+      clearSearch();
+      updateListHeading();
+      renderCustomSections();
+      renderNoteList();
+      showToast('Folder added');
+    });
+    return;
+  }
   const name = uniqueCustomFolderName(sectionId, 'New folder');
   section.folders.push(name);
   persistCustomSections();
@@ -1399,6 +1490,44 @@ function addCustomFolder(sectionId) {
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   clearSearch();
   updateListHeading();
+  renderCustomSections();
+  renderNoteList();
+  showToast('Folder added — name it');
+  startCustomFolderRename(sectionId, name);
+}
+
+// Add a folder to one section from its All-Notes header (folder-plus beside
+// the edit pencil). Keeps the current view. When the slide menu is collapsed
+// the inline rename row is hidden, so the name is asked in a popup instead.
+function addFolderToSection(sectionId) {
+  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
+  const section = customSections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  let slideCollapsed = false;
+  try { slideCollapsed = document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) {}
+  const commit = (leaf) => {
+    const clean = String(leaf == null ? '' : leaf).trim().slice(0, 60);
+    if (!clean) { showToast('Give the folder a name'); return; }
+    if (/[/\\]/.test(clean)) { showToast('Use a plain name without slashes'); return; }
+    if (section.folders.some((entry) => entry.toLowerCase() === clean.toLowerCase())) {
+      showToast('A folder with that name already exists');
+      return;
+    }
+    section.folders.push(clean);
+    persistCustomSections();
+    renderCustomSections();
+    renderNoteList();
+    showToast('Folder added');
+  };
+  if (slideCollapsed) {
+    askInput({ eyebrow: 'New folder', title: 'Name the folder', desc: `In ${section.name}`, label: 'Folder name', password: false, placeholder: 'e.g. Projects', okText: 'Create' }).then((value) => {
+      if (value != null) commit(value);
+    });
+    return;
+  }
+  const name = uniqueCustomFolderName(sectionId, 'New folder');
+  section.folders.push(name);
+  persistCustomSections();
   renderCustomSections();
   renderNoteList();
   showToast('Folder added — name it');
@@ -1623,10 +1752,20 @@ function bindCustomSectionsEvents() {
       }
     });
     container.addEventListener('contextmenu', (event) => {
+      const head = event.target.closest('.section-label');
+      const headWrap = event.target.closest('[data-custom-section]');
+      if (head && headWrap && !event.target.closest('input')) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeFolderContextMenu();
+        openSectionContextMenu(headWrap.dataset.customSection, event.clientX, event.clientY);
+        return;
+      }
       const item = event.target.closest('.collection-item');
       if (!item || !item.dataset.cfolder || event.target.closest('.collection-rename-input')) return;
       event.preventDefault();
       event.stopPropagation();
+      closeSectionContextMenu();
       openFolderContextMenu('custom', item.dataset.cfolder, event.clientX, event.clientY, item.dataset.csection);
     });
   }
@@ -1661,6 +1800,74 @@ function openCustomSectionDeleteConfirm(id) {
 }
 
 // Clicking a section header filters the list to every folder under it.
+// ---- Section context menu (right-click on a slide-menu section header):
+// New folder / Rename section / Delete section. Replaces the old header +
+// and × buttons. Rename/add fall back to popups while the slide menu is
+// collapsed, where the inline rows are hidden.
+let sectionMenuTarget = null; // section id
+
+function closeSectionContextMenu() {
+  const menu = document.getElementById('section-context-menu');
+  if (menu) menu.hidden = true;
+  sectionMenuTarget = null;
+}
+
+function openSectionContextMenu(sectionId, x, y) {
+  const menu = document.getElementById('section-context-menu');
+  if (!menu || !sectionId) return;
+  if (!customSections.some((entry) => entry.id === sectionId)) return;
+  sectionMenuTarget = sectionId;
+  menu.hidden = false;
+  const padding = 8;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth - padding) menu.style.left = `${Math.max(padding, x - rect.width)}px`;
+  if (rect.bottom > window.innerHeight - padding) menu.style.top = `${Math.max(padding, y - rect.height)}px`;
+}
+
+function slideMenuCollapsed() {
+  try { return document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) { return false; }
+}
+
+function handleSectionMenuAction(action, sectionId) {
+  if (!sectionId || typeof action !== 'string') return;
+  const section = customSections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  if (action === 'add') {
+    addCustomFolder(sectionId);
+  } else if (action === 'rename') {
+    if (slideMenuCollapsed()) {
+      askInput({ eyebrow: 'Rename section', title: section.name, desc: '', label: 'Section name', password: false, placeholder: section.name, okText: 'Rename' }).then((value) => {
+        if (value == null) return;
+        renameSectionDisplay(sectionId, value);
+      });
+    } else {
+      startSectionRename({ kind: 'custom', id: sectionId });
+    }
+  } else if (action === 'delete') {
+    openCustomSectionDeleteConfirm(sectionId);
+  }
+}
+
+function bindSectionContextMenu() {
+  const menu = document.getElementById('section-context-menu');
+  if (menu) menu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-section-action]');
+    if (!item) return;
+    const target = sectionMenuTarget;
+    closeSectionContextMenu();
+    handleSectionMenuAction(item.dataset.sectionAction, target);
+  });
+  document.addEventListener('click', (event) => {
+    if (sectionMenuTarget && !event.target.closest('#section-context-menu')) closeSectionContextMenu();
+  });
+  document.addEventListener('contextmenu', (event) => {
+    if (sectionMenuTarget && !event.target.closest('#section-context-menu')) closeSectionContextMenu();
+  });
+  window.addEventListener('resize', closeSectionContextMenu);
+}
+
 // ---- Folder context menu (right-click): Open / Rename / New subfolder /
 // Delete. One shared menu for sidebar rows and All-Notes folder headers;
 // the target carries its section so folders stay separate.
@@ -1682,7 +1889,7 @@ function openFolderContextMenu(ns, path, x, y, sectionId) {
   folderMenuTarget = { ns: 'custom', path, section: sectionId };
   menu.querySelectorAll('[data-folder-action]').forEach((btn) => {
     const actionName = btn.dataset.folderAction;
-    btn.hidden = actionName === 'restore';
+    btn.hidden = actionName === 'restore' || (actionName === 'new-note' && activeView === 'bin');
   });
   const deleteLabel = document.getElementById('folder-delete-label');
   if (deleteLabel) deleteLabel.textContent = 'Delete';
@@ -1701,6 +1908,11 @@ function handleFolderMenuAction(action, target) {
   const { path, section: sectionId } = resolved;
   if (action === 'open') {
     selectCustomFolder(sectionId, path);
+  } else if (action === 'new-note') {
+    // File the new note straight into the right-clicked folder.
+    pendingSectionFolder = { ns: 'custom', section: sectionId, folder: path };
+    pendingTemplate = null;
+    openTemplatePicker();
   } else if (action === 'rename') {
     startCustomFolderRename(sectionId, path);
   } else if (action === 'subfolder') {
@@ -1735,6 +1947,31 @@ function insertFolderAfterParent(list, parentPath, newPath) {
 // it. Without a parent, a top-level folder is created.
 function createSubfolder(ns, parentPath, sectionId) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
+  let slideCollapsed = false;
+  try { slideCollapsed = document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) {}
+  if (slideCollapsed) {
+    // The inline rename row lives in the slide menu and is hidden while it
+    // is collapsed: ask for the name in a popup instead.
+    askInput({ eyebrow: 'New subfolder', title: 'Name the subfolder', desc: `Under ${parentPath}`, label: 'Subfolder name', password: false, placeholder: 'e.g. Projects', okText: 'Create' }).then((value) => {
+      if (value == null) return;
+      const leaf = String(value).trim().slice(0, 60);
+      if (!leaf) { showToast('Give the subfolder a name'); return; }
+      if (/[/\\]/.test(leaf)) { showToast('Use a plain name without slashes'); return; }
+      const section = customSections.find((entry) => entry.id === sectionId);
+      if (!section) return;
+      const name = `${parentPath}${FOLDER_SEP}${leaf}`;
+      if (section.folders.some((entry) => entry.toLowerCase() === name.toLowerCase())) {
+        showToast('A folder with that name already exists');
+        return;
+      }
+      insertFolderAfterParent(section.folders, parentPath, name);
+      persistCustomSections();
+      renderCustomSections();
+      renderNoteList();
+      showToast('Subfolder created');
+    });
+    return;
+  }
   if (true) {
     const section = customSections.find((entry) => entry.id === sectionId);
     if (!section) return;
@@ -1753,6 +1990,8 @@ function bindFolderContextMenu() {
   const menu = getFolderContextMenu();
   if (!menu) return;
   if (noteList) noteList.addEventListener('contextmenu', (event) => {
+    // The Vault header is not a workspace folder: no folder menu there.
+    if (activeView === 'vault') return;
     const row = event.target.closest('.tree-folder-row');
     if (!row || event.target.closest('.tree-rename-input')) return;
     const wrap = row.closest('[data-folder-wrap]');
@@ -2214,7 +2453,16 @@ function updateListHeading() {
   else if (activeView === 'archive') listHeading.textContent = `Archive${suffix}`;
   else if (activeView === 'favorites') listHeading.textContent = 'Starred notes';
   else if (activeCustom) listHeading.textContent = `${activeCustom.folder ? folderLeaf(activeCustom.folder) : sectionDisplayName('custom', activeCustom.section)}${suffix}`;
-  else listHeading.textContent = activeFilter === 'favorites' ? 'Starred notes' : activeFilter === 'recent' ? 'Recent notes' : 'All notes';
+  else listHeading.textContent = activeFilter === 'favorites' ? 'Starred notes' : activeFilter === 'recent' ? 'Recent notes' : 'All Notes';
+  // Collapsed-strip name mirrors the heading (dev), rendered vertically.
+  try {
+    const viewIcon = document.getElementById('workspace-view-icon');
+    if (viewIcon) {
+      const name = listHeading.textContent || '';
+      viewIcon.textContent = name.trim() || '?';
+      viewIcon.title = listHeading.textContent;
+    }
+  } catch (error) {}
 }
 
 // Clear the search box and its in-memory query.
@@ -2224,6 +2472,278 @@ function clearSearch() {
   if (searchInput) searchInput.value = '';
 }
 
+// ---- Open-note tabs (dev): many notes open at once, replacing breadcrumbs ----
+let openTabs = []; // [{ id, vault }] in opening order, capped
+const MAX_OPEN_TABS = 20;
+// List glyph shared by the note list and the tab strip.
+function noteGlyphFor(note) {
+  if (note && note.template === 'recipe') return 'cooking';
+  if (note && note.template === 'todo') return 'check-square';
+  return note && note.ext === 'md' ? 'file' : 'file-text';
+}
+function findTabbedNote(id, isVault) {
+  if (isVault) return vault.unlocked ? vault.notes.find((entry) => entry.id === id) || null : null;
+  return notes.find((entry) => entry.id === id) || null;
+}
+// Remember an opened note; selecting a tab never moves it — order is fixed
+// by opening time. Evict oldest non-active past the cap.
+function trackTab(id, isVault) {
+  if (!isValidNoteId(id)) return;
+  const wasVault = Boolean(isVault);
+  if (!openTabs.some((tab) => tab.id === id && tab.vault === wasVault)) {
+    openTabs.push({ id, vault: wasVault });
+  }
+  while (openTabs.length > MAX_OPEN_TABS) {
+    const dropAt = openTabs.findIndex((tab) => !(tab.id === currentId && !tab.vault)
+      && !(tab.id === currentVaultId && tab.vault));
+    openTabs.splice(dropAt === -1 ? 0 : dropAt, 1);
+  }
+}
+// Close one tab; when it was active, fall back to the nearest surviving
+// neighbor (next, then previous, then outward) so selection stays put.
+function closeTab(id, isVault) {
+  const wasVault = Boolean(isVault);
+  const wasActive = (!wasVault && id === currentId) || (wasVault && id === currentVaultId);
+  const closedAt = openTabs.findIndex((tab) => tab.id === id && tab.vault === wasVault);
+  openTabs = openTabs.filter((tab) => !(tab.id === id && tab.vault === wasVault));
+  if (wasActive) {
+    const order = [];
+    const at = closedAt === -1 ? openTabs.length : closedAt;
+    if (at < openTabs.length) order.push(at);
+    for (let d = 1; d < openTabs.length; d += 1) {
+      if (at - d >= 0) order.push(at - d);
+      if (at + d < openTabs.length) order.push(at + d);
+    }
+    for (const i of order) {
+      if (findTabbedNote(openTabs[i].id, openTabs[i].vault)) {
+        if (openTabs[i].vault) selectVaultNote(openTabs[i].id);
+        else selectNote(openTabs[i].id);
+        renderTabs();
+        return;
+      }
+    }
+    currentId = null;
+    currentVaultId = null;
+    clearEditor();
+  }
+  renderTabs();
+}
+// Paint the strip; drop tabs whose notes are gone (purged, vault locked) or
+// binned — a deleted note leaves the tabs at once.
+function renderTabs() {
+  const bar = document.getElementById('tab-bar');
+  if (!bar) return;
+  openTabs = openTabs.filter((tab) => {
+    const note = findTabbedNote(tab.id, tab.vault);
+    return note && !note.deleted;
+  });
+  // No tabs, no collapse toggle.
+  try {
+    const collapseBtn = document.getElementById('toggle-workspace');
+    if (collapseBtn) collapseBtn.hidden = openTabs.length === 0;
+  } catch (error) {}
+  const activeAlive = (currentId && notes.some((entry) => entry.id === currentId))
+    || (currentVaultId && vault.unlocked && vault.notes.some((entry) => entry.id === currentVaultId));
+  if ((currentId || currentVaultId) && !activeAlive) {
+    const fallback = [...openTabs].reverse().find((tab) => findTabbedNote(tab.id, tab.vault));
+    if (fallback) {
+      if (fallback.vault) selectVaultNote(fallback.id);
+      else selectNote(fallback.id);
+      return; // selecting re-renders the strip
+    }
+    currentId = null;
+    currentVaultId = null;
+    clearEditor();
+    return; // clearing re-renders the strip
+  }
+  bar.innerHTML = `<button type="button" class="tab-home" data-tab-home title="All Notes" aria-label="All Notes">${icon('inbox')}</button>`
+    + openTabs.map((tab) => {
+      const note = findTabbedNote(tab.id, tab.vault);
+      const title = (note && note.title) || 'Untitled note';
+      const active = (!tab.vault && tab.id === currentId) || (tab.vault && tab.id === currentVaultId);
+      return `<button type="button" class="tab-item${active ? ' active' : ''}" data-tab-id="${escapeHtml(tab.id)}" data-tab-vault="${tab.vault ? '1' : ''}" title="${escapeHtml(title)}">`
+        + `<span class="tab-glyph">${icon(noteGlyphFor(note))}</span>`
+        + `<span class="tab-label">${escapeHtml(title)}</span>`
+        + `<span class="tab-close" data-tab-close="${escapeHtml(tab.id)}" data-tab-close-vault="${tab.vault ? '1' : ''}" role="button" aria-label="Close ${escapeHtml(title)}">×</span>`
+        + `</button>`;
+    }).join('')
+    + `<button type="button" class="tab-overflow" data-tab-overflow title="More tabs" aria-label="More tabs" hidden><span data-overflow-count></span>${icon('chevron-down')}</button>`;
+  fitTabStrip(bar);
+}
+// Overflowed tabs (id/vault/title) from the last fit; powers the dropdown.
+let lastOverflowTabs = [];
+let tabOverflowOpen = false;
+function closeTabOverflow() {
+  tabOverflowOpen = false;
+  const menu = document.getElementById('tab-overflow-menu');
+  if (menu) menu.hidden = true;
+}
+// Hide whatever does not fit; the active tab always stays, earliest others
+// fill the rest, and the remainder goes to the dropdown button. No scrollbar.
+function fitTabStrip(bar) {
+  const btn = bar.querySelector('[data-tab-overflow]');
+  const tabs = [...bar.querySelectorAll('[data-tab-id]')];
+  if (!btn || !bar.clientWidth) {
+    if (btn) btn.hidden = true;
+    lastOverflowTabs = [];
+    closeTabOverflow();
+    return;
+  }
+  const gap = 6;
+  const home = bar.querySelector('[data-tab-home]');
+  const homeW = home ? home.offsetWidth : 0;
+  const widths = new Map(tabs.map((tab) => [tab, tab.offsetWidth]));
+  const totalTabs = tabs.reduce((sum, tab) => sum + widths.get(tab) + gap, 0);
+  if (homeW + gap + totalTabs <= bar.clientWidth) {
+    btn.hidden = true;
+    tabs.forEach((tab) => { tab.hidden = false; });
+    lastOverflowTabs = [];
+    closeTabOverflow();
+    return;
+  }
+  btn.hidden = false;
+  const btnW = btn.offsetWidth;
+  const activeEl = bar.querySelector('.tab-item.active');
+  const visible = new Set();
+  let used = homeW + gap + btnW + gap;
+  if (activeEl) { visible.add(activeEl); used += widths.get(activeEl) + gap; }
+  for (const tab of tabs) {
+    if (visible.has(tab)) continue;
+    if (used + widths.get(tab) <= bar.clientWidth) { visible.add(tab); used += widths.get(tab) + gap; }
+  }
+  const hidden = [];
+  tabs.forEach((tab) => {
+    const hide = !visible.has(tab);
+    tab.hidden = hide;
+    if (hide) hidden.push({ id: tab.dataset.tabId, vault: tab.dataset.tabVault === '1', title: tab.title });
+  });
+  lastOverflowTabs = hidden;
+  const countEl = btn.querySelector('[data-overflow-count]');
+  if (countEl) countEl.textContent = hidden.length ? `+${hidden.length}` : '';
+  btn.setAttribute('aria-label', `${hidden.length} more tabs`);
+  if (!hidden.length) { closeTabOverflow(); return; }
+  if (tabOverflowOpen) { paintTabOverflow(); placeTabOverflow(); }
+}
+function paintTabOverflow() {
+  const menu = document.getElementById('tab-overflow-menu');
+  if (!menu) return;
+  menu.innerHTML = lastOverflowTabs.map((tab) => {
+    const note = findTabbedNote(tab.id, tab.vault);
+    const title = (note && note.title) || tab.title || 'Untitled note';
+    return `<button type="button" class="context-item" data-otab-id="${escapeHtml(tab.id)}" data-otab-vault="${tab.vault ? '1' : ''}" title="${escapeHtml(title)}">`
+      + `<span class="tab-glyph">${icon(noteGlyphFor(note))}</span>`
+      + `<span class="tab-label">${escapeHtml(title)}</span>`
+      + `<span class="tab-close" data-otab-close="${escapeHtml(tab.id)}" data-otab-close-vault="${tab.vault ? '1' : ''}" role="button" aria-label="Close ${escapeHtml(title)}">×</span>`
+      + `</button>`;
+  }).join('');
+}
+function placeTabOverflow() {
+  const menu = document.getElementById('tab-overflow-menu');
+  const bar = document.getElementById('tab-bar');
+  if (!menu || !bar) return;
+  const btn = bar.querySelector('[data-tab-overflow]');
+  if (!btn) return;
+  const rect = btn.getBoundingClientRect();
+  menu.style.top = `${rect.bottom + 6}px`;
+  menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+}
+function toggleTabOverflow() {
+  const menu = document.getElementById('tab-overflow-menu');
+  if (!menu) return;
+  if (tabOverflowOpen) { closeTabOverflow(); return; }
+  if (!lastOverflowTabs.length) return;
+  tabOverflowOpen = true;
+  paintTabOverflow();
+  menu.hidden = false;
+  placeTabOverflow();
+}
+const tabBarEl = document.getElementById('tab-bar');
+if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
+  const closer = event.target.closest('[data-tab-close]');
+  if (closer) {
+    event.stopPropagation();
+    closeTab(closer.dataset.tabClose, closer.dataset.tabCloseVault === '1');
+    return;
+  }
+  if (event.target.closest('[data-tab-overflow]')) { toggleTabOverflow(); return; }
+  if (event.target.closest('[data-tab-home]')) { goAllNotes(); return; }
+  const tab = event.target.closest('[data-tab-id]');
+  if (!tab) return;
+  if (tab.dataset.tabVault === '1') selectVaultNote(tab.dataset.tabId);
+  else selectNote(tab.dataset.tabId);
+});
+const tabOverflowMenuEl = document.getElementById('tab-overflow-menu');
+if (tabOverflowMenuEl) tabOverflowMenuEl.addEventListener('click', (event) => {
+  const closer = event.target.closest('[data-otab-close]');
+  if (closer) {
+    event.stopPropagation();
+    closeTab(closer.dataset.otabClose, closer.dataset.otabCloseVault === '1');
+    return;
+  }
+  const row = event.target.closest('[data-otab-id]');
+  if (!row) return;
+  if (row.dataset.otabVault === '1') selectVaultNote(row.dataset.otabId);
+  else selectNote(row.dataset.otabId);
+  closeTabOverflow();
+});
+document.addEventListener('click', (event) => {
+  if (tabOverflowOpen && !event.target.closest('#tab-overflow-menu') && !event.target.closest('[data-tab-overflow]')) closeTabOverflow();
+});
+window.addEventListener('resize', () => {
+  closeTabOverflow();
+  try { renderTabs(); } catch (error) {}
+});
+
+// Collapsed workspace strip: when inside a folder, show its notes plus its
+// immediate subfolders (gold folder glyph — distinct from note glyphs — so a
+// subfolder is never mistaken for a note; clicking one opens it).
+function renderStripItems() {
+  const box = document.getElementById('workspace-strip-items');
+  if (!box) return;
+  const section = activeCustom ? customSections.find((entry) => entry.id === activeCustom.section) : null;
+  const folder = activeCustom ? activeCustom.folder : null;
+  // Back button sits under the collapse toggle, over the folder name —
+  // visible only inside a subfolder.
+  const backBtn = document.getElementById('workspace-strip-back');
+  if (!section || !folder || activeView === 'vault') {
+    box.innerHTML = '';
+    if (backBtn) backBtn.hidden = true;
+    return;
+  }
+  const parent = folderParent(folder);
+  if (backBtn) {
+    if (parent) {
+      backBtn.hidden = false;
+      backBtn.dataset.stripSection = section.id;
+      backBtn.dataset.stripParent = parent;
+      backBtn.title = `${parent} — back to parent folder`;
+      backBtn.setAttribute('aria-label', `Back to ${folderLeaf(parent)}`);
+    } else backBtn.hidden = true;
+  }
+  const pool = visibleNotes().filter((note) => (activeView === 'bin' ? note.deleted : !note.deleted));
+  const direct = pool.filter((note) => customNoteFolder(note, section.id) === folder);
+  const subs = section.folders.filter((entry) => folderParent(entry) === folder
+    && pool.some((note) => {
+      const where = customNoteFolder(note, section.id);
+      return typeof where === 'string' && isFolderOrSub(where, entry);
+    }));
+  box.innerHTML = subs.map((entry) => `<button type="button" class="strip-btn is-sub" data-strip-section="${escapeHtml(section.id)}" data-strip-folder="${escapeHtml(entry)}" title="${escapeHtml(entry)} — open subfolder" aria-label="Open subfolder ${escapeHtml(folderLeaf(entry))}">${icon('folder')}</button>`).join('')
+    + direct.map((note) => `<button type="button" class="strip-btn${note.id === currentId ? ' is-note-active' : ''}" data-strip-note="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}" aria-label="Open ${escapeHtml(note.title || 'Untitled note')}">${icon(noteGlyphFor(note))}</button>`).join('');
+}
+const stripBoxEl = document.getElementById('workspace-strip-items');
+if (stripBoxEl) stripBoxEl.addEventListener('click', (event) => {
+  const sub = event.target.closest('[data-strip-folder]');
+  if (sub) { selectCustomFolder(sub.dataset.stripSection, sub.dataset.stripFolder); return; }
+  const item = event.target.closest('[data-strip-note]');
+  if (item) selectNote(item.dataset.stripNote);
+});
+const stripBackEl = document.getElementById('workspace-strip-back');
+if (stripBackEl) stripBackEl.addEventListener('click', () => {
+  if (stripBackEl.dataset.stripSection && stripBackEl.dataset.stripParent) {
+    selectCustomFolder(stripBackEl.dataset.stripSection, stripBackEl.dataset.stripParent);
+  }
+});
+
 // Rebuild the clickable breadcrumb trail: [view] [/ folder] / [note title].
 // The title element itself is persistent (editor writes to it directly); only
 // the trail prefix is re-rendered here.
@@ -2232,7 +2752,7 @@ function viewLabel(view) {
   if (view === 'archive') return 'Archive';
   if (view === 'bin') return 'Bin';
   if (view === 'vault') return 'Vault';
-  return 'All notes';
+  return 'All Notes';
 }
 
 function updateBreadcrumbs() {
@@ -2244,7 +2764,7 @@ function updateBreadcrumbs() {
   root.className = 'crumb-link';
   root.dataset.crumb = 'root';
   root.textContent = viewLabel(activeView);
-  root.title = 'Back to All notes';
+  root.title = 'Back to All Notes';
   trail.appendChild(root);
   const activeFolderPath = (activeCustom ? activeCustom.folder : null);
   const activeFolder = activeFolderPath
@@ -2384,6 +2904,8 @@ function renderPreview(note) {
   if (bottomHint) bottomHint.textContent = isMd ? 'Markdown · auto-preview after 10s idle' : `${plainLabel} file (.${note.ext})`;
   if (typeBadge) typeBadge.textContent = EXT_LABELS[note.ext] || 'MD';
   if (editorToolbar) editorToolbar.classList.toggle('is-plain', !isMd);
+  // Recipe notes get no formatting toolbar at all.
+  if (editorToolbar) editorToolbar.hidden = Boolean(note && note.template === 'recipe');
   if (!showPreview) autogrow();
 }
 
@@ -2413,9 +2935,12 @@ function renderCover(note) {
   const addBtn = document.getElementById('cover-add');
   if (!wrap || !img) return;
   const usable = note && activeView !== 'vault' ? cleanCoverSrc(note.cover) : null;
+  // Recipe notes show the photo in the fixed hero below the meta row instead
+  // of the banner above the title.
+  const bannerUsable = usable && !(note && note.template === 'recipe');
   const heading = document.querySelector('.editor-heading');
-  if (heading) heading.classList.toggle('has-cover', Boolean(usable));
-  if (usable) {
+  if (heading) heading.classList.toggle('has-cover', Boolean(bannerUsable));
+  if (bannerUsable) {
     if (img.getAttribute('src') !== usable) img.setAttribute('src', usable);
     img.style.objectPosition = `50% ${coverFocalPos(note)}%`;
     wrap.hidden = false;
@@ -2426,8 +2951,40 @@ function renderCover(note) {
     if (addBtn) {
       const editable = Boolean(note) && activeView !== 'vault' && isUnlocked()
         && !note.deleted && !note.archived;
-      setCoverAddHidden(!editable);
+      // Recipe notes add their photo from the fixed hero, never the banner row.
+      setCoverAddHidden(!editable || (note && note.template === 'recipe'));
     }
+  }
+  renderRecipeHero(note);
+}
+
+// Fixed recipe hero (meal photo + description) between the meta row and the
+// writing area. Editor chrome, not body text, so it cannot be deleted. The
+// photo reuses the note cover (same picker, validation and E2EE storage);
+// the src is re-validated on every render and assigned as a property.
+function renderRecipeHero(note) {
+  const hero = document.getElementById('recipe-hero');
+  if (!hero) return;
+  const show = Boolean(note && note.template === 'recipe' && activeView !== 'vault');
+  hero.hidden = !show;
+  if (!show) return;
+  const usable = cleanCoverSrc(note.cover);
+  const img = document.getElementById('recipe-photo-img');
+  const empty = document.getElementById('recipe-photo-empty');
+  if (img) {
+    if (usable) {
+      if (img.getAttribute('src') !== usable) img.setAttribute('src', usable);
+      img.hidden = false;
+    } else {
+      img.removeAttribute('src');
+      img.hidden = true;
+    }
+  }
+  if (empty) empty.hidden = Boolean(usable);
+  const descEl = document.getElementById('recipe-desc');
+  if (descEl) {
+    const next = typeof note.description === 'string' ? note.description : '';
+    if (document.activeElement !== descEl && descEl.value !== next) descEl.value = next;
   }
 }
 
@@ -2755,6 +3312,37 @@ function dropNoteOnFolder(draggedId, folder, sectionId) {
   renderNoteList();
 }
 
+// True when a drag event carries a Notely folder (slide-menu/workspace shared
+// payload), as opposed to a note drag (text/plain) or a file hover.
+function isFolderDrag(event) {
+  try {
+    const types = event.dataTransfer ? Array.from(event.dataTransfer.types || []) : [];
+    return types.includes('application/x-notely-folder');
+  } catch (error) { return false; }
+}
+
+// Resolve a workspace folder header to its section (same precedence as the
+// folder context menu: active custom filter, then the list-section shell,
+// then the folder owner).
+function resolveListFolderTarget(header) {
+  if (!header || !header.dataset.folder) return null;
+  const wrap = header.closest('[data-folder-wrap]');
+  const shell = header.closest('[data-list-section]');
+  const shellKind = shell ? shell.dataset.listSection : null;
+  let sectionId = activeCustom ? activeCustom.section : null;
+  if (shellKind === 'custom') {
+    const secBtn = shell.querySelector('[data-section-id]');
+    if (secBtn && secBtn.dataset.sectionId) sectionId = secBtn.dataset.sectionId;
+  }
+  if (!sectionId && wrap) {
+    const folder = wrap.dataset.folderWrap;
+    const owner = customSections.find((section) => section.folders.some((entry) => entry === folder || isFolderOrSub(folder, entry) || isFolderOrSub(entry, folder)));
+    if (owner) sectionId = owner.id;
+  }
+  if (!sectionId) return null;
+  return { ns: 'custom', section: sectionId, path: header.dataset.folder };
+}
+
 function enableNoteDragDrop() {
   const canDrag = activeView !== 'bin' && activeView !== 'vault';
   const clearIndicators = () => {
@@ -2776,7 +3364,7 @@ function enableNoteDragDrop() {
       clearIndicators();
     });
     row.addEventListener('dragover', (event) => {
-      if (!event.dataTransfer) return;
+      if (!event.dataTransfer || isFolderDrag(event)) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
       const rect = row.getBoundingClientRect();
@@ -2786,6 +3374,7 @@ function enableNoteDragDrop() {
     });
     row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after'));
     row.addEventListener('drop', (event) => {
+      if (isFolderDrag(event)) return;
       event.preventDefault();
       const rect = row.getBoundingClientRect();
       dropNoteOnNote(event.dataTransfer.getData('text/plain'), id, (event.clientY - rect.top) > rect.height / 2);
@@ -2794,12 +3383,14 @@ function enableNoteDragDrop() {
   if (!canDrag) return;
   noteList.querySelectorAll('[data-folder]').forEach((header) => {
     header.addEventListener('dragover', (event) => {
+      if (isFolderDrag(event)) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
       header.classList.add('drop-target');
     });
     header.addEventListener('dragleave', () => header.classList.remove('drop-target'));
     header.addEventListener('drop', (event) => {
+      if (isFolderDrag(event)) return;
       event.preventDefault();
       const wrap = header.closest('[data-folder-wrap]');
       const shell = header.closest('[data-list-section]');
@@ -2818,11 +3409,116 @@ function enableNoteDragDrop() {
       dropNoteOnFolder(event.dataTransfer.getData('text/plain'), header.dataset.folder, sectionId);
     });
   });
+  // Folder headers drag to re-sort or nest (same payload and rules as the
+  // slide menu): top/bottom quarter reorders, middle nests inside.
+  noteList.querySelectorAll('[data-folder-wrap]').forEach((wrap) => {
+    const header = wrap.querySelector('[data-folder]');
+    if (!header) return;
+    header.draggable = true;
+    const rowEl = header.closest('.tree-folder-row') || header;
+    header.addEventListener('dragstart', (event) => {
+      const target = resolveListFolderTarget(header);
+      const fromList = target ? folderListOf(target.ns, target.section) : null;
+      // Intermediate headers are not real folders: they cannot be dragged.
+      if (!target || !fromList || !fromList.includes(target.path) || !e2ee.masterKey) { event.preventDefault(); return; }
+      event.dataTransfer.setData('application/x-notely-folder', JSON.stringify(target));
+      event.dataTransfer.effectAllowed = 'move';
+      header.classList.add('dragging');
+      closeFolderContextMenu();
+      closeNoteContextMenu();
+    });
+    header.addEventListener('dragend', () => {
+      header.classList.remove('dragging');
+      clearIndicators();
+    });
+    header.addEventListener('dragover', (event) => {
+      if (!isFolderDrag(event) || !e2ee.masterKey) return;
+      const rect = header.getBoundingClientRect();
+      const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'move';
+      clearIndicators();
+      if (ratio < 0.25) rowEl.classList.add('drop-before');
+      else if (ratio > 0.75) rowEl.classList.add('drop-after');
+      else rowEl.classList.add('drop-target');
+    });
+    header.addEventListener('dragleave', (event) => {
+      if (!header.contains(event.relatedTarget)) {
+        rowEl.classList.remove('drop-before', 'drop-after', 'drop-target');
+      }
+    });
+    header.addEventListener('drop', (event) => {
+      if (!isFolderDrag(event) || !e2ee.masterKey) return;
+      let dragged = null;
+      try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notely-folder')); } catch (error) { dragged = null; }
+      if (!dragged || !dragged.path) return;
+      const target = resolveListFolderTarget(header);
+      if (!target || target.ns !== dragged.ns || target.section !== dragged.section) return;
+      if (target.path === dragged.path) return;
+      if (isFolderOrSub(target.path, dragged.path)) {
+        event.preventDefault();
+        showToast("Can't move a folder into itself");
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = header.getBoundingClientRect();
+      const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
+      const list = folderListOf(dragged.ns, dragged.section);
+      if (!list) return;
+      // Intermediate headers are not real folders: order around their subtree
+      // instead (never nest into them).
+      let anchor = target.path;
+      let after = ratio > 0.75;
+      let nest = ratio >= 0.25 && ratio <= 0.75;
+      if (!list.includes(target.path)) {
+        const under = list.filter((entry) => isFolderOrSub(entry, target.path));
+        if (!under.length) return;
+        nest = false;
+        if (ratio < 0.5) { anchor = under[0]; after = false; }
+        else { anchor = under[under.length - 1]; after = true; }
+      }
+      if (anchor === dragged.path || isFolderOrSub(anchor, dragged.path)) return;
+      if (nest) {
+        // Nest inside the target folder.
+        const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, target.path);
+        if (!newPath) return;
+        const movedHome = newPath !== dragged.path;
+        const moved = folderListOf(dragged.ns, dragged.section).filter((entry) => isFolderOrSub(entry, newPath));
+        const rest = folderListOf(dragged.ns, dragged.section).filter((entry) => !isFolderOrSub(entry, newPath));
+        let index = rest.length;
+        for (let i = rest.length - 1; i >= 0; i -= 1) {
+          if (isFolderOrSub(rest[i], target.path)) { index = i + 1; break; }
+        }
+        const reordered = [...rest.slice(0, index), ...moved, ...rest.slice(index)];
+        const section = customSections.find((entry) => entry.id === dragged.section);
+        if (section) section.folders = reordered;
+        persistFolderList(dragged.ns);
+        renderCustomSections();
+        renderNoteList();
+        if (movedHome) showToast(`Moved to “${folderLeaf(target.path)}”`);
+      } else {
+        // Reorder around the anchor (reparenting across levels when needed).
+        const refParent = folderParent(anchor);
+        let movedRoot = dragged.path;
+        if ((refParent || null) !== (folderParent(dragged.path) || null)) {
+          const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, refParent);
+          if (!newPath) return;
+          movedRoot = newPath;
+        }
+        if (reorderFolderBlock(dragged.ns, dragged.section, movedRoot, anchor, after)) {
+          renderCustomSections();
+          renderNoteList();
+        }
+      }
+    });
+  });
 }
 
 // Render the grouped note tree: folder ordering, collapse, Bin actions vs rename pencil, scoped counters, and per-row event wiring.
 function renderNoteList() {
-  if (activeView === 'vault') { renderVaultList(); return; }
+  if (activeView === 'vault') { renderVaultList(); renderTabs(); renderStripItems(); return; }
   const visible = visibleNotes();
   const searching = searchQuery.trim() !== '';
   // Grouping follows the active folder namespace: custom-section paths when one
@@ -2841,9 +3537,10 @@ function renderNoteList() {
     groups.get(folder).push(note);
   });
   // One bare note row (same markup as folder-grouped rows, minus the folder).
+  // Glyphs come from noteGlyphFor (recipe pot, to-do checkbox).
   const renderBareNoteRow = (note) => `
         <button class="tree-file${note.id === currentId ? ' selected' : ''}" data-note-id="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}">
-          <span class="tree-file-icon tree-file-icon-${note.ext}">${icon(note.ext === 'md' ? 'file' : 'file-text')}</span>
+          <span class="tree-file-icon tree-file-icon-${note.ext}">${icon(noteGlyphFor(note))}</span>
           <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
           ${activeView === 'bin' ? `<span class="bin-meta">${binRemainingText(note)}</span>` : ''}
           ${note.favorite && activeView !== 'bin' ? `<span class="mini-star">${icon('star')}</span>` : ''}
@@ -2881,6 +3578,30 @@ function renderNoteList() {
   };
   const subtreeCount = (node) => node.files.length + node.children.reduce((sum, child) => sum + subtreeCount(child), 0);
   const byRecency = (a, b) => subtreeNewest(a) - subtreeNewest(b);
+  // Manual folder order wins over recency so drag-sorts stick: folders follow
+  // their section list order (same as the slide menu). Unknown paths (stale
+  // filings) and cross-section ties fall back to recency.
+  const manualPosition = (folder) => {
+    for (const section of customSections) {
+      const at = section.folders.indexOf(folder);
+      if (at !== -1) return { section: section.id, index: at };
+    }
+    for (const section of customSections) {
+      const under = section.folders.filter((entry) => isFolderOrSub(entry, folder));
+      if (under.length) {
+        let best = Infinity;
+        under.forEach((entry) => { best = Math.min(best, section.folders.indexOf(entry)); });
+        return { section: section.id, index: best };
+      }
+    }
+    return { section: '', index: Infinity };
+  };
+  const byManualOrder = (a, b) => {
+    const pa = manualPosition(a.fullPath);
+    const pb = manualPosition(b.fullPath);
+    if (pa.section && pa.section === pb.section && pa.index !== pb.index) return pa.index - pb.index;
+    return byRecency(a, b);
+  };
   const renderFolderNode = (node) => {
     const folder = node.fullPath;
     const files = node.files;
@@ -2888,7 +3609,7 @@ function renderNoteList() {
     const folderActions = activeView === 'bin'
       ? ''
       : `<button type="button" class="tree-rename" data-folder-rename="${escapeHtml(folder)}" title="Rename folder" aria-label="Rename ${escapeHtml(folder)}">${icon('pencil')}</button>`;
-    const childrenHtml = node.children.slice().sort(byRecency).map(renderFolderNode).join('');
+    const childrenHtml = node.children.slice().sort(byManualOrder).map(renderFolderNode).join('');
     return `
     <div class="tree-folder-wrap${isCollapsed ? ' closed' : ''}" data-folder-wrap="${escapeHtml(folder)}">
       <div class="tree-folder-row">
@@ -2905,7 +3626,7 @@ function renderNoteList() {
         ${childrenHtml}
         ${files.map((note) => `
         <button class="tree-file${note.id === currentId ? ' selected' : ''}" data-note-id="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}">
-          <span class="tree-file-icon tree-file-icon-${note.ext}">${icon(note.ext === 'md' ? 'file' : 'file-text')}</span>
+          <span class="tree-file-icon tree-file-icon-${note.ext}">${icon(noteGlyphFor(note))}</span>
           <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
           ${activeView === 'bin' ? `<span class="bin-meta">${binRemainingText(note)}</span>` : ''}
           ${note.favorite && activeView !== 'bin' ? `<span class="mini-star">${icon('star')}</span>` : ''}
@@ -2913,7 +3634,7 @@ function renderNoteList() {
       </div>
     </div>`;
   };
-  return buildFolderTree([...groupsMap.keys()]).sort(byRecency).map(renderFolderNode).join('');
+  return buildFolderTree([...groupsMap.keys()]).sort(byManualOrder).map(renderFolderNode).join('');
   };
   // One sidebar section as a list supergroup: clickable title (filters),
   // rename pencil, note count, then its folder tree.
@@ -2923,6 +3644,7 @@ function renderNoteList() {
       <div class="list-section-head">
         <button class="list-section-title" data-section-jump="${kind}" data-section-id="${escapeHtml(id || '')}" title="Show ${escapeHtml(title)}">${escapeHtml(title)}</button>
         <span class="tree-count">${total}</span>
+        ${activeView === 'bin' ? '' : `<button type="button" class="list-section-add" data-section-add="${escapeHtml(id || '')}" title="Add folder to ${escapeHtml(title)}" aria-label="Add folder to ${escapeHtml(title)}">${icon('folder-plus')}</button>`}
         <button type="button" class="list-section-rename" data-section-rename="${kind}" data-section-id="${escapeHtml(id || '')}" title="Rename section" aria-label="Rename ${escapeHtml(title)}">${icon('pencil')}</button>
       </div>
       ${renderFolderGroups(groupsMap)}
@@ -2939,6 +3661,9 @@ function renderNoteList() {
       : ((!activeCustom) ? customSections : []);
     customTargets.forEach((section) => {
       const sectionGroups = new Map();
+      // Seed every folder so newly added (still empty) folders show in the
+      // folder list instead of only folders that already hold notes.
+      section.folders.forEach((folder) => { if (!sectionGroups.has(folder)) sectionGroups.set(folder, []); });
       visible.forEach((note) => {
         const folder = customNoteFolder(note, section.id);
         if (!folder) return;
@@ -2983,12 +3708,23 @@ function renderNoteList() {
   updateBreadcrumbs();
   noteList.querySelectorAll('[data-note-id]').forEach((item) => item.addEventListener('click', () => selectNote(item.dataset.noteId)));
   enableNoteDragDrop();
-  noteList.querySelectorAll('[data-folder]').forEach((item) => item.addEventListener('click', () => {
+  noteList.querySelectorAll('[data-folder]').forEach((item) => item.addEventListener('click', (event) => {
     const folder = item.dataset.folder;
-    if (collapsedFolders.has(folder)) collapsedFolders.delete(folder);
-    else collapsedFolders.add(folder);
-    persistCollapsedFolders();
-    renderNoteList();
+    const toggleCollapse = () => {
+      if (collapsedFolders.has(folder)) collapsedFolders.delete(folder);
+      else collapsedFolders.add(folder);
+      persistCollapsedFolders();
+      renderNoteList();
+    };
+    // Chevron collapses; the rest of the header marks the folder so + New
+    // Note files into it. Bin and Vault keep collapse-only (never navigate away).
+    if (activeView === 'bin' || activeView === 'vault' || event.target.closest('.tree-chevron')) {
+      toggleCollapse();
+      return;
+    }
+    const target = resolveListFolderTarget(item);
+    if (!target) { toggleCollapse(); return; }
+    selectCustomFolder(target.section, target.path);
   }));
   noteList.querySelectorAll('[data-folder-rename]').forEach((item) => item.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -3008,18 +3744,24 @@ function renderNoteList() {
     const id = item.dataset.sectionId || null;
     if (kind === 'custom' && id) selectCustomSection(id);
   }));
-  const renameSectionFromList = (kind, id) => {
-    if (kind === 'custom' && id) startSectionRename({ kind: 'custom', id });
+  const renameSectionFromList = (kind, id, anchor) => {
+    if (kind === 'custom' && id) startSectionRename({ kind: 'custom', id }, anchor || null);
   };
   noteList.querySelectorAll('[data-section-rename]').forEach((item) => item.addEventListener('click', (event) => {
     event.stopPropagation();
-    renameSectionFromList(item.dataset.sectionRename, item.dataset.sectionId || null);
+    renameSectionFromList(item.dataset.sectionRename, item.dataset.sectionId || null, item.closest('.list-section-head') ? item.closest('.list-section-head').querySelector('.list-section-title') : item);
+  }));
+  noteList.querySelectorAll('[data-section-add]').forEach((item) => item.addEventListener('click', (event) => {
+    event.stopPropagation();
+    addFolderToSection(item.dataset.sectionAdd);
   }));
   noteList.querySelectorAll('.list-section-title').forEach((item) => item.addEventListener('dblclick', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    renameSectionFromList(item.dataset.sectionJump, item.dataset.sectionId || null);
+    renameSectionFromList(item.dataset.sectionJump, item.dataset.sectionId || null, item);
   }));
+  renderTabs();
+  renderStripItems();
 }
 
 // Selected note, falling back to the first note (may be undefined when empty — callers must guard).
@@ -3029,6 +3771,7 @@ function currentNote() {
 
 // Refresh word count, tag chips and the favorite button for the open note.
 function updateMeta(note) {
+  renderRecipeHero(note);
   const body = typeof note.body === 'string' ? note.body : '';
   const words = body.trim() ? body.trim().split(/\s+/).length : 0;
   wordCount.textContent = `${words} word${words === 1 ? '' : 's'}`;
@@ -3045,6 +3788,7 @@ function selectNote(id) {
   exitCoverRepos(true);
   const note = notes.find((item) => item.id === id);
   if (!note) return;
+  trackTab(id, false);
   currentId = id;
   currentVaultId = null;
   document.querySelector('.app-shell').classList.remove('workspace-focus');
@@ -3215,7 +3959,17 @@ function clearEditor() {
   breadcrumbTitle.textContent = 'No notes';
   if (wordCount) wordCount.textContent = '0 words';
   if (tagList) tagList.innerHTML = '';
+  // Drop rendered preview HTML too: it may hold vault content, which must not
+  // linger in the DOM past lock/logout (separation both ways).
+  preview.innerHTML = '';
+  if (editorToolbar) editorToolbar.hidden = false;
+  renderRecipeHero(null);
   renderCover(null);
+  // Nothing marked: hide the editor and let the notes panel take the room.
+  // Any selection (selectNote/selectVaultNote) removes it again.
+  try {
+    document.querySelector('.app-shell').classList.add('workspace-focus');
+  } catch (error) {}
   renderNoteList();
 }
 
@@ -3341,13 +4095,19 @@ function handleNoteMenuAction(action, id) {
   else if (action === 'unarchive') unarchiveNoteById(id);
   else if (action === 'duplicate') duplicateNoteById(id);
   else if (action === 'download') downloadNoteById(id);
-  else if (action === 'delete') {
-    const note = notes.find((item) => item.id === id);
-    if (!note) return;
-    if (note.deleted) openPermanentDeleteConfirm(id);
-    else if (isImportant(note)) openDeleteConfirm(id);
-    else deleteNoteById(id);
-  }
+  else if (action === 'delete') requestDeleteNoteById(id);
+}
+
+// Keyboard-accessible delete: mirrors the context-menu rules exactly —
+// binned notes ask for permanent-confirm, important-tagged notes ask for
+// confirm, everything else soft-deletes straight into Bin.
+function requestDeleteNoteById(id) {
+  if (!id || typeof id !== 'string' || !isValidNoteId(id)) return;
+  const note = notes.find((item) => item.id === id);
+  if (!note) return;
+  if (note.deleted) openPermanentDeleteConfirm(id);
+  else if (isImportant(note)) openDeleteConfirm(id);
+  else deleteNoteById(id);
 }
 
 let pendingDeleteId = null;
@@ -3452,6 +4212,7 @@ function confirmPendingDelete() {
   if (mode === 'empty') emptyBin();
   else if (mode === 'permanent') permanentlyDeleteNoteById(id);
   else if (mode === 'vault-note') deleteVaultNote(id);
+  else if (mode === 'vault-folder') deleteVaultFolder(id);
   else if (mode === 'custom-section') deleteCustomSection(id);
   else if (mode === 'custom-folder') deleteCustomFolder(sectionId, id);
   else deleteNoteById(id);
@@ -3494,13 +4255,24 @@ function bindNoteContextMenu() {
 // server-side (vault_meta table). Locked state keeps ciphertext (`blobs`) so
 // a background sync can never wipe secrets; plaintext exists in memory only
 // while unlocked (wiped on lock/logout/reload).
-const vault = { unlocked: false, dek: null, notes: [], blobs: [], meta: null };
+const vault = { unlocked: false, dek: null, notes: [], blobs: [], meta: null, folders: [] };
 let currentVaultId = null;
 let vaultModalMode = null; // 'setup' | 'unlock' | 'reset-confirm'
 
 function validVaultBlob(item) {
   return Boolean(item && typeof item.id === 'string' && item.payload
     && typeof item.payload.iv === 'string' && typeof item.payload.data === 'string');
+}
+
+// Vault folder names: flat, trimmed, no slashes, capped. Shared by envelope
+// reads and the add/rename dialogs.
+function cleanVaultFolders(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((name) => typeof name === 'string' && name.trim() && !/[/\\]/.test(name))
+    .map((name) => name.trim().replace(/\s+/g, ' ').slice(0, 60))
+    .filter(Boolean)
+    .slice(0, 200);
 }
 
 function timingSafeEqualStr(a, b) {
@@ -3512,12 +4284,14 @@ function timingSafeEqualStr(a, b) {
 
 async function vaultEncryptNote(note) {
   const iv = e2eeRandomBytes(12);
+  const folder = (note && typeof note.folder === 'string' && note.folder.trim())
+    ? note.folder.trim().slice(0, 60) : null;
   const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, vault.dek,
     new TextEncoder().encode(    JSON.stringify({
       id: note.id, title: note.title, body: note.body,
       tags: Array.isArray(note.tags) ? note.tags : [],
       ext: normalizeExt(note.ext),
-      date: note.date, favorite: !!note.favorite,
+      date: note.date, favorite: !!note.favorite, folder,
     })));
   return { id: note.id, payload: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) } };
 }
@@ -3536,6 +4310,7 @@ async function vaultDecryptItem(item) {
     ext: normalizeExt(obj.ext),
     date: typeof obj.date === 'string' ? obj.date.slice(0, 40) : 'Now',
     favorite: false,
+    folder: (typeof obj.folder === 'string' && obj.folder.trim()) ? obj.folder.trim().slice(0, 60) : null,
   };
 }
 
@@ -3572,6 +4347,7 @@ function selectVaultNote(id) {
   exitCoverRepos(true);
   const note = vault.unlocked ? vault.notes.find((item) => item.id === id) : null;
   if (!note) return;
+  trackTab(id, true);
   currentVaultId = id;
   currentId = null;
   document.querySelector('.app-shell').classList.remove('workspace-focus');
@@ -3598,20 +4374,69 @@ function saveVaultNote() {
   breadcrumbTitle.textContent = note.title;
   renderPreview(note);
   updateMeta(note);
+  renderTabs();
   saveLabel.textContent = 'Saving...';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
 }
 
-function addVaultNote() {
+// + New secret note entry: like + New Note outside the Vault — asks for the
+// folder first (only when folders exist), then the template.
+let pendingVaultFolder = null; // folder name | null (null = Vault root)
+let vaultTemplatePending = false;
+function onNewVaultNoteClick() {
   if (!vault.unlocked) { showToast('Unlock the Vault first'); return; }
-  const title = uniqueVaultTitle('Untitled note');
-  const note = { id: newNoteId(), title, body: `# ${title}\n\nSecret...`, tags: [], ext: 'md', date: 'Now', favorite: false };
+  pendingVaultFolder = null;
+  vaultTemplatePending = false;
+  if (vault.folders.length && openVaultFolderPicker()) return;
+  vaultTemplatePending = true;
+  openTemplatePicker();
+}
+
+// Folder destination picker for new vault notes. Reuses the shared
+// folder-pick overlay with vault entries (root first).
+function openVaultFolderPicker() {
+  const box = document.getElementById('folder-pick-options');
+  const overlay = document.getElementById('folder-pick-overlay');
+  if (!box || !overlay) return false;
+  document.getElementById('folder-pick-desc').textContent = 'Where in the Vault should this note land?';
+  const rows = [{ name: '', label: 'Vault', sub: 'Top level' }]
+    .concat(vault.folders.map((folder) => ({ name: folder, label: folderLeaf(folder), sub: folder })));
+  box.innerHTML = rows.map((entry) => `
+    <button class="template-option" data-vault-pick="${escapeHtml(entry.name)}">
+      <span class="template-icon">${icon('folder')}</span>
+      <span class="theme-option-text"><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.sub)}</span></span>
+    </button>`).join('');
+  box.querySelectorAll('[data-vault-pick]').forEach((btn) => btn.addEventListener('click', () => {
+    pendingVaultFolder = btn.dataset.vaultPick || null;
+    closeFolderPicker();
+    vaultTemplatePending = true;
+    openTemplatePicker();
+  }));
+  overlay.hidden = false;
+  const first = box.querySelector('[data-vault-pick]');
+  if (first) first.focus();
+  return true;
+}
+
+// Create a vault note from a template into the picked folder (or Vault root).
+function createVaultNoteFromTemplate(templateKey) {
+  if (!vault.unlocked) { showToast('Unlock the Vault first'); return null; }
+  const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
+  const folder = (pendingVaultFolder && vault.folders.includes(pendingVaultFolder)) ? pendingVaultFolder : null;
+  pendingVaultFolder = null;
+  const title = uniqueVaultTitle(template.titleBase);
+  const note = {
+    id: newNoteId(), title, body: template.body(title),
+    tags: [...template.tags], ext: normalizeExt(template.ext),
+    date: 'Now', favorite: false, folder,
+  };
   vault.notes.unshift(note);
   currentVaultId = note.id;
   selectVaultNote(note.id);
   persistNotes();
-  showToast('Secret note created');
+  showToast(folder ? `${template.label} created in ${folder}` : `${template.label} created`);
+  return note;
 }
 
 function deleteVaultNote(id) {
@@ -3647,9 +4472,81 @@ function openVaultNoteDeleteConfirm(id) {
   }
 }
 
+// ---- Vault folders (flat, dev): explicit list in the envelope so empty
+// folders survive. Notes carry folder (or null for Vault root).
+function cleanVaultFolderInput(raw, exceptFolder) {
+  const clean = String(raw == null ? '' : raw).trim().replace(/\s+/g, ' ').slice(0, 60);
+  if (!clean) return { error: 'Give the folder a name' };
+  if (/[/\\]/.test(raw)) return { error: 'Use a plain name without slashes' };
+  if (vault.folders.some((entry) => entry !== exceptFolder && entry.toLowerCase() === clean.toLowerCase())) {
+    return { error: 'A folder with that name already exists' };
+  }
+  return { name: clean };
+}
+
+function addVaultFolder() {
+  if (!vault.unlocked) { showToast('Unlock the Vault first'); return; }
+  askInput({ eyebrow: 'Vault', title: 'New vault folder', desc: '', label: 'Folder name', password: false, placeholder: 'e.g. Receipts', okText: 'Create' }).then((value) => {
+    if (value == null) return;
+    const checked = cleanVaultFolderInput(value, null);
+    if (checked.error) { showToast(checked.error); return; }
+    vault.folders.push(checked.name);
+    persistNotes();
+    renderNoteList();
+    showToast('Vault folder added');
+  });
+}
+
+function renameVaultFolder(folder) {
+  if (!vault.unlocked || !vault.folders.includes(folder)) return;
+  askInput({ eyebrow: 'Vault', title: 'Rename vault folder', desc: '', label: 'Folder name', password: false, placeholder: folder, okText: 'Rename' }).then((value) => {
+    if (value == null) return;
+    const checked = cleanVaultFolderInput(value, folder);
+    if (checked.error) { showToast(checked.error); return; }
+    if (checked.name === folder) return;
+    vault.folders = vault.folders.map((entry) => (entry === folder ? checked.name : entry));
+    vault.notes.forEach((note) => { if (note.folder === folder) note.folder = checked.name; });
+    persistNotes();
+    renderNoteList();
+    showToast('Vault folder renamed');
+  });
+}
+
+function openVaultFolderDeleteConfirm(folder) {
+  const count = vault.notes.filter((note) => note.folder === folder).length;
+  pendingDeleteId = folder;
+  pendingDeleteMode = 'vault-folder';
+  setDeleteDialog({
+    eyebrow: 'Delete vault folder',
+    title: 'Delete this folder?',
+    name: folder,
+    message: count
+      ? `” holds ${count} secret note${count === 1 ? '' : 's'}. The notes stay in the Vault. Are you sure?`
+      : '” is empty. Are you sure you want to delete it?'
+  });
+  const overlay = document.getElementById('delete-overlay');
+  if (overlay) {
+    overlay.hidden = false;
+    const confirmBtn = document.getElementById('confirm-delete');
+    if (confirmBtn) confirmBtn.focus();
+  }
+}
+
+// Delete a vault folder immediately (no Bin in the vault): its notes move to
+// the Vault root and everything syncs encrypted as usual.
+function deleteVaultFolder(folder) {
+  if (!vault.unlocked) return;
+  vault.folders = vault.folders.filter((entry) => entry !== folder);
+  vault.notes.forEach((note) => { if (note.folder === folder) { note.folder = null; note.date = 'Now'; } });
+  persistNotes();
+  renderNoteList();
+  showToast('Vault folder deleted');
+}
+
 // Render the Vault view: lock notice when locked, otherwise one Vault folder
 // with the decrypted notes. Counts/footer mirror the normal list shape.
 function renderVaultList() {
+  updateBinUI(); // Vault never shows Empty Bin; this also clears stale visibility.
   updateVaultUI();
   updateBreadcrumbs();
   const emptyTitle = listEmpty.querySelector('strong');
@@ -3672,9 +4569,11 @@ function renderVaultList() {
     if (totalCount) totalCount.textContent = '0 in vault';
     const openBtn = document.getElementById('vault-lock-open');
     if (openBtn) openBtn.addEventListener('click', openVaultModal);
+    renderTabs();
+    renderStripItems();
     return;
   }
-  if (!vault.notes.length) {
+  if (!vault.notes.length && !vault.folders.length) {
     noteList.innerHTML = '';
     listEmpty.hidden = false;
     noteList.hidden = true;
@@ -3683,6 +4582,14 @@ function renderVaultList() {
   } else {
     listEmpty.hidden = true;
     noteList.hidden = false;
+    const knownVaultFolders = new Set(vault.folders);
+    const rootNotes = vault.notes.filter((note) => !note.folder || !knownVaultFolders.has(note.folder));
+    const renderVaultNoteRow = (note) => `
+        <button class="tree-file${note.id === currentVaultId ? ' selected' : ''}" data-vault-id="${escapeHtml(note.id)}" title="${escapeHtml(note.title || 'Untitled note')}" draggable="true">
+          <span class="tree-file-icon tree-file-icon-md">${icon('file')}</span>
+          <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
+          <span class="tree-action danger" data-vault-delete="${escapeHtml(note.id)}" title="Delete secret note" role="button" aria-label="Delete ${escapeHtml(note.title || 'Untitled note')}">${icon('trash')}</span>
+        </button>`;
     noteList.innerHTML = `
     <div class="tree-folder-wrap" data-folder-wrap="Vault">
       <div class="tree-folder-row">
@@ -3692,14 +4599,29 @@ function renderVaultList() {
           <span class="tree-folder-name">Vault</span>
           <span class="tree-count">${vault.notes.length}</span>
         </button>
+        <button type="button" class="strip-btn" data-vault-folder-add title="New vault folder" aria-label="New vault folder">${icon('folder-plus')}</button>
       </div>
       <div class="tree-children">
-        ${vault.notes.map((note) => `
-        <button class="tree-file${note.id === currentVaultId ? ' selected' : ''}" data-vault-id="${escapeHtml(note.id)}" title="${escapeHtml(note.title || 'Untitled note')}">
-          <span class="tree-file-icon tree-file-icon-md">${icon('file')}</span>
-          <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
-          <span class="tree-action danger" data-vault-delete="${escapeHtml(note.id)}" title="Delete secret note" role="button" aria-label="Delete ${escapeHtml(note.title || 'Untitled note')}">${icon('trash')}</span>
-        </button>`).join('')}
+        ${vault.folders.map((folder) => {
+          const files = vault.notes.filter((note) => note.folder === folder);
+          const isCollapsed = collapsedFolders.has(folder);
+          return `
+        <div class="tree-folder-wrap${isCollapsed ? ' closed' : ''}" data-vault-folder-wrap="${escapeHtml(folder)}">
+          <div class="tree-folder-row">
+            <button class="tree-folder" data-vault-folder="${escapeHtml(folder)}" aria-expanded="${isCollapsed ? 'false' : 'true'}" title="${escapeHtml(folder)}">
+              <span class="tree-chevron">${icon('chevron-right')}</span>
+              <span class="tree-folder-icon">${icon('folder')}</span>
+              <span class="tree-folder-name vault-folder-name">${escapeHtml(folder)}</span>
+              <span class="tree-count">${files.length}</span>
+            </button>
+            <button type="button" class="section-delete" data-vault-folder-delete="${escapeHtml(folder)}" title="Delete folder" aria-label="Delete folder ${escapeHtml(folder)}">×</button>
+          </div>
+          <div class="tree-children">
+            ${files.map(renderVaultNoteRow).join('')}
+          </div>
+        </div>`;
+        }).join('')}
+        ${rootNotes.map(renderVaultNoteRow).join('')}
       </div>
     </div>`;
   }
@@ -3715,6 +4637,62 @@ function renderVaultList() {
     event.stopPropagation();
     openVaultNoteDeleteConfirm(item.dataset.vaultDelete);
   }));
+  const vaultAddBtn = noteList.querySelector('[data-vault-folder-add]');
+  if (vaultAddBtn) vaultAddBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    addVaultFolder();
+  });
+  noteList.querySelectorAll('[data-vault-folder]').forEach((header) => {
+    header.addEventListener('click', () => {
+      const folder = header.dataset.vaultFolder;
+      if (collapsedFolders.has(folder)) collapsedFolders.delete(folder);
+      else collapsedFolders.add(folder);
+      persistCollapsedFolders();
+      renderNoteList();
+    });
+  });
+  noteList.querySelectorAll('[data-vault-folder] .vault-folder-name').forEach((label) => label.addEventListener('dblclick', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const header = label.closest('[data-vault-folder]');
+    if (header) renameVaultFolder(header.dataset.vaultFolder);
+  }));
+  noteList.querySelectorAll('[data-vault-folder-delete]').forEach((item) => item.addEventListener('click', (event) => {
+    event.stopPropagation();
+    openVaultFolderDeleteConfirm(item.dataset.vaultFolderDelete);
+  }));
+  // Vault note sorting: drag a secret note onto a vault folder to file it.
+  noteList.querySelectorAll('[data-vault-id]').forEach((row) => {
+    row.addEventListener('dragstart', (event) => {
+      if (!vault.unlocked) { event.preventDefault(); return; }
+      event.dataTransfer.setData('text/plain', row.dataset.vaultId);
+      event.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+  });
+  noteList.querySelectorAll('[data-vault-folder]').forEach((header) => {
+    header.addEventListener('dragover', (event) => {
+      if (!vault.unlocked) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      header.classList.add('drop-target');
+    });
+    header.addEventListener('dragleave', () => header.classList.remove('drop-target'));
+    header.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const folder = header.dataset.vaultFolder;
+      const note = vault.unlocked ? vault.notes.find((entry) => entry.id === event.dataTransfer.getData('text/plain')) : null;
+      if (!note || !vault.folders.includes(folder)) return;
+      note.folder = folder;
+      note.date = 'Now';
+      persistNotes();
+      renderNoteList();
+      showToast(`Moved to “${folder}”`);
+    });
+  });
+  renderTabs();
+  renderStripItems();
 }
 
 // Toggle the vault-only action buttons and the nav lock icon.
@@ -3756,7 +4734,9 @@ function enterVaultView() {
   renderNoteList();
 }
 
-// Wipe vault plaintext (keeping ciphertext blobs) and leave the view.
+// Wipe vault plaintext (keeping ciphertext blobs AND the folder list) and
+// leave the view. Folders stay so a background sync while locked can never
+// strand or erase them from the envelope.
 async function lockVault() {
   if (activeView === 'vault' && currentVaultId) saveVaultNote();
   try { await currentVaultBlobs(); } catch (error) {}
@@ -3925,6 +4905,7 @@ async function resetVault() {
   vault.dek = null;
   vault.notes = [];
   vault.blobs = [];
+  vault.folders = [];
   vault.meta = null;
   currentVaultId = null;
   persistNotes();
@@ -3951,7 +4932,7 @@ document.getElementById('vault-overlay').addEventListener('keydown', (event) => 
   }
 });
 document.getElementById('vault-reset-link').addEventListener('click', () => setVaultModal('reset-confirm'));
-document.getElementById('new-vault-note').addEventListener('click', addVaultNote);
+document.getElementById('new-vault-note').addEventListener('click', onNewVaultNoteClick);
 document.getElementById('lock-vault').addEventListener('click', lockVault);
 
 // Detect a trailing file extension typed in the title and switch the note type instead.
@@ -3975,10 +4956,15 @@ function saveCurrentNote() {
   if (typeof note.title !== 'string' || !note.title.trim()) note.title = 'Untitled note';
   note.title = note.title.slice(0, 200);
   note.body = typeof markdownInput.value === 'string' ? markdownInput.value.slice(0, 500000) : '';
+  if (note.template === 'recipe') {
+    const descEl = document.getElementById('recipe-desc');
+    note.description = descEl && typeof descEl.value === 'string' ? descEl.value.slice(0, 2000) : '';
+  } else if ('description' in note) delete note.description;
   note.date = 'Now';
   breadcrumbTitle.textContent = note.title;
   renderPreview(note);
   updateMeta(note);
+  renderTabs();
   saveLabel.textContent = 'Saving...';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
@@ -3986,9 +4972,10 @@ function saveCurrentNote() {
 }
 
 // De-duplicate a note title (case-insensitive) by appending a counter.
+// Binned notes don't squat names — only live ones count.
 function uniqueTitle(base) {
   const clean = (typeof base === 'string' ? base : 'Untitled note').trim().slice(0, 180) || 'Untitled note';
-  const taken = new Set(notes.map((note) => String(note.title || '').toLowerCase()));
+  const taken = new Set(notes.filter((note) => !note.deleted).map((note) => String(note.title || '').toLowerCase()));
   if (!taken.has(clean.toLowerCase())) return clean;
   let counter = 2;
   while (taken.has(`${clean} ${counter}`.toLowerCase())) counter += 1;
@@ -4000,19 +4987,19 @@ function uniqueTitle(base) {
 const NOTE_TEMPLATES = {
   standard: {
     label: 'Standard note',
-    titleBase: 'Untitled note',
+    titleBase: 'New Standard Note',
     tags: [],
     body: (title) => `# ${title}\n\nStart writing here...`
   },
   recipe: {
     label: 'Recipe',
-    titleBase: 'New recipe',
-    tags: ['recipe'],
-    body: (title) => `# ${title}\n\n> Prep: 15 min · Cook: 30 min · Servings: 4\n\n## Ingredients\n\n- 2 tbsp olive oil\n- 1 onion, diced\n- 2 cloves garlic, minced\n- Salt and pepper to taste\n\n## Instructions\n\n1. Heat the oil over medium heat.\n2. Add the onion and cook until soft.\n3. Add garlic, season, and finish to taste.\n\n## Notes\n\n- ...`
+    titleBase: 'New Recipe',
+    tags: [],
+    body: () => ``
   },
   todo: {
     label: 'To-do list',
-    titleBase: 'New to-do list',
+    titleBase: 'New To-Do Note',
     tags: ['todo'],
     body: (title) => `# ${title}\n\n## Today\n\n- [ ] Most important task\n- [ ] Second task\n\n## Later\n\n- [ ] Someday task`
   }
@@ -4024,7 +5011,7 @@ function createNoteFromTemplate(templateKey) {
   if (activeView === 'bin') {
     activeView = 'notes';
     document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    listHeading.textContent = 'All notes';
+    listHeading.textContent = 'All Notes';
   }
   const id = newNoteId();
   const title = uniqueTitle(template.titleBase);
@@ -4034,8 +5021,14 @@ function createNoteFromTemplate(templateKey) {
   // section's first folder only when the picker had nothing to offer.
   const picked = pendingSectionFolder;
   pendingSectionFolder = null;
-  const pickedCustom = picked && picked.ns === 'custom' && activeCustom && picked.section === activeCustom.section
-    ? picked.folder : null;
+  // A picked folder always wins when it still exists (covers both the
+  // bare-section flow and the folder-required gate resume, where the active
+  // view may be a different section or none at all). Stale picks (folder
+  // deleted since) fall through to the normal resolution below.
+  const pickedSection = picked && picked.ns === 'custom'
+    ? customSections.find((entry) => entry.id === picked.section) : null;
+  const pickedFolder = pickedSection && typeof picked.folder === 'string'
+    && pickedSection.folders.includes(picked.folder) ? picked.folder : null;
   const customSection = activeCustom ? customSections.find((entry) => entry.id === activeCustom.section) : null;
   // No active folder context (e.g. All notes): inherit filing from the open
   // note so the new note lands next to it instead of staying unfiled.
@@ -4054,11 +5047,27 @@ function createNoteFromTemplate(templateKey) {
       }
     }
   }
-  const customFolder = pickedCustom
+  const customFolder = pickedFolder
     || (activeCustom && activeCustom.folder)
     || (customSection && customSection.folders.length ? customSection.folders[0] : null);
-  const filedSections = (activeCustom && customFolder) ? { [activeCustom.section]: customFolder } : inheritSections;
+  const filedSections = (pickedFolder && pickedSection) ? { [pickedSection.id]: pickedFolder }
+    : (activeCustom && customFolder) ? { [activeCustom.section]: customFolder } : inheritSections;
+  // Folder-required rule: a note must land in a folder or subfolder. If no
+  // filing resolved above, park the template choice and ask for a
+  // destination first — creation resumes after the pick. A workspace with no
+  // folders at all cannot file anything: say so instead of silently
+  // creating an unfiled note.
+  if (!customFolder && !Object.values(filedSections).some((value) => typeof value === 'string' && value)) {
+    pendingTemplate = templateKey;
+    if (!openFolderPicker()) {
+      pendingTemplate = null;
+      showToast('Create a folder first, then add your note there');
+      return null;
+    }
+    return null;
+  }
   const note = { id, title, date: 'Now', tags, favorite: false, archived: false, deleted: false, ext: normalizeExt(template.ext), sections: filedSections, body: template.body(title) };
+  if (templateKey === 'recipe' || templateKey === 'todo') note.template = templateKey;
   notes.unshift(note);
   activeFilter = 'all';
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
@@ -4075,7 +5084,7 @@ function createNoteFromTemplate(templateKey) {
   // destination so the note is findable instead of seemingly lost.
   const shown = visibleNotes().some((entry) => entry.id === id);
   const sectionValues = Object.values(note.sections || {}).filter((value) => typeof value === 'string' && value);
-  const dest = customFolder || sectionValues[0] || 'All notes';
+  const dest = customFolder || sectionValues[0] || 'All Notes';
   showToast(shown ? `${template.label} created` : `${template.label} created in ${dest}`);
   return note;
 }
@@ -4096,12 +5105,15 @@ function openTemplatePicker() {
 
 // Hide the template chooser popup.
 function closeTemplatePicker() {
+  vaultTemplatePending = false;
   const overlay = document.getElementById('template-overlay');
   if (overlay) overlay.hidden = true;
 }
 
 // Folder picked in a bare section view, awaiting template choice.
 let pendingSectionFolder = null; // { ns: 'custom', section: id, folder } | null
+// Template picked while unfiled, awaiting a folder choice (folder-required rule).
+let pendingTemplate = null; // template key | null
 
 // + New note entry: a bare section view (no folder picked) asks for the
 // destination folder first, so the note lands where the user wants. A section
@@ -4109,6 +5121,7 @@ let pendingSectionFolder = null; // { ns: 'custom', section: id, folder } | null
 // creating an invisible note.
 function onNewNoteClick() {
   pendingSectionFolder = null;
+  pendingTemplate = null;
   if (activeCustom && !activeCustom.folder) {
     const section = customSections.find((entry) => entry.id === activeCustom.section);
     if (section && !section.folders.length) {
@@ -4120,21 +5133,31 @@ function onNewNoteClick() {
   openTemplatePicker();
 }
 
-// Fill + show the folder chooser for a bare section view. Returns false when
-// there is nothing to choose (caller falls through to the template picker).
+// Fill + show the folder chooser. With (ns, sectionId) it lists one section
+// (bare-section flow, resumes at the template picker). With no args it lists
+// every folder in the workspace (folder-required gate, resumes a parked
+// template choice). Returns false when there is nothing to choose.
 function openFolderPicker(ns, sectionId) {
   const box = document.getElementById('folder-pick-options');
   const overlay = document.getElementById('folder-pick-overlay');
   if (!box || !overlay) return false;
   let entries = [];
+  let heading;
   if (ns === 'custom') {
     const section = customSections.find((entry) => entry.id === sectionId);
     if (!section || !section.folders.length) return false;
     entries = section.folders.map((folder) => ({ ns, section: sectionId, folder, context: section.name }));
+    heading = `Where in ${entries[0].context} should this note land?`;
   } else {
-    return false;
+    (customSections || []).forEach((section) => {
+      (section.folders || []).forEach((folder) => {
+        entries.push({ ns: 'custom', section: section.id, folder, context: section.name });
+      });
+    });
+    if (!entries.length) return false;
+    heading = 'Every note needs a folder — where should this one land?';
   }
-  document.getElementById('folder-pick-desc').textContent = `Where in ${entries[0].context} should this note land?`;
+  document.getElementById('folder-pick-desc').textContent = heading;
   box.innerHTML = entries.map((entry) => {
     const leaf = folderLeaf(entry.folder);
     const sub = leaf === entry.folder ? entry.context : entry.folder;
@@ -4147,7 +5170,15 @@ function openFolderPicker(ns, sectionId) {
   box.querySelectorAll('[data-pick-folder]').forEach((btn) => btn.addEventListener('click', () => {
     pendingSectionFolder = { ns: btn.dataset.pickNs, section: btn.dataset.pickSection || null, folder: btn.dataset.pickFolder };
     closeFolderPicker();
-    openTemplatePicker();
+    // Folder-required gate resumes here: a parked template choice goes
+    // straight to creation; the bare-section flow picks a template next.
+    if (pendingTemplate) {
+      const templateKey = pendingTemplate;
+      pendingTemplate = null;
+      createNoteFromTemplate(templateKey);
+    } else {
+      openTemplatePicker();
+    }
   }));
   overlay.hidden = false;
   const first = box.querySelector('[data-pick-folder]');
@@ -4167,6 +5198,55 @@ function showToast(message) {
   toast.classList.add('show');
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => toast.classList.remove('show'), 2200);
+}
+
+// In-app input prompt (replaces window.prompt everywhere: native prompts are
+// unmasked plaintext, unstyled, and block automation/testing). One-shot
+// promise: resolves the typed string, or null on cancel/Esc/overlay click.
+// A second call while open resolves the first waiter with null.
+let askInputPending = null;
+function askInput({ eyebrow = 'Notely', title = 'Input needed', desc = '', label = 'Value', password = true, placeholder = '', okText = 'Confirm' } = {}) {
+  if (askInputPending) {
+    try { askInputPending(null); } catch (error) {}
+    askInputPending = null;
+  }
+  return new Promise((resolve) => {
+    const modal = document.getElementById('prompt-modal');
+    const input = document.getElementById('prompt-input');
+    const okBtn = document.getElementById('prompt-ok');
+    const cancelBtn = document.getElementById('prompt-cancel');
+    const cancelX = document.getElementById('prompt-cancel-x');
+    if (!modal || !input || !okBtn) { resolve(null); return; }
+    document.getElementById('prompt-eyebrow').textContent = eyebrow;
+    document.getElementById('prompt-title').textContent = title;
+    document.getElementById('prompt-desc').textContent = desc;
+    document.getElementById('prompt-label').textContent = label;
+    okBtn.textContent = okText;
+    input.type = password ? 'password' : 'text';
+    input.placeholder = placeholder;
+    input.value = '';
+    askInputPending = resolve;
+    const settle = (value) => {
+      okBtn.onclick = null;
+      if (cancelBtn) cancelBtn.onclick = null;
+      if (cancelX) cancelX.onclick = null;
+      input.onkeydown = null;
+      modal.onclick = null;
+      modal.hidden = true;
+      if (askInputPending === resolve) askInputPending = null;
+      resolve(value);
+    };
+    okBtn.onclick = () => settle(input.value);
+    if (cancelBtn) cancelBtn.onclick = () => settle(null);
+    if (cancelX) cancelX.onclick = () => settle(null);
+    input.onkeydown = (event) => {
+      if (event.key === 'Enter') settle(input.value);
+      else if (event.key === 'Escape') settle(null);
+    };
+    modal.onclick = (event) => { if (event.target === modal) settle(null); };
+    modal.hidden = false;
+    setTimeout(() => { try { input.focus(); } catch (error) {} }, 30);
+  });
 }
 
 // True when the open note is not Markdown (formatting tools stay disabled).
@@ -4208,17 +5288,41 @@ document.getElementById('folder-pick-overlay').addEventListener('click', (event)
   if (event.target.id === 'folder-pick-overlay') closeFolderPicker();
 });
 document.querySelectorAll('#template-overlay .template-option').forEach((option) => option.addEventListener('click', () => {
+  const forVault = vaultTemplatePending;
+  vaultTemplatePending = false;
   closeTemplatePicker();
+  if (forVault) { createVaultNoteFromTemplate(option.dataset.template); return; }
   createNoteFromTemplate(option.dataset.template);
 }));
 document.getElementById('close-delete').addEventListener('click', closeDeleteConfirm);
 document.getElementById('cancel-delete').addEventListener('click', closeDeleteConfirm);
 document.getElementById('confirm-delete').addEventListener('click', confirmPendingDelete);
+// Delete/Backspace removes the marked workspace note (same rules as the menu:
+// Bin confirm for binned/important notes, direct soft-delete otherwise).
+// Ignored while typing, while logged out, inside any popup, or in the Vault
+// view (vault notes keep their own delete UI).
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  const target = event.target;
+  if (target && (target.isContentEditable
+    || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || ''))) return;
+  if (!cachedProfile || !e2ee.masterKey) return;
+  if (!document.getElementById('login-overlay').hidden) return;
+  if (document.querySelector('.modal-overlay:not([hidden])')) return;
+  if (document.querySelector('.context-menu:not([hidden])')) return;
+  if (activeView === 'vault') return;
+  if (!currentId) return;
+  event.preventDefault();
+  requestDeleteNoteById(currentId);
+});
 document.getElementById('delete-overlay').addEventListener('click', (event) => {
   if (event.target.id === 'delete-overlay') closeDeleteConfirm();
 });
 titleInput.addEventListener('input', saveCurrentNote);
 markdownInput.addEventListener('input', saveCurrentNote);
+document.getElementById('recipe-desc').addEventListener('input', saveCurrentNote);
+document.getElementById('recipe-photo-btn').addEventListener('click', () => { requestCoverUpload(); });
 
 document.getElementById('search-input').addEventListener('input', (event) => {
   searchQuery = String(event.target.value || '').slice(0, 200);
@@ -4309,7 +5413,7 @@ document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('
     updateListHeading();
   } else {
     activeFilter = 'all';
-    listHeading.textContent = view === 'archive' ? 'Archive' : 'All notes';
+    listHeading.textContent = view === 'archive' ? 'Archive' : 'All Notes';
   }
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === activeFilter));
   renderNoteList();
@@ -4393,7 +5497,8 @@ if (typeBadge) typeBadge.addEventListener('click', () => {
   showToast(`Switched to ${typeNames[note.ext]}`);
 });
 
-document.getElementById('import-notes').addEventListener('click', () => importInput.click());
+const importNotesBtn = document.getElementById('import-notes');
+if (importNotesBtn) importNotesBtn.addEventListener('click', () => importInput.click());
 document.getElementById('cover-add').addEventListener('click', requestCoverUpload);
 document.getElementById('cover-change').addEventListener('click', requestCoverUpload);
 document.getElementById('cover-remove').addEventListener('click', removeCover);
@@ -4517,10 +5622,39 @@ if (sidebarToggle) {
   });
 }
 
+const workspaceToggle = document.getElementById('toggle-workspace');
+// Collapse/expand the workspace (notes panel) and persist the choice,
+// mirroring the sidebar collapse. Starts expanded.
+function setWorkspaceCollapsed(collapsed) {
+  const shell = document.querySelector('.app-shell');
+  if (shell) shell.classList.toggle('workspace-collapsed', collapsed);
+  try { localStorage.setItem('notely-workspace-collapsed', collapsed ? '1' : '0'); } catch (error) {}
+  if (workspaceToggle) {
+    const label = collapsed ? 'Expand workspace' : 'Collapse workspace';
+    workspaceToggle.setAttribute('aria-label', label);
+    workspaceToggle.setAttribute('title', label);
+  }
+}
+if (workspaceToggle) {
+  restoreWorkspaceCollapsed();
+  workspaceToggle.addEventListener('click', () => {
+    const shell = document.querySelector('.app-shell');
+    setWorkspaceCollapsed(shell ? !shell.classList.contains('workspace-collapsed') : false);
+  });
+}
+// Re-apply the persisted collapse choice (login, register, boot all land here
+// after their first selection, so the workspace returns as the user left it).
+function restoreWorkspaceCollapsed() {
+  try {
+    setWorkspaceCollapsed(localStorage.getItem('notely-workspace-collapsed') === '1');
+  } catch (error) { setWorkspaceCollapsed(false); }
+}
+
 // ---- Auth & E2EE session, themes, settings, boot ----
 
-const THEMES = ['light', 'dark', 'dracula'];
-const THEME_META_COLORS = { light: '#f4f0e9', dark: '#1f1d1b', dracula: '#282a36' };
+const THEMES = ['light', 'dark', 'dracula', 'nord', 'tokyo', 'gruvbox'];
+const THEME_META_COLORS = { light: '#f4f0e9', dark: '#1f1d1b', dracula: '#282a36', nord: '#2e3440', tokyo: '#1a1b26', gruvbox: '#282828' };
+const THEME_LABELS = { light: 'Light', dark: 'Dark', dracula: 'Dracula', nord: 'Nord', tokyo: 'Tokyo Night', gruvbox: 'Gruvbox' };
 const settingsOverlay = document.getElementById('settings-overlay');
 
 // Auth is handled by the Notely server (server.py) backed by the encrypted
@@ -4625,6 +5759,7 @@ async function logout() {
   e2eeLock();
   // Wipe decrypted workspace: memory, editor DOM and any legacy local copy.
   notes = [];
+  openTabs = [];
   notesLoaded = false;
   serverNotesVersion = 0;
   serverUiLoaded = false;
@@ -4634,6 +5769,7 @@ async function logout() {
   vault.dek = null;
   vault.notes = [];
   vault.blobs = [];
+  vault.folders = [];
   vault.meta = null;
   activeView = 'notes';
   activeFilter = 'all';
@@ -4841,13 +5977,15 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
           });
         } catch (error) { done(); loginFail('Could not unlock notes with this password.'); return; }
         const ticket = data.mfaTicket;
-        const codeInput = window.prompt('Enter your 6-digit authenticator code (or a recovery code XXXX-XXXX):');
+        const codeInput = await askInput({
+          eyebrow: 'Two-factor authentication', title: 'Enter your code',
+          desc: '6-digit code from your authenticator app.',
+          label: 'Code', password: false, placeholder: '123456', okText: 'Verify',
+        });
         if (!codeInput) { e2eeLock(); done(); loginFail('MFA code required.'); return; }
-        const trimmed = String(codeInput).trim();
-        const challengeBody = trimmed.indexOf('-') >= 0
-          ? { ticket, recoveryCode: trimmed.toUpperCase() }
-          : { ticket, code: trimmed };
-        const challenge = await apiFetch('/api/mfa/challenge', { method: 'POST', body: JSON.stringify(challengeBody) });
+        const challenge = await apiFetch('/api/mfa/challenge', {
+          method: 'POST', body: JSON.stringify({ ticket, code: String(codeInput).trim() }),
+        });
         if (!challenge.ok) { e2eeLock(); done(); loginFail('Incorrect MFA code.'); return; }
         data = await challenge.json();
         // data is the profile; keys already unlocked above from the 202 body.
@@ -4875,7 +6013,11 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
           // answers to the OLD password. Unlock with it once, then re-wrap
           // under the new password via the normal rotation endpoint.
           if (!pendingRewrap || !pendingRewrap.password) throw error;
-          const oldPw = window.prompt('Enter your OLD password once to re-encrypt notes under the new one:');
+          const oldPw = await askInput({
+            eyebrow: 'Recover account', title: 'One last step',
+            desc: 'Enter your OLD password once to re-encrypt notes under the new one. It stays on this device.',
+            label: 'Old password', password: true, placeholder: '•••••', okText: 'Re-encrypt',
+          });
           if (!oldPw) throw error;
           await e2eeUnlockWithPassword(username, oldPw, {
             kdf: data.kdf || kdf.kdf || 'pbkdf2',
@@ -4962,6 +6104,7 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
     if (currentId) selectNote(currentId);
     else clearEditor();
     refreshEditorLock();
+    restoreWorkspaceCollapsed();
     showToast(`Welcome back, ${fullNameOf(cachedProfile)}`);
   } catch (error) {
     e2eeLock();
@@ -5061,6 +6204,9 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
   const usernameEl = document.getElementById('login-username');
   const passwordEl = document.getElementById('login-password');
   const username = String(usernameEl.value || '').trim().slice(0, 32);
+  // Username first: the server can only look up passkeys for a named
+  // account, so an empty field gets guidance — never a ceremony attempt.
+  if (!username) { loginFail('Enter your username first.'); return; }
   if (!/^[A-Za-z0-9_-]{3,32}$/.test(username)) { loginFail(); return; }
   if (authBusy) return;
   authBusy = true;
@@ -5070,7 +6216,17 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
       method: 'POST', body: JSON.stringify({ username }),
     });
     const opts = await begin.json();
-    if (!begin.ok) throw new Error(opts.error || 'No passkeys.');
+    // Deliberately vague: unknown names and accounts without any passkey
+    // all read as a plain login failure (no enrolment oracle).
+    if (!begin.ok) {
+      authBusy = false;
+      if (begin.status === 429) {
+        loginFail(opts.error || 'Too many attempts — try again in a few minutes.');
+      } else {
+        loginFail('Login Failed');
+      }
+      return;
+    }
     const cred = await navigator.credentials.get({
       publicKey: {
         challenge: b64urlToBuf(opts.challenge),
@@ -5078,8 +6234,12 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
         allowCredentials: (opts.allowCredentials || []).map((c) => ({ ...c, id: b64urlToBuf(c.id) })),
         timeout: opts.timeout,
         userVerification: opts.userVerification,
+        // Ask for the PRF evaluation when the server offers a salt. No salt
+        // (or no PRF support) simply yields no secret — password fallback.
+        ...(opts.prfSalt ? { extensions: { prf: { eval: { first: b64urlToBuf(opts.prfSalt) } } } } : {}),
       },
     });
+    const prfSecret = prfFirstResult(cred);
     const finish = await apiFetch('/api/passkey/login-finish', {
       method: 'POST',
       body: JSON.stringify({
@@ -5103,15 +6263,17 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
       passkeyKeys = {
         kdf: data.kdf, saltEnc: data.saltEnc,
         iterations: data.iterations, encMasterKey: data.encMasterKey,
+        prfWrap: data.prfWrap || null,
       };
-      const codeInput = window.prompt('Enter your 6-digit authenticator code (or recovery code XXXX-XXXX):');
+      const codeInput = await askInput({
+        eyebrow: 'Two-factor authentication', title: 'Enter your code',
+        desc: '6-digit code from your authenticator app.',
+        label: 'Code', password: false, placeholder: '123456', okText: 'Verify',
+      });
       if (!codeInput) throw new Error('mfa required');
-      const t = String(codeInput).trim();
       const ch = await apiFetch('/api/mfa/challenge', {
         method: 'POST',
-        body: JSON.stringify(t.indexOf('-') >= 0
-          ? { ticket: data.mfaTicket, recoveryCode: t.toUpperCase() }
-          : { ticket: data.mfaTicket, code: t }),
+        body: JSON.stringify({ ticket: data.mfaTicket, code: String(codeInput).trim() }),
       });
       if (!ch.ok) throw new Error('mfa failed');
       const profile = await ch.json();
@@ -5123,22 +6285,76 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
       }
       data = await finish.json();
     }
-    // Unlock E2EE locally: password never leaves the device. Reuse typed
-    // password if present, else ask once.
-    let password = String(passwordEl.value || '');
-    if (!password) {
-      const asked = window.prompt('Enter your password to unlock notes on this device (stays local):');
-      if (!asked) throw new Error('password required');
-      password = asked;
+    // Unlock: prefer the PRF secret (no password involved). The PRF wrap is
+    // bound to THIS credential — only its authenticator yields the secret.
+    // Anything missing (old enrolment, no PRF support) falls back to the
+    // password prompt, which never leaves the device.
+    let unlocked = false;
+    if (prfSecret && data.prfWrap) {
+      try {
+        e2ee.masterKey = await prfUnwrapMasterKey(prfSecret, data.prfWrap);
+        e2ee.kdf = data.kdf || 'argon2id';
+        unlocked = true;
+      } catch (error) { /* fall through to password */ }
     }
+    if (!unlocked) {
+      let password = String(passwordEl.value || '');
+      if (!password) {
+        const asked = await askInput({
+          eyebrow: 'Unlock notes', title: 'Your password',
+          desc: 'Needed once on this device to decrypt notes. It stays local.',
+          label: 'Password', password: true, placeholder: '•••••', okText: 'Unlock',
+        });
+        if (!asked) throw new Error('password required');
+        password = asked;
+      }
     const kdfR = await apiFetch(`/api/kdf-params?username=${encodeURIComponent(username)}`);
     const kdf = await kdfR.json();
-    await e2eeUnlockWithPassword(username, password, {
+    const unlockBundle = {
       kdf: data.kdf || kdf.kdf || 'pbkdf2',
       saltAuth: kdf.saltAuth, saltEnc: data.saltEnc,
       iterations: data.iterations || (kdf.params && kdf.params.i) || 0,
       encMasterKey: data.encMasterKey,
-    });
+    };
+    try {
+      await e2eeUnlockWithPassword(username, password, unlockBundle);
+    } catch (error) {
+      // Same email-reset rewrap as password login: the verifier is new but
+      // the wrapped key still answers to the OLD password. Unlock once with
+      // it, then re-wrap under the new password (see password-login path).
+      if (!pendingRewrap || !pendingRewrap.password) throw error;
+      const oldPw = await askInput({
+        eyebrow: 'Recover account', title: 'One last step',
+        desc: 'Enter your OLD password once to re-encrypt notes under the new one. It stays on this device.',
+        label: 'Old password', password: true, placeholder: '•••••', okText: 'Re-encrypt',
+      });
+      if (!oldPw) throw error;
+      await e2eeUnlockWithPassword(username, oldPw, unlockBundle);
+      const freshSaltAuth = e2eeRandomBytes(16);
+      const freshSaltEnc = e2eeRandomBytes(16);
+      const freshAuth = await argon2id32(pendingRewrap.password, freshSaltAuth);
+      const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
+      const freshWrap = await e2eeWrapMasterKeyArgon2id(pendingRewrap.password, freshSaltEnc, masterRaw);
+      const curBits = await argon2id32(pendingRewrap.password, pendingRewrap.saltAuth);
+      await apiFetch('/api/change-password', {
+        method: 'POST',
+        body: JSON.stringify({
+          currentAuth: e2eeBytesToB64(curBits),
+          kdf: 'argon2id',
+          params: { t: E2EE_KDF_ARGON2ID.t, m: E2EE_KDF_ARGON2ID.m, p: E2EE_KDF_ARGON2ID.p },
+          authHash: e2eeBytesToB64(freshAuth),
+          saltAuth: e2eeBytesToB64(freshSaltAuth),
+          saltEnc: e2eeBytesToB64(freshSaltEnc),
+          encMasterKey: freshWrap,
+        }),
+      });
+      e2ee.kdf = 'argon2id';
+      e2ee.saltAuth = freshSaltAuth;
+      e2ee.saltEnc = freshSaltEnc;
+      e2ee.iterations = 0;
+      pendingRewrap = null;
+    }
+    } // end password fallback (skipped entirely after PRF unlock)
     cachedProfile = { username: data.username, firstName: data.firstName, lastName: data.lastName, subtitle: data.subtitle, email: data.email || '' };
     passwordEl.value = '';
     hideLogin();
@@ -5165,10 +6381,12 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
     if (currentId) selectNote(currentId);
     else clearEditor();
     refreshEditorLock();
+    restoreWorkspaceCollapsed();
     showToast(`Welcome back, ${fullNameOf(cachedProfile)}`);
   } catch (error) {
     e2eeLock();
     loginFail(error && error.message === 'mfa required' ? 'MFA code required.'
+      : error && error.message === 'e2ee-unwrap' ? 'Could not unlock notes with this password.'
       : 'Cannot reach the Notely server. Is it running?');
   }
   authBusy = false;
@@ -5238,29 +6456,41 @@ if (changeBtn) changeBtn.addEventListener('click', async () => {
   }
 });
 document.getElementById('logout-button').addEventListener('click', logout);
-// --- MFA settings (Two-Factor pane under Change Password) ---
+// --- MFA settings (Two-Factor pane) ---
+// Lost the authenticator? Recover the account (email/recovery code) — that
+// clears MFA, so no separate MFA bypass codes exist by design.
 async function refreshMfaStatus() {
   const statusEl = document.getElementById('mfa-status');
   const setupBtn = document.getElementById('mfa-setup-btn');
   const disableBtn = document.getElementById('mfa-disable-btn');
-  const recBlock = document.getElementById('mfa-recovery-block');
-  const recLeft = document.getElementById('mfa-recovery-left');
   try {
     const r = await apiFetch('/api/mfa/status');
     if (!r.ok) throw new Error();
     const s = await r.json();
     if (statusEl) statusEl.textContent = s.enabled
-      ? `MFA is ON (${s.recoveryLeft} recovery codes left).`
+      ? 'MFA is ON. Logins need your password plus a 6-digit code.'
       : 'MFA is OFF. Logins need only your password.';
     if (setupBtn) setupBtn.hidden = Boolean(s.enabled);
     if (disableBtn) disableBtn.hidden = !s.enabled;
-    if (recBlock) recBlock.hidden = !s.enabled;
-    if (recLeft) recLeft.textContent = String(s.recoveryLeft || 0);
   } catch (error) {
     if (statusEl) statusEl.textContent = 'Could not load MFA status.';
   }
 }
 const mfaSetupBtn = document.getElementById('mfa-setup-btn');
+function openMfaQrModal() {
+  const modal = document.getElementById('mfa-qr-modal');
+  if (modal) modal.hidden = false;
+}
+function closeMfaQrModal() {
+  const modal = document.getElementById('mfa-qr-modal');
+  if (modal) modal.hidden = true;
+}
+const closeMfaQrBtn = document.getElementById('close-mfa-qr-modal');
+if (closeMfaQrBtn) closeMfaQrBtn.addEventListener('click', closeMfaQrModal);
+const mfaQrOverlay = document.getElementById('mfa-qr-modal');
+if (mfaQrOverlay) mfaQrOverlay.addEventListener('click', (event) => {
+  if (event.target === mfaQrOverlay) closeMfaQrModal();
+});
 if (mfaSetupBtn) mfaSetupBtn.addEventListener('click', async () => {
   const err = document.getElementById('mfa-error');
   try {
@@ -5279,8 +6509,9 @@ if (mfaSetupBtn) mfaSetupBtn.addEventListener('click', async () => {
         }
       }
     } catch (error) { /* text secret still usable */ }
-    document.getElementById('mfa-setup-block').hidden = false;
     if (err) err.hidden = true;
+    document.getElementById('mfa-confirm-code').value = '';
+    openMfaQrModal();
   } catch (error) {
     if (err) { err.textContent = error.message || 'Could not start setup.'; err.hidden = false; }
   }
@@ -5295,8 +6526,8 @@ if (mfaConfirmBtn) mfaConfirmBtn.addEventListener('click', async () => {
       const d = await r.json().catch(() => ({}));
       throw new Error(d.error || 'Incorrect code.');
     }
-    document.getElementById('mfa-setup-block').hidden = true;
     document.getElementById('mfa-confirm-code').value = '';
+    closeMfaQrModal();
     showToast('MFA enabled');
     await refreshMfaStatus();
   } catch (error) {
@@ -5305,21 +6536,14 @@ if (mfaConfirmBtn) mfaConfirmBtn.addEventListener('click', async () => {
 });
 const mfaDisableBtn = document.getElementById('mfa-disable-btn');
 if (mfaDisableBtn) mfaDisableBtn.addEventListener('click', async () => {
-  const code = window.prompt('Enter a 6-digit code (or recovery code) to disable MFA:');
+  const code = await askInput({
+    eyebrow: 'Two-factor authentication', title: 'Disable MFA',
+    desc: 'Confirm with a 6-digit authenticator code. Lost your device? Recover the account instead.',
+    label: 'Code', password: false, placeholder: '123456', okText: 'Disable',
+  });
   if (!code) return;
-  const t = String(code).trim();
-  const body = t.indexOf('-') >= 0 ? { recoveryCode: t.toUpperCase() } : { code: t };
-  const r = await apiFetch('/api/mfa/disable', { method: 'POST', body: JSON.stringify(body) });
+  const r = await apiFetch('/api/mfa/disable', { method: 'POST', body: JSON.stringify({ code: String(code).trim() }) });
   showToast(r.ok ? 'MFA disabled' : 'Incorrect code.');
-  await refreshMfaStatus();
-});
-const mfaRecBtn = document.getElementById('mfa-recovery-btn');
-if (mfaRecBtn) mfaRecBtn.addEventListener('click', async () => {
-  const r = await apiFetch('/api/recovery/generate', { method: 'POST' });
-  if (!r.ok) { showToast('Could not generate codes.'); return; }
-  const data = await r.json();
-  document.getElementById('mfa-recovery-list').textContent = (data.codes || []).join('  ');
-  showToast('Copy recovery codes now — shown once.');
   await refreshMfaStatus();
 });
 // --- Passkeys (option-1 login factor; password still unlocks E2EE notes) ---
@@ -5337,6 +6561,32 @@ function b64urlToBuf(b64url) {
   for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
   return out;
 }
+// PRF passwordless unlock: KEK = SHA-256(authenticator PRF output), used to
+// wrap/unwrap the account master key. MUST match on register (wrap) and login
+// (unwrap) — both sides call this one function.
+async function prfUnwrapMasterKey(prfSecretBytes, wrapped) {
+  const kekRaw = new Uint8Array(await window.crypto.subtle.digest('SHA-256', prfSecretBytes));
+  const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  const raw = await window.crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: e2eeB64ToBytes(wrapped.iv) }, kek, e2eeB64ToBytes(wrapped.data));
+  return window.crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+}
+async function prfWrapMasterKey(prfSecretBytes, masterKeyRaw) {
+  const kekRaw = new Uint8Array(await window.crypto.subtle.digest('SHA-256', prfSecretBytes));
+  const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const iv = e2eeRandomBytes(12);
+  const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, masterKeyRaw);
+  return { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) };
+}
+function prfFirstResult(cred) {
+  try {
+    const ext = cred.getClientExtensionResults ? cred.getClientExtensionResults() : null;
+    const first = ext && ext.prf && ext.prf.results && ext.prf.results.first;
+    return first ? new Uint8Array(first) : null;
+  } catch (error) {
+    return null;
+  }
+}
 async function refreshPasskeys() {
   const listEl = document.getElementById('passkey-list');
   const errEl = document.getElementById('passkey-error');
@@ -5350,7 +6600,9 @@ async function refreshPasskeys() {
       if (!keys.length) listEl.textContent = 'No passkeys yet.';
       keys.forEach((k) => {
         const row = document.createElement('div');
-        row.textContent = `${String(k.id).slice(0, 16)}… (added ${new Date((k.created_at || 0) * 1000).toLocaleDateString()}) `;
+        // passwordless flag tells whether THIS key unlocks notes alone or
+        // still needs the password afterwards.
+        row.textContent = `${String(k.id).slice(0, 16)}… (added ${new Date((k.created_at || 0) * 1000).toLocaleDateString()} · ${k.passwordless ? 'no password needed' : 'password still needed'}) `;
         const del = document.createElement('button');
         del.textContent = 'Remove';
         del.className = 'btn btn-secondary';
@@ -5385,8 +6637,22 @@ if (passkeyAddBtn) passkeyAddBtn.addEventListener('click', async () => {
         attestation: opts.attestation,
         authenticatorSelection: opts.authenticatorSelection,
         excludeCredentials: (opts.excludeCredentials || []).map((c) => ({ ...c, id: b64urlToBuf(c.id) })),
+        // Ask for a PRF evaluation so this device can later unlock notes with
+        // NO password. Unsupported authenticators simply omit the result.
+        ...(opts.prfSalt ? { extensions: { prf: { eval: { first: b64urlToBuf(opts.prfSalt) } } } } : {}),
       },
     });
+    // Wrap the live master key under the PRF secret (when offered). The wrap
+    // lets THIS credential unlock notes later; the secret itself is never
+    // stored or sent anywhere.
+    let prfWrap = null;
+    try {
+      const prfSecret = prfFirstResult(cred);
+      if (prfSecret && e2ee.masterKey) {
+        const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
+        prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
+      }
+    } catch (error) { prfWrap = null; }
     const finish = await apiFetch('/api/passkey/register-finish', {
       method: 'POST',
       body: JSON.stringify({
@@ -5398,15 +6664,23 @@ if (passkeyAddBtn) passkeyAddBtn.addEventListener('click', async () => {
           attestationObject: bufToB64url(cred.response.attestationObject),
         },
         transports: (cred.response.getTransports && cred.response.getTransports()) || [],
+        ...(prfWrap ? { prfWrap } : {}),
       }),
     });
     if (!finish.ok) {
       const d = await finish.json().catch(() => ({}));
       throw new Error(d.error || 'Enrolment failed.');
     }
-    showToast('Passkey added');
+    const fd = await finish.json().catch(() => ({}));
+    showToast(fd.prf ? 'Passkey added — passwordless unlock on' : 'Passkey added (this device still needs your password)');
     await refreshPasskeys();
   } catch (error) {
+    // Cancelled browser ceremony (NotAllowedError/AbortError) is deliberate,
+    // not a failure: stay silent instead of flashing an error.
+    if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
+      if (errEl) errEl.hidden = true;
+      return;
+    }
     if (errEl) { errEl.textContent = error.message || 'Could not add passkey.'; errEl.hidden = false; }
   }
 });
@@ -5445,9 +6719,17 @@ if (accountDeleteBtn) accountDeleteBtn.addEventListener('click', async () => {
   const errEl = document.getElementById('account-error');
   try {
     const uname = (cachedProfile && cachedProfile.username) || '';
-    const typed = window.prompt(`Type your username (${uname}) to confirm deletion:`);
+    const typed = await askInput({
+      eyebrow: 'Delete account', title: 'Are you sure?',
+      desc: `Type your username (${uname}) to confirm permanent deletion of your account, notes, vault and keys.`,
+      label: 'Username', password: false, placeholder: uname, okText: 'Continue',
+    });
     if (typed !== uname) { showToast('Deletion cancelled.'); return; }
-    const current = window.prompt('Enter your current password to confirm deletion:');
+    const current = await askInput({
+      eyebrow: 'Delete account', title: 'Confirm password',
+      desc: 'Enter your current password. It stays on this device; only a proof is sent.',
+      label: 'Current password', password: true, placeholder: '•••••', okText: 'Delete my account',
+    });
     if (!current) return;
     if (!e2ee.saltAuth) throw new Error('Please log in again, then retry.');
     const saltBytes = (e2ee.saltAuth instanceof Uint8Array) ? e2ee.saltAuth : e2eeB64ToBytes(e2ee.saltAuth);
@@ -5461,6 +6743,7 @@ if (accountDeleteBtn) accountDeleteBtn.addEventListener('click', async () => {
       const d = await r.json().catch(() => ({}));
       throw new Error(d.error || 'Could not delete account.');
     }
+    try { clearRecoveryCodesLocal(); } catch (error) {}
     await logout();
     showToast('Account deleted');
   } catch (error) {
@@ -5480,14 +6763,180 @@ function newRecoveryCode() {
   return `${s.slice(0, 5)}-${s.slice(5, 10)}-${s.slice(10, 15)}-${s.slice(15, 20)}`;
 }
 const acctRecBtn = document.getElementById('acct-rec-generate-btn');
+let acctRecShownCodes = [];
+// Plaintext codes live ONLY here (memory) and in one encrypted on-device
+// cache below. The server keeps hashes + wraps, so a second device can never
+// re-display them — it must replace the set (invalidating the old codes).
+function acctRecCacheKey() {
+  try {
+    const name = cachedProfile && cachedProfile.username ? String(cachedProfile.username).toLowerCase() : '';
+    if (name) return `notely-recovery-codes:${name}`;
+  } catch (error) {}
+  return null;
+}
+async function saveRecoveryCodesLocal(codes) {
+  if (!e2ee.masterKey) return;
+  const key = acctRecCacheKey();
+  if (!key) return;
+  const iv = e2eeRandomBytes(12);
+  const ct = await window.crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, e2ee.masterKey, new TextEncoder().encode(JSON.stringify(codes)));
+  try {
+    localStorage.setItem(key, JSON.stringify({ iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) }));
+  } catch (error) {}
+}
+async function loadRecoveryCodesLocal() {
+  if (!e2ee.masterKey) return null;
+  const key = acctRecCacheKey();
+  if (!key) return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    const plain = await window.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: e2eeB64ToBytes(obj.iv) }, e2ee.masterKey, e2eeB64ToBytes(obj.data));
+    const codes = JSON.parse(new TextDecoder().decode(plain));
+    return Array.isArray(codes) && codes.length ? codes : null;
+  } catch (error) {
+    return null;
+  }
+}
+function clearRecoveryCodesLocal() {
+  try {
+    const key = acctRecCacheKey();
+    if (key) localStorage.removeItem(key);
+  } catch (error) {}
+}
+function renderAcctRecCodes() {
+  const list = document.getElementById('acct-rec-codes');
+  if (!list) return;
+  list.innerHTML = '';
+  acctRecShownCodes.forEach((code) => {
+    const item = document.createElement('li');
+    item.textContent = code;
+    list.appendChild(item);
+  });
+}
+function openAcctRecModal() {
+  renderAcctRecCodes();
+  const err = document.getElementById('acct-rec-modal-error');
+  if (err) err.hidden = true;
+  const modal = document.getElementById('acct-rec-modal');
+  if (modal) modal.hidden = false;
+}
+function closeAcctRecModal() {
+  // One-shot display: wipe plaintext codes from memory and DOM on close.
+  acctRecShownCodes = [];
+  renderAcctRecCodes();
+  const modal = document.getElementById('acct-rec-modal');
+  if (modal) modal.hidden = true;
+}
+const acctRecDownloadBtn = document.getElementById('acct-rec-download-btn');
+if (acctRecDownloadBtn) acctRecDownloadBtn.addEventListener('click', () => {
+  try {
+    const body = ['Notely password recovery codes', `Account: ${(cachedProfile && cachedProfile.username) || ''}`,
+      `Generated: ${new Date().toISOString()}`, '',
+      ...acctRecShownCodes, '',
+      'Each code works once. Store them offline.'].join('\n');
+    const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'notely-recovery-codes.txt';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    const err = document.getElementById('acct-rec-modal-error');
+    if (err) { err.textContent = 'Download failed — copy the codes manually.'; err.hidden = false; }
+  }
+});
+const acctRecDoneBtn = document.getElementById('acct-rec-done-btn');
+if (acctRecDoneBtn) acctRecDoneBtn.addEventListener('click', async () => {
+  closeAcctRecModal();
+  showToast('Recovery codes saved.');
+  try { await refreshAcctRecStatus(); } catch (error) {}
+});
+async function refreshAcctRecStatus() {
+  // Count display only; plaintext codes are never re-fetchable by design.
+  // While unused codes exist the SAME set stays viewable (no regenerate);
+  // generating again is only offered once the set is exhausted.
+  const genBtn = document.getElementById('acct-rec-generate-btn');
+  const viewBtn = document.getElementById('acct-rec-view-btn');
+  try {
+    const r = await apiFetch('/api/recovery/account/count');
+    if (!r.ok) return;
+    const data = await r.json();
+    const n = data.count || 0;
+    const st = document.getElementById('acct-rec-status');
+    if (n > 0) {
+      const local = await loadRecoveryCodesLocal();
+      if (st) st.textContent = local
+        ? `${n} unused codes stored. Same set as generated — view anytime.`
+        : `${n} unused codes stored (generated on another device). Use one, or replace the whole set.`;
+      if (genBtn) {
+        genBtn.hidden = Boolean(local);
+        genBtn.textContent = local ? 'Generate recovery codes' : 'Replace codes…';
+      }
+      if (viewBtn) viewBtn.hidden = !local;
+    } else {
+      clearRecoveryCodesLocal();
+      if (st) st.textContent = 'No recovery codes stored on this account.';
+      if (genBtn) { genBtn.hidden = false; genBtn.textContent = 'Generate recovery codes'; }
+      if (viewBtn) viewBtn.hidden = true;
+    }
+  } catch (error) {}
+}
+const acctRecViewBtn = document.getElementById('acct-rec-view-btn');
+if (acctRecViewBtn) acctRecViewBtn.addEventListener('click', async () => {
+  const codes = await loadRecoveryCodesLocal();
+  if (!codes) {
+    showToast('Codes are on the device where they were generated.');
+    await refreshAcctRecStatus();
+    return;
+  }
+  acctRecShownCodes = codes;
+  renderAcctRecCodes();
+  const modal = document.getElementById('acct-rec-modal');
+  if (modal) modal.hidden = false;
+});
 if (acctRecBtn) acctRecBtn.addEventListener('click', async () => {
   const errEl = document.getElementById('acct-rec-error');
+  // 8 sequential Argon2id wraps take several seconds: show progress so the
+  // click feels alive. Yields between rounds let the label actually paint.
+  const paint = () => new Promise((resolve) => setTimeout(resolve, 30));
   try {
     if (!cachedProfile || !e2ee.masterKey) throw new Error('Log in and unlock notes first.');
+    acctRecBtn.disabled = true;
+    acctRecBtn.textContent = 'Starting…';
+    await paint();
+    // Replacement guard: never silently invalidate an existing unused set.
+    // (The button is hidden while this device holds the codes, so reaching
+    // here means another device made them — demand explicit confirmation.)
+    try {
+      const pre = await apiFetch('/api/recovery/account/count');
+      if (pre.ok && ((await pre.json()).count || 0) > 0 && !(await loadRecoveryCodesLocal())) {
+        const typed = await askInput({
+          eyebrow: 'Password recovery', title: 'Replace codes?',
+          desc: 'This invalidates the existing unused codes (e.g. made on another device). Type REPLACE to continue.',
+          label: 'Confirmation', password: false, placeholder: 'REPLACE', okText: 'Replace',
+        });
+        if (String(typed || '').trim().toUpperCase() !== 'REPLACE') {
+          acctRecBtn.disabled = false;
+          acctRecBtn.textContent = 'Replace codes…';
+          return;
+        }
+      }
+    } catch (error) {
+      if (error && error.message === 'Log in and unlock notes first.') throw error;
+      // Count check is advisory only; a failed check must not block generate.
+    }
     const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
     const wraps = [];
     const plain = [];
     for (let i = 0; i < 8; i += 1) {
+      acctRecBtn.textContent = `Generating ${i + 1} of 8…`;
+      await paint();
       const code = newRecoveryCode();
       const salt = e2eeRandomBytes(16);
       const kekRaw = await argon2id32(code, salt);
@@ -5501,17 +6950,26 @@ if (acctRecBtn) acctRecBtn.addEventListener('click', async () => {
       });
       plain.push(code);
     }
+    acctRecBtn.textContent = 'Saving…';
     const r = await apiFetch('/api/recovery/account/generate', { method: 'POST', body: JSON.stringify({ wraps }) });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
       throw new Error(d.error || 'Could not store codes.');
     }
-    document.getElementById('acct-rec-list').textContent = plain.join('   ');
-    const st = document.getElementById('acct-rec-status');
-    if (st) st.textContent = '8 unused codes. Copy now — shown once. Each works once.';
-    showToast('Recovery codes generated — copy now.');
+    acctRecShownCodes = plain;
+    try { await saveRecoveryCodesLocal(plain); } catch (error) {}
+    if (errEl) errEl.hidden = true;
+    openAcctRecModal();
+    await refreshAcctRecStatus();
   } catch (error) {
     if (errEl) { errEl.textContent = error.message; errEl.hidden = false; }
+  } finally {
+    try {
+      acctRecBtn.disabled = false;
+      await refreshAcctRecStatus();
+    } catch (error) {
+      try { acctRecBtn.textContent = 'Generate recovery codes'; } catch (error2) {}
+    }
   }
 });
 // --- Login-overlay forgot-password flow (lookup by hash, unwrap locally) ---
@@ -5535,7 +6993,15 @@ function openRecoverModal(kind) {
     return;
   }
   const title = document.getElementById('recover-modal-title');
-  if (title) title.textContent = kind === 'email' ? 'Recover with email'
+  // Code flow always restarts at the verify view; a verified match swaps the
+  // popup to the new-password view (see verify handler).
+  if (kind === 'code') {
+    const vv = document.getElementById('recover-verify-view');
+    if (vv) vv.hidden = false;
+    const np = document.getElementById('recover-newpw-block');
+    if (np) np.hidden = true;
+    if (title) title.textContent = 'Recover with code';
+  } else if (title) title.textContent = kind === 'email' ? 'Recover with email'
     : kind === 'token' ? 'Set a new password' : 'Recover with code';
   ['recover-email-block', 'recover-code-block', 'recover-token-block'].forEach((id) => {
     const el = document.getElementById(id);
@@ -5613,7 +7079,10 @@ if (recoverVerifyBtn) recoverVerifyBtn.addEventListener('click', async () => {
     } catch (error) { throw new Error('Username and recovery code do not match an account.'); }
     verifiedRecovery = { username, code, codeHash, masterRaw };
     if (errEl) errEl.hidden = true;
+    // Swap the popup: verify view out, new-password view in.
+    document.getElementById('recover-verify-view').hidden = true;
     document.getElementById('recover-newpw-block').hidden = false;
+    document.getElementById('recover-modal-title').textContent = 'Set a new password';
     showToast('Code verified — set a new password.');
   } catch (error) {
     verifiedRecovery = null;
@@ -5673,8 +7142,9 @@ document.getElementById('open-settings').addEventListener('click', () => {
   try { refreshMfaStatus(); } catch (error) {}
   try { refreshPasskeys(); } catch (error) {}
   try { refreshAccountPane(); } catch (error) {}
+  try { refreshAcctRecStatus(); } catch (error) {}
 });
-// Apply a theme (light/dark/dracula), persist the choice and update the meta theme-color.
+// Apply a theme, persist the choice and update the meta theme-color.
 function applyTheme(theme, announce = false) {
   const normalized = THEMES.includes(theme) ? theme : 'light';
   document.documentElement.dataset.theme = normalized;
@@ -5687,17 +7157,14 @@ function applyTheme(theme, announce = false) {
   } catch (error) {}
   const metaTheme = document.querySelector('meta[name="theme-color"]');
   if (metaTheme) metaTheme.setAttribute('content', THEME_META_COLORS[normalized]);
-  document.querySelectorAll('.theme-option').forEach((option) => {
-    const selected = option.dataset.themeValue === normalized;
-    option.classList.toggle('selected', selected);
-    option.setAttribute('aria-pressed', selected ? 'true' : 'false');
-  });
+  const themeSelectEl = document.getElementById('theme-select');
+  if (themeSelectEl) themeSelectEl.value = normalized;
   document.querySelectorAll('.login-theme-item').forEach((option) => {
     const selected = option.dataset.themeValue === normalized;
     option.classList.toggle('selected', selected);
     option.setAttribute('aria-selected', selected ? 'true' : 'false');
   });
-  if (announce) showToast(`${normalized.charAt(0).toUpperCase() + normalized.slice(1)} theme on`);
+  if (announce) showToast(`${THEME_LABELS[normalized] || normalized} theme on`);
 }
 // Show the settings modal and close the mobile sidebar.
 function openSettings() {
@@ -5745,9 +7212,24 @@ document.getElementById('close-settings').addEventListener('click', closeSetting
 if (settingsOverlay) settingsOverlay.addEventListener('click', (event) => {
   if (event.target === settingsOverlay) closeSettings();
 });
-document.querySelectorAll('.theme-option').forEach((option) => option.addEventListener('click', () => {
-  applyTheme(option.dataset.themeValue, true);
-}));
+const themeSelect = document.getElementById('theme-select');
+if (themeSelect) themeSelect.addEventListener('change', () => applyTheme(themeSelect.value, true));
+// Reading font (Settings → Appearance). Device-local like the sidebar prefs
+// (not part of the per-account envelope): one line, no sync conflicts.
+const FONTS = ['default', 'serif', 'palatino', 'sans', 'verdana', 'mono'];
+function applyFont(font, announce = false) {
+  const normalized = FONTS.includes(font) ? font : 'default';
+  document.documentElement.dataset.font = normalized;
+  try { localStorage.setItem('notely-font', normalized); } catch (error) {}
+  const fontSelectEl = document.getElementById('font-select');
+  if (fontSelectEl) fontSelectEl.value = normalized;
+  if (announce) showToast(`${normalized.charAt(0).toUpperCase() + normalized.slice(1)} font on`);
+}
+let savedFont = 'default';
+try { savedFont = localStorage.getItem('notely-font') || 'default'; } catch (error) {}
+applyFont(savedFont);
+const fontSelect = document.getElementById('font-select');
+if (fontSelect) fontSelect.addEventListener('change', () => applyFont(fontSelect.value, true));
 // Compact picker on the login card. No toast: it would render behind the overlay.
 const loginThemeToggle = document.getElementById('login-theme-toggle');
 const loginThemeMenu = document.getElementById('login-theme-menu');
@@ -5809,6 +7291,7 @@ bindSectionHeaderEvents();
 bindCustomSectionsEvents();
 bindNoteContextMenu();
 bindFolderContextMenu();
+bindSectionContextMenu();
 bindFolderDragDrop();
 // Best-effort flush so closing/reloading mid-debounce never strands the last
 // edits (or sidebar changes) on this device. visibilitychange fires early

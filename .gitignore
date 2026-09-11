@@ -5,3 +5,4 @@ notely.key
 notely.db.bak*
 Dev/
 __pycache__/
+server-5000.log
