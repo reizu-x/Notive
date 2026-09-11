@@ -1051,6 +1051,11 @@ html:not([data-theme="light"]) .tree-action.danger svg { color: #f28ba8; }
 .editor-actions { display: flex; align-items: center; gap: 3px; }
 .save-state { display: flex; align-items: center; gap: 7px; margin-right: 12px; color: var(--save-ink); font-family: 'DM Mono', monospace; font-size: 9px; }
 .save-dot { width: 5px; height: 5px; box-shadow: none; }
+/* Save-state light: gray = offline/device-only, red = sync error. */
+.save-state .save-dot.is-offline, .sync-status .sync-dot.is-offline { background: var(--save-ink); box-shadow: none; }
+.save-state .save-dot.is-error, .sync-status .sync-dot.is-error { background: #c0453e; box-shadow: 0 0 0 3px rgba(192, 69, 62, .12); }
+html:not([data-theme="light"]) .save-state .save-dot.is-error,
+html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f28ba8; box-shadow: 0 0 0 3px rgba(242, 139, 168, .12); }
 .editor-actions .icon-button { color: var(--action-ink); }
 .editor-actions .icon-button:hover { color: var(--ink); background: var(--action-hover-bg); }
 .editor-scroll { overflow: auto; width: 100%; padding: 43px 50px 27px; }

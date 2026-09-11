@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notely-build" content="dev14" />
+    <meta name="notely-build" content="dev21" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev14" />
+    <link rel="stylesheet" href="styles.css?v=dev21" />
   </head>
   <body>
     <div class="app-shell">
@@ -119,7 +119,7 @@
           <div class="breadcrumbs" id="breadcrumbs" hidden><span id="breadcrumb-trail"></span><span class="crumb-separator">/</span><strong id="breadcrumb-title">Designing a calmer inbox</strong></div>
           <div class="tab-bar" id="tab-bar" aria-label="Open notes"></div>
           <div class="editor-actions">
-            <span class="save-state"><span class="save-dot"></span><span id="save-label">Saved</span></span>
+            <span class="save-state" hidden><span class="save-dot"></span><span id="save-label">Saved</span></span>
             <button class="icon-button" id="favorite-button" aria-label="Favorite note" data-icon="star"></button>
             <button class="icon-button" id="share-button" aria-label="Share note" data-icon="share"></button>
             <button class="icon-button" id="more-button" aria-label="More note actions" data-icon="dots"></button>
@@ -248,7 +248,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
           <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
         </div>
-        <p class="login-hint" id="build-tag">dev build dev14</p>
+        <p class="login-hint" id="build-tag">dev build dev21</p>
       </div>
       <div class="login-theme-float">
         <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
@@ -379,6 +379,11 @@
             <h3 class="settings-pane-title">Behaviour</h3>
             <p class="modal-desc">Choose how the sidebar looks when Notely opens.</p>
             <label class="setting-row"><input type="checkbox" id="start-collapsed" /><span class="setting-row-text"><strong>Start collapsed</strong><span>Open with the icon-only sidebar. Uncheck to start expanded.</span></span></label>
+            <hr />
+            <h3 class="settings-pane-title">Notes on this device</h3>
+            <p class="modal-desc">Keep a copy of your notes on this desktop, or take them off the cloud entirely.</p>
+            <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Notely server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
+            <button class="btn btn-secondary" id="export-all-btn" type="button">Export all notes to this device</button>
           </div>
         </div>
       </div>
@@ -441,6 +446,24 @@
         <div class="modal-actions">
           <button class="btn btn-secondary" id="cancel-delete">Cancel</button>
           <button class="btn btn-danger" id="confirm-delete">Delete</button>
+        </div>
+      </div>
+    </div>
+    <!-- Device-only mode resync: what happens to the local copy when cloud sync returns -->
+    <div class="modal-overlay" id="resync-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="resync-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Turn sync back on</p>
+            <h2 id="resync-title">Upload this device's notes?</h2>
+          </div>
+          <button class="icon-button" id="resync-close" aria-label="Close resync dialog" data-icon="x"></button>
+        </div>
+        <p class="modal-desc">This device has notes saved in local storage. Upload, and they replace the notes on the Notely server — or keep the server copy and clear the local one.</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="resync-cancel">Cancel</button>
+          <button class="btn btn-danger" id="resync-keep">Keep server notes</button>
+          <button class="btn btn-primary" id="resync-upload">Upload local notes</button>
         </div>
       </div>
     </div>
@@ -602,6 +625,6 @@
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
-    <script src="app.js?v=dev14"></script>
+    <script src="app.js?v=dev21"></script>
   </body>
 </html>

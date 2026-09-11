@@ -19,10 +19,11 @@
 // Build guard: index.html carries <meta name="notely-build">. If this script
 // is older/newer than the page (stale cache mix), reload once for a matching
 // pair instead of running half-bound handlers that silently do nothing.
+// EXPECTED_BUILD must be bumped together with the meta + cache busters.
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev14') {
+  if (build !== 'dev21') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -31,6 +32,10 @@ try {
   } else {
     sessionStorage.removeItem('notely-build-reloaded');
   }
+  // Login footer shows the live build straight from the meta tag, so the
+  // visible number can never drift from the guarded one.
+  const buildTag = document.getElementById('build-tag');
+  if (buildTag && build) buildTag.textContent = `dev build ${build}`;
 } catch (error) {}
 // Frame-busting: refuse to run inside a foreign iframe (clickjacking defense).
 // The server also sends frame-ancestors 'self'.
@@ -605,25 +610,125 @@ function refreshEditorLock() {
   if (recipePhotoBtn) recipePhotoBtn.disabled = readOnly;
 }
 
+// ---- Desktop copy / cloud opt-out ----
+// "This device only" mode: server sync is off and the E2EE envelope is saved
+// to a per-account encrypted localStorage slot instead. Same key-zeroing
+// rules as the UI vault — never plaintext, never shared between accounts.
+function accountScopeKey(base) {
+  try {
+    const name = cachedProfile && cachedProfile.username ? String(cachedProfile.username).toLowerCase() : '';
+    return `${base}:${name}`;
+  } catch (error) { return base; }
+}
+function deviceOnlyKey() { return accountScopeKey('notely-device-only'); }
+function localNotesKey() { return accountScopeKey('notely-local-notes'); }
+function deviceOnlyPref() {
+  try { return localStorage.getItem(deviceOnlyKey()) === '1'; } catch (error) { return false; }
+}
+function setDeviceOnlyPref(on) {
+  try {
+    if (on) localStorage.setItem(deviceOnlyKey(), '1');
+    else localStorage.removeItem(deviceOnlyKey());
+  } catch (error) {}
+}
+
+// Build the outgoing workspace envelope (notes + vault ciphertext + UI state)
+// shared by server sync and device-only saves.
+async function buildNotesEnvelope() {
+  const envelope = { v: 2, notes, vault: await currentVaultBlobs(), vaultFolders: [...vault.folders] };
+  try {
+    if (typeof uiSnapshot === 'function') envelope.ui = uiSnapshot();
+  } catch (error) {}
+  return envelope;
+}
+
+// Encrypted local save in device-only mode: same E2EE payload the server
+// would get, parked in this browser's per-account slot.
+async function saveNotesToDevice() {
+  if (!e2ee.masterKey) {
+    setSaveLabel('Locked', 'gray');
+    return;
+  }
+  try {
+    const payload = await e2eeEncryptNotes(await buildNotesEnvelope());
+    try { localStorage.setItem(localNotesKey(), JSON.stringify(payload)); } catch (error) {
+      setSaveLabel('Save failed', 'red');
+      return;
+    }
+    setSaveLabel('Offline · saved', 'gray');
+  } catch (error) {
+    setSaveLabel('Save failed', 'red');
+  }
+}
+
+// Apply a decrypted {v,notes,vault,vaultFolders,ui} envelope (or legacy array)
+// to live state. Shared by the server blob path and the device-only local path.
+async function adoptNotesEnvelope(envelope) {
+  const list = Array.isArray(envelope) ? envelope
+    : (envelope && Array.isArray(envelope.notes) ? envelope.notes : null);
+  if (!list) throw new Error('bad payload');
+  notes = list.map(migrateNote).slice(0, 2000);
+  const incomingBlobs = (!Array.isArray(envelope) && Array.isArray(envelope.vault))
+    ? envelope.vault.filter(validVaultBlob).slice(0, 2000)
+    : [];
+  vault.blobs = incomingBlobs;
+  try {
+    vault.folders = (!Array.isArray(envelope) && envelope) ? cleanVaultFolders(envelope.vaultFolders) : [];
+  } catch (error) { vault.folders = []; }
+  if (vault.unlocked) {
+    try { vault.notes = await decryptAllVaultBlobs(); }
+    catch (error) { vault.notes = []; }
+  }
+  try {
+    if (!Array.isArray(envelope) && envelope && envelope.ui && typeof applyUiSnapshot === 'function') {
+      if (applyUiSnapshot(envelope.ui)) {
+        serverUiLoaded = true;
+        try { await writeUiVaultLocal(); } catch (error) {}
+      }
+    }
+  } catch (error) {}
+}
+
+// Device-only boot: load from the encrypted local slot (starters when the
+// device copy is missing) without touching the server either way.
+async function loadNotesFromDevice() {
+  try {
+    const raw = localStorage.getItem(localNotesKey());
+    if (raw) {
+      const payload = JSON.parse(raw);
+      await adoptNotesEnvelope(await e2eeDecryptPayload(payload));
+      notesLoaded = true;
+      setSaveLabel('Offline · loaded', 'gray');
+      return;
+    }
+  } catch (error) {}
+  notes = starterNotes.map(migrateNote).slice(0, 2000);
+  vault.blobs = [];
+  vault.folders = [];
+  notesLoaded = true;
+  setSaveLabel('Offline · saved', 'gray');
+}
+
 // Debounced encrypted upload of the workspace (notes + vault ciphertext +
 // per-account UI state). No-ops without a session; reports Locked when the
 // vault is locked. The server stores the blob opaquely — UI folders/sections
 // ride along so every account keeps its own sidebar across relogs/devices.
+// Device-only mode redirects the same save into local storage instead.
 async function syncNotesToServer() {
   if (!cachedProfile) return;
+  if (deviceOnlyPref()) {
+    await saveNotesToDevice();
+    return;
+  }
   if (!e2ee.masterKey) {
-    saveLabel.textContent = 'Locked';
+    setSaveLabel('Locked', 'gray');
     return;
   }
   try {
-    const envelope = { v: 2, notes, vault: await currentVaultBlobs(), vaultFolders: [...vault.folders] };
-    try {
-      if (typeof uiSnapshot === 'function') envelope.ui = uiSnapshot();
-    } catch (error) {}
-    const payload = await e2eeEncryptNotes(envelope);
+    const payload = await e2eeEncryptNotes(await buildNotesEnvelope());
     const response = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload, baseVersion: serverNotesVersion }) });
     if (response.status === 409) {
-      saveLabel.textContent = 'Out of date';
+      setSaveLabel('Out of date', 'red');
       try { showToast('Notes changed on server — reloading'); } catch (error) {}
       try { await loadNotesFromServer(); } catch (error) {}
       try { renderNoteList(); } catch (error) {}
@@ -634,9 +739,9 @@ async function syncNotesToServer() {
       const data = await response.json();
       if (data && typeof data.updated_at === 'number') serverNotesVersion = data.updated_at;
     } catch (error) {}
-    saveLabel.textContent = 'Saved';
+    markSynced();
   } catch (error) {
-    saveLabel.textContent = 'Sync failed';
+    setSaveLabel('Sync failed', 'red');
   }
 }
 
@@ -652,6 +757,12 @@ async function flushNotesToServer() {
 // only) or {v:2, notes, vault, ui} (notes + per-account sidebar state). When
 // the server carries UI state it wins over any device-local copy.
 async function loadNotesFromServer() {
+  // Cloud opt-out: decrypt-and-go from the local slot; the server is never
+  // contacted in this mode (no GET, no background PUT).
+  if (deviceOnlyPref()) {
+    await loadNotesFromDevice();
+    return;
+  }
   try {
     const response = await apiFetch('/api/notes');
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -662,33 +773,7 @@ async function loadNotesFromServer() {
     if (data && data.payload) {
       // E2EE blob: only this device can read it. Envelope is either a legacy
       // bare notes array or {v, notes, vault} (vault items stay ciphertext).
-      const envelope = await e2eeDecryptPayload(data.payload);
-      const list = Array.isArray(envelope) ? envelope
-        : (envelope && Array.isArray(envelope.notes) ? envelope.notes : null);
-      if (!list) throw new Error('bad payload');
-      notes = list.map(migrateNote).slice(0, 2000);
-      const incomingBlobs = (!Array.isArray(envelope) && Array.isArray(envelope.vault))
-        ? envelope.vault.filter(validVaultBlob).slice(0, 2000)
-        : [];
-      vault.blobs = incomingBlobs;
-      try {
-        vault.folders = (!Array.isArray(envelope) && envelope) ? cleanVaultFolders(envelope.vaultFolders) : [];
-      } catch (error) { vault.folders = []; }
-      if (vault.unlocked) {
-        try { vault.notes = await decryptAllVaultBlobs(); }
-        catch (error) { vault.notes = []; }
-      }
-      // Per-account UI state (v2): apply first so the sidebar matches the
-      // account even on a fresh device. Falls back to the device-local vault
-      // when the server predates v2.
-      try {
-        if (!Array.isArray(envelope) && envelope && envelope.ui && typeof applyUiSnapshot === 'function') {
-          if (applyUiSnapshot(envelope.ui)) {
-            serverUiLoaded = true;
-            try { await writeUiVaultLocal(); } catch (error) {}
-          }
-        }
-      } catch (error) {}
+      await adoptNotesEnvelope(await e2eeDecryptPayload(data.payload));
     } else if (Array.isArray(data.notes) && (data.notes.length || data.updated_at)) {
       // Legacy plaintext-shape response (pre-E2EE row): adopt, then the next
       // debounced save re-uploads it encrypted.
@@ -2211,6 +2296,44 @@ const breadcrumbTitle = document.getElementById('breadcrumb-title');
 const wordCount = document.getElementById('word-count');
 const tagList = document.getElementById('tag-list');
 const saveLabel = document.getElementById('save-label');
+// ---- Save-state light ----
+// One helper drives the topbar indicator: dot colour (green synced / gray
+// offline / red error) plus label text. Sync timestamps feed the
+// "Synced X min ago" wording and a ticker keeps it current.
+let lastSyncedAt = 0;
+function setSaveLabel(text, mode = 'green') {
+  if (saveLabel) saveLabel.textContent = text;
+  const dot = document.querySelector('.save-state .save-dot');
+  if (dot) {
+    dot.classList.toggle('is-offline', mode === 'gray');
+    dot.classList.toggle('is-error', mode === 'red');
+  }
+  // Sidebar footer mirror: drives the Settings/Help-area indicator too so
+  // the two can never show different states.
+  const syncDot = document.querySelector('.sync-status .sync-dot');
+  const syncText = document.querySelector('.sync-status .sync-text');
+  if (syncDot) {
+    syncDot.classList.toggle('is-offline', mode === 'gray');
+    syncDot.classList.toggle('is-error', mode === 'red');
+  }
+  if (syncText) syncText.textContent = text;
+}
+function syncAgoText() {
+  const seconds = Math.max(0, Math.floor((Date.now() - lastSyncedAt) / 1000));
+  if (seconds < 15) return 'Synced just now';
+  if (seconds < 120) return 'Synced 1 min ago';
+  if (seconds < 3600) return `Synced ${Math.floor(seconds / 60)} min ago`;
+  return `Synced at ${new Date(lastSyncedAt).toTimeString().slice(0, 5)}`;
+}
+function markSynced() {
+  lastSyncedAt = Date.now();
+  setSaveLabel(syncAgoText(), 'green');
+}
+setInterval(() => {
+  if (lastSyncedAt && saveLabel && saveLabel.textContent.startsWith('Synced')) {
+    setSaveLabel(syncAgoText(), 'green');
+  }
+}, 30000);
 const typeBadge = document.getElementById('type-badge');
 const editorToolbar = document.getElementById('editor-toolbar');
 const allCount = document.getElementById('all-count');
@@ -3809,12 +3932,12 @@ function persistNotes() {
   if (notes.length > 2000) {
     // Never silently truncate: refusing to sync preserves data locally until
     // the user deletes notes; the server would reject oversized payloads.
-    saveLabel.textContent = 'Sync failed';
+    setSaveLabel('Sync failed', 'red');
     showToast('Too many notes to sync (2000 max) — delete some to keep saving');
     clearTimeout(saveTimer);
     return;
   }
-  saveLabel.textContent = 'Saving...';
+  setSaveLabel('Saving...', 'green');
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => { syncNotesToServer(); }, 450);
 }
@@ -4375,7 +4498,7 @@ function saveVaultNote() {
   renderPreview(note);
   updateMeta(note);
   renderTabs();
-  saveLabel.textContent = 'Saving...';
+  setSaveLabel('Saving...', 'green');
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
 }
@@ -4965,7 +5088,7 @@ function saveCurrentNote() {
   renderPreview(note);
   updateMeta(note);
   renderTabs();
-  saveLabel.textContent = 'Saving...';
+  setSaveLabel('Saving...', 'green');
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
   resetIdleTimer();
@@ -6703,7 +6826,20 @@ if (accountSaveBtn) accountSaveBtn.addEventListener('click', async () => {
   const errEl = document.getElementById('account-error');
   const email = String(document.getElementById('account-email').value || '').trim().slice(0, 254);
   try {
-    const r = await apiFetch('/api/account/email', { method: 'POST', body: JSON.stringify({ email }) });
+    // Changing the recovery email is credential-adjacent (it is the reset
+    // channel), so prove password knowledge before the session can repoint it.
+    const current = await askInput({
+      eyebrow: 'Save email', title: 'Confirm password',
+      desc: 'Enter your current password to change your recovery email. It stays on this device; only a proof is sent.',
+      label: 'Current password', password: true, placeholder: '•••••', okText: 'Save email',
+    });
+    if (!current) return;
+    if (!e2ee.saltAuth) throw new Error('Please log in again, then retry.');
+    const saltBytes = (e2ee.saltAuth instanceof Uint8Array) ? e2ee.saltAuth : e2eeB64ToBytes(e2ee.saltAuth);
+    const raw = e2ee.kdf === 'argon2id'
+      ? await argon2id32(current, saltBytes)
+      : await e2eeDeriveBits(current, saltBytes, e2ee.iterations);
+    const r = await apiFetch('/api/account/email', { method: 'POST', body: JSON.stringify({ email, currentAuth: e2eeBytesToB64(raw) }) });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || 'Could not save email.');
     if (cachedProfile) cachedProfile.email = data.email || email;
@@ -7192,6 +7328,105 @@ document.getElementById('start-collapsed').addEventListener('change', (event) =>
   setSidebarCollapsed(collapsed);
   showToast(collapsed ? 'Sidebar will start collapsed' : 'Sidebar will start expanded');
 });
+
+// ---- Device copy / cloud opt-out wiring ----
+const deviceOnlyBox = document.getElementById('device-only-mode');
+// Export every plainWorkspace note (and unlocked Vault notes) as one JSON
+// backup file in the browser's download folder — the "desktop copy".
+function exportAllNotes() {
+  if (!cachedProfile || !notesLoaded) { showToast('Log in first'); return; }
+  const payload = {
+    app: 'Notely',
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    notes: notes.map((note) => ({ ...note })),
+  };
+  if (vault.unlocked && vault.notes.length) {
+    payload.vaultNotes = vault.notes.map((note) => ({ ...note, vault: true }));
+  }
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  const stamp = new Date().toISOString().slice(0, 10);
+  link.download = sanitizeFilename(`Notely-notes-${stamp}`, 'json');
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 800);
+  showToast('Notes exported to your device');
+}
+document.getElementById('export-all-btn').addEventListener('click', exportAllNotes);
+// Turning sync OFF is single-click (toast warns). Turning it back ON opens
+// the resync dialog so the local copy is uploaded or discarded deliberately.
+deviceOnlyBox.addEventListener('change', (event) => {
+  const on = event.target.checked;
+  if (!cachedProfile) {
+    event.target.checked = false;
+    showToast('Log in first');
+    return;
+  }
+  if (on) {
+    setDeviceOnlyPref(true);
+    clearTimeout(syncTimer);
+    syncNotesToServer();
+    showToast('This device only — notes no longer sync to the cloud');
+    return;
+  }
+  const overlay = document.getElementById('resync-overlay');
+  if (!overlay) { // No dialog available: keep server notes, drop the local copy
+    setDeviceOnlyPref(false);
+    showToast('Sync re-enabled');
+    return;
+  }
+  overlay.hidden = false;
+});
+document.getElementById('resync-close').addEventListener('click', () => {
+  deviceOnlyBox.checked = true;
+  document.getElementById('resync-overlay').hidden = true;
+});
+document.getElementById('resync-cancel').addEventListener('click', () => {
+  deviceOnlyBox.checked = true;
+  document.getElementById('resync-overlay').hidden = true;
+});
+document.getElementById('resync-overlay').addEventListener('click', (event) => {
+  if (event.target === document.getElementById('resync-overlay')) {
+    deviceOnlyBox.checked = true;
+    document.getElementById('resync-overlay').hidden = true;
+  }
+});
+// Upload local copy: refresh serverNotesVersion from the server's current
+// blob (empty for fresh accounts), push so the device copy wins, and clear
+// the local slot so a later device-only session starts fresh.
+document.getElementById('resync-upload').addEventListener('click', async () => {
+  setDeviceOnlyPref(false);
+  try { localStorage.removeItem(localNotesKey()); } catch (error) {}
+  document.getElementById('resync-overlay').hidden = true;
+  try {
+    const response = await apiFetch('/api/notes');
+    if (response.ok) {
+      const data = await response.json();
+      if (data && typeof data.updated_at === 'number') serverNotesVersion = data.updated_at;
+    }
+  } catch (error) {}
+  await syncNotesToServer();
+  showToast('Local notes uploaded — sync is back on');
+});
+// Keep server copy (local is cleared) and reload it onto this device.
+document.getElementById('resync-keep').addEventListener('click', async () => {
+  setDeviceOnlyPref(false);
+  try { localStorage.removeItem(localNotesKey()); } catch (error) {}
+  document.getElementById('resync-overlay').hidden = true;
+  await loadNotesFromServer();
+  renderNoteList();
+  showToast('Sync re-enabled — server notes kept');
+});
+// Reflect the device-only checkbox when settings open.
+if (deviceOnlyBox) {
+  const openSettingsDeviceOnly = () => {
+    deviceOnlyBox.checked = deviceOnlyPref();
+  };
+  document.getElementById('open-settings').addEventListener('click', openSettingsDeviceOnly);
+}
 function bindSideMenuSectionToggle(id, kind) {
   const box = document.getElementById(id);
   if (!box) return;

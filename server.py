@@ -36,14 +36,19 @@ Security model (end-to-end encryption for note contents):
 """
 
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
 import os
+import py_compile
 import re
 import secrets
 import sqlite3
 import struct
+import subprocess
+import sys
+import threading
 import time
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -74,6 +79,29 @@ ARGON2_DESCRIPTOR = {'kdf': 'argon2id', 't': ARGON2_TIME_COST, 'm': ARGON2_MEMOR
 # {t, m, p} plus a top-level 'kdf' field). Accepts the historical descriptor
 # shape too so clients written against either form keep working.
 ARGON2_CLIENT_PARAMS = {'t': ARGON2_TIME_COST, 'm': ARGON2_MEMORY_KIB, 'p': ARGON2_PARALLELISM}
+
+# --- Periodic pull-only auto-update -----------------------------------------
+# The server mirrors its GitHub remote: every NOTELY_UPDATE_INTERVAL seconds it
+# runs `git fetch`, and when local is strictly behind remote/<branch> with a
+# clean working tree it fast-forwards (ff-only, never merging unpublished local
+# work) and restarts in-place via os.execv so the new code is actually served.
+# It never pushes and never touches a dirty tree. Controls:
+#   NOTELY_AUTO_UPDATE        '0' disables the loop (default enabled)
+#   NOTELY_UPDATE_INTERVAL    seconds between checks (default 300)
+#   NOTELY_UPDATE_FIRST_DELAY seconds before the first check (default 15)
+#   NOTELY_UPDATE_REMOTE      git remote to fetch (default 'origin')
+#   NOTELY_UPDATE_BRANCH      branch to track (default 'main')
+#   NOTELY_UPDATE_FETCH_TIMEOUT  seconds for each git command (default 60)
+#   NOTELY_UPDATE_LOG         log file (default /tmp/notely-auto-update.log)
+#   NOTELY_UPDATE_LOCK        cross-process lock file (default /tmp/notely-auto-update.lock)
+AUTO_UPDATE_ENABLED = os.environ.get('NOTELY_AUTO_UPDATE', '1').lower() != '0'
+AUTO_UPDATE_INTERVAL = int(os.environ.get('NOTELY_UPDATE_INTERVAL', '300'))
+AUTO_UPDATE_FIRST_DELAY = int(os.environ.get('NOTELY_UPDATE_FIRST_DELAY', '15'))
+AUTO_UPDATE_REMOTE = os.environ.get('NOTELY_UPDATE_REMOTE', 'origin')
+AUTO_UPDATE_BRANCH = os.environ.get('NOTELY_UPDATE_BRANCH', 'main')
+AUTO_UPDATE_FETCH_TIMEOUT = int(os.environ.get('NOTELY_UPDATE_FETCH_TIMEOUT', '60'))
+AUTO_UPDATE_LOG = os.environ.get('NOTELY_UPDATE_LOG', '/tmp/notely-auto-update.log')
+AUTO_UPDATE_LOCK = os.environ.get('NOTELY_UPDATE_LOCK', '/tmp/notely-auto-update.lock')
 
 
 def valid_argon2_params(params):
@@ -2096,9 +2124,6 @@ def api_mfa_challenge():
         return jsonify({'error': 'Invalid ticket.'}), 400
     digest = hashlib.sha256(ticket.encode('utf-8')).hexdigest()
     conn = get_db()
-    if rate_exceeded(conn, [ip_bucket('mfa')], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
-        conn.close()
-        return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
     row = conn.execute('SELECT username, expires_at FROM mfa_challenges WHERE ticket_hash = ?',
                        (digest,)).fetchone()
     if not row or row['expires_at'] < int(time.time()):
@@ -2107,6 +2132,13 @@ def api_mfa_challenge():
             conn.commit()
         conn.close()
         return jsonify({'error': 'Ticket expired. Log in again.'}), 401
+    # Per-account fail ceiling (distributed-guessing fix): the IP throttle
+    # alone lets a botnet parallelize 6-digit guesses. Each wrong code for
+    # this account burns one slot from the shared 5/15-min budget.
+    user_mfa_bucket = 'mfa:user:' + str(row['username'] or '').strip().lower()
+    if rate_exceeded(conn, [user_mfa_bucket], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
+        conn.close()
+        return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
     username = row['username']
     mfa = conn.execute('SELECT enc_secret, confirmed FROM mfa_totp WHERE username = ?',
                        (username,)).fetchone()
@@ -2123,6 +2155,7 @@ def api_mfa_challenge():
     ok = totp_verify(secret, str(data.get('code', '')))
     if not ok:
         rate_hit(conn, ip_bucket('mfa'))
+        rate_hit(conn, user_mfa_bucket)
         conn.close()
         return jsonify({'error': 'Incorrect code.'}), 401
     conn.execute('DELETE FROM mfa_challenges WHERE ticket_hash = ?', (digest,))
@@ -2280,6 +2313,17 @@ def api_passkey_register_finish():
     except (ValueError, AttributeError):
         conn.close()
         return jsonify({'error': 'Invalid PRF wrap.'}), 400
+    # Credential-ID ownership check (cross-account hijack fix). cred_id values
+    # are disclosed by /api/passkey/login-begin to unauthenticated callers, so
+    # without this an authenticated attacker could re-register a victim's
+    # credential ID and the upsert below would reassign it to the attacker,
+    # locking the victim out of their own passkey. A user may still update
+    # their OWN existing credential; a colliding ID owned by someone else is
+    # refused (WebAuthn requires credential IDs to be globally unique).
+    owner = conn.execute('SELECT username FROM passkey_creds WHERE cred_id = ?', (cred_id,)).fetchone()
+    if owner and owner['username'] != user['username']:
+        conn.close()
+        return jsonify({'error': 'Credential already registered.'}), 409
     conn.execute(
         'INSERT INTO passkey_creds (cred_id, username, pubkey, sign_count, transports, created_at, prf_wrap)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -2496,7 +2540,12 @@ def api_passkey_login_finish():
 
 @app.route('/api/account/email', methods=['POST'])
 def api_account_email():
-    """Set account email (stored inside server-encrypted profile). Empty clears."""
+    """Set account email (stored inside server-encrypted profile). Empty clears.
+
+    Requires the current password verifier (currentAuth / currentPassword):
+    the email is the recovery channel, so a stolen session alone must not be
+    able to repoint it and then reset the account's credentials via the
+    email-recovery flow (session -> persistent-takeover chain fix)."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
@@ -2505,7 +2554,26 @@ def api_account_email():
     if not validate_email(email):
         return jsonify({'error': 'Invalid email address.'}), 400
     conn = get_db()
-    row = conn.execute('SELECT enc_profile FROM users WHERE username = ?', (user['username'],)).fetchone()
+    row = conn.execute('SELECT * FROM users WHERE username = ?', (user['username'],)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'Not signed in.'}), 401
+    proved = False
+    if is_e2ee_account(row):
+        try:
+            cand = b64decode_strict(data.get('currentAuth'), 32)
+            proved = bool(verify_auth_hash(cand, row))
+        except ValueError:
+            proved = False
+    else:
+        try:
+            proved = bool(verify_password(str(data.get('currentPassword', '')), row['pwd_salt'],
+                                          row['pwd_hash'], row['iterations']))
+        except Exception:
+            proved = False
+    if not proved:
+        conn.close()
+        return jsonify({'error': 'Current password is incorrect.'}), 401
     try:
         profile = decrypt_profile(row['enc_profile']) if row else {}
     except Exception:
@@ -2637,12 +2705,26 @@ def api_recovery_email_start():
     return jsonify({'ok': True})
 
 
+def trusted_app_origin():
+    """Hardened origin for links minted server-side (CWE-74 fix).
+
+    The Host header is client-supplied, so deriving emailed links from it
+    invites password-reset poisoning. When NOTELY_PUBLIC_ORIGIN is set
+    (e.g. 'https://notes.example.com'), it always wins. Otherwise fall
+    back to request.host for local/dev use only."""
+    trusted = os.environ.get('NOTELY_PUBLIC_ORIGIN')
+    if trusted:
+        return trusted.rstrip('/')
+    host = (request.host or '').split(':')[0]
+    scheme = request.scheme or 'http'
+    return f'{scheme}://{request.host}'
+
+
 def send_recovery_email(to_email, username, token):
     """Send the reset link via SMTP env config. Dev fallback: log the link so
     the flow stays testable without a mail server (never returned to clients)."""
     host = (request.host or '').split(':')[0]
-    scheme = request.scheme or 'http'
-    link = f'{scheme}://{request.host}/?emailToken={token}'
+    link = trusted_app_origin() + f'/?emailToken={token}'
     smtp_host = os.environ.get('NOTELY_SMTP_HOST')
     if not smtp_host:
         print(f'NOTELY DEV: password-reset link for {username!r}: {link}', flush=True)
@@ -2942,6 +3024,124 @@ def api_logout():
     return response
 
 
+def _update_log(msg):
+    line = '%s AUTO-UPDATE: %s' % (time.strftime('%F %T'), msg)
+    print(line, flush=True)
+    try:
+        with open(AUTO_UPDATE_LOG, 'a') as f:
+            f.write(line + '\n')
+    except Exception:
+        pass
+
+
+def _git(*args):
+    return subprocess.run(
+        ['git'] + list(args), capture_output=True, text=True,
+        timeout=AUTO_UPDATE_FETCH_TIMEOUT, cwd=BASE_DIR)
+
+
+# Set by __main__ once the listening socket exists; the updater thread calls
+# srv.shutdown() to unblock serve_forever, then __main__ closes the socket and
+# execv's this process with the freshly merged code. Never exec'ing from the
+# updater thread directly avoids both the interpreter-shutdown race and the
+# old socket surviving exec (which makes the new process die with EADDRINUSE).
+_UPDATE_SERVER = None
+_RESTART_HEAD = None
+
+
+def _restart_for_update(new_head):
+    global _RESTART_HEAD
+    _RESTART_HEAD = new_head
+    _update_log('merged %s/%s @ %s; shutting down socket and restarting in place'
+                % (AUTO_UPDATE_REMOTE, AUTO_UPDATE_BRANCH, new_head[:12]))
+    srv = _UPDATE_SERVER
+    if srv is None:
+        _update_log('WARN: server handle unavailable; execv directly')
+        try:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as exc:
+            _update_log('execv failed: %r' % exc)
+        return
+    try:
+        srv.shutdown()
+    except Exception as exc:
+        _update_log('shutdown failed: %r' % exc)
+
+
+def _auto_update_once():
+    if not os.path.isdir(os.path.join(BASE_DIR, '.git')):
+        _update_log('not a git checkout; update loop disabled')
+        return
+    fetch = _git('fetch', AUTO_UPDATE_REMOTE)
+    if fetch.returncode != 0:
+        _update_log('fetch %s failed: %s' % (AUTO_UPDATE_REMOTE,
+                                             fetch.stderr.strip() or ('rc=%d' % fetch.returncode)))
+        return
+    ref = '%s/%s' % (AUTO_UPDATE_REMOTE, AUTO_UPDATE_BRANCH)
+    count = _git('rev-list', '--left-right', '--count', 'HEAD...%s' % ref)
+    if count.returncode != 0:
+        _update_log('cannot read %s: %s' % (ref, count.stderr.strip() or ('rc=%d' % count.returncode)))
+        return
+    left, right = count.stdout.split()
+    ahead, behind = int(left), int(right)
+    if behind == 0:
+        return
+    if ahead != 0:
+        _update_log('local is %d ahead and %d behind %s; skipping (pull-only: '
+                    'unpublished local work would be lost)' % (ahead, behind, ref))
+        return
+    dirty = _git('status', '--porcelain')
+    if dirty.returncode == 0 and dirty.stdout.strip():
+        _update_log('working tree is dirty; skipping update')
+        return
+    try:
+        py_compile.compile(os.path.join(BASE_DIR, 'server.py'), doraise=True)
+    except py_compile.PyCompileError as exc:
+        _update_log('new server.py fails to compile (%s); skipping update' % exc)
+        return
+    new_head = _git('rev-parse', ref)
+    if new_head.returncode != 0:
+        _update_log('cannot resolve %s; skipping update' % ref)
+        return
+    merge = _git('merge', '--ff-only', ref)
+    if merge.returncode != 0:
+        _update_log('ff-only merge failed: %s' % (merge.stderr.strip() or ('rc=%d' % merge.returncode)))
+        return
+    _restart_for_update(new_head.stdout.strip())
+
+
+def _auto_update_tick():
+    lock_fd = os.open(AUTO_UPDATE_LOCK, os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return
+        try:
+            _auto_update_once()
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
+
+
+def _auto_update_loop():
+    time.sleep(AUTO_UPDATE_FIRST_DELAY)
+    while True:
+        try:
+            _auto_update_tick()
+        except Exception as exc:
+            _update_log('unexpected error: %r' % exc)
+        time.sleep(AUTO_UPDATE_INTERVAL)
+
+
+def _auto_update_start():
+    _update_log('enabled (interval %ds, first check %ds, tracking %s/%s, log %s)'
+                % (AUTO_UPDATE_INTERVAL, AUTO_UPDATE_FIRST_DELAY,
+                   AUTO_UPDATE_REMOTE, AUTO_UPDATE_BRANCH, AUTO_UPDATE_LOG))
+    threading.Thread(target=_auto_update_loop, name='notely-auto-update', daemon=True).start()
+
+
 if __name__ == '__main__':
     init_db()
     # Hide Werkzeug version banner (info-disclosure fix). Must run before app.run.
@@ -2951,7 +3151,30 @@ if __name__ == '__main__':
         werkzeug.serving.WSGIRequestHandler.sys_version = ''
     except Exception:
         pass
+    if AUTO_UPDATE_ENABLED:
+        _auto_update_start()
     port = int(os.environ.get('PORT', '5000'))
     print('NOTELY: production use requires HTTPS reverse proxy + NOTELY_COOKIE_SECURE=1 '
           '(default Secure ON) + gunicorn (Werkzeug dev server is single-process).', flush=True)
-    app.run(host='127.0.0.1', port=port, threaded=True)
+    # make_server instead of app.run so the auto-update thread can shut the
+    # listeners down cleanly before this process execv's itself with new code.
+    from werkzeug.serving import make_server
+    server = make_server('127.0.0.1', port, app, threaded=True)
+    _UPDATE_SERVER = server
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        pass
+    try:
+        server.server_close()
+    except Exception:
+        pass
+    if _RESTART_HEAD:
+        _update_log('socket closed; re-executing with merged code')
+        try:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as exc:
+            _update_log('execv failed: %r' % exc)
+            os._exit(1)
