@@ -1,0 +1,26 @@
+name: Sync Dev to main
+
+on:
+  push:
+    branches: [Dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-dev-to-main
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Dev
+        uses: actions/checkout@v4
+        with:
+          ref: Dev
+          fetch-depth: 0
+
+      - name: Fast-forward main to Dev
+        run: git push origin HEAD:main
