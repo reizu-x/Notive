@@ -1,3 +1,7 @@
 notely.db
 notely.key
+*.bak
+*.bak-*
+notely.db.bak*
+Dev/
 __pycache__/

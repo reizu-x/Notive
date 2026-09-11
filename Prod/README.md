@@ -34,7 +34,7 @@ Hardening: HttpOnly `SameSite=Lax` sessions (24h absolute, 1h idle, 12h rotation
 
 ## Frontend
 
-Sidebar collections/recipes/custom sections with nesting, note-list tree, Markdown editor with live preview + toolbar, Standard/Recipe/To-Do templates, `.md/.txt` import/export, Favorites / Archive / 3-day Bin, right-click menus, search + filters, offline fallback.
+Sidebar sections with nesting (all sections share the same implementation/value: folders, colors, Bin, drag-drop, filtering), note-list tree, Markdown editor with live preview + toolbar, Standard/Recipe/To-Do templates, `.md/.txt` import/export, Favorites / Archive / 3-day Bin, right-click menus, search + filters, offline fallback.
 
 ## Run
 

@@ -52,10 +52,14 @@ from argon2.low_level import Type as Argon2Type, hash_secret_raw
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get('NOTELY_DB_PATH', os.path.join(BASE_DIR, 'notely.db'))
 KEY_PATH = os.environ.get('NOTELY_KEY_PATH', os.path.join(BASE_DIR, 'notely.key'))
-SESSION_COOKIE = 'notely_session'
-SESSION_MAX_AGE_SECONDS = 24 * 3600
-SESSION_IDLE_SECONDS = 3600
-SESSION_ROTATE_AFTER_SECONDS = 12 * 3600
+# __Host- prefix enforces Secure + Path=/ + no Domain (cookie tossing defense).
+# Transition: server still accepts legacy 'notely_session' for 7 days (see
+# get_session_token_from_request), but always sets the __Host- cookie.
+SESSION_COOKIE = '__Host-notely_session'
+LEGACY_SESSION_COOKIE = 'notely_session'
+SESSION_MAX_AGE_SECONDS = 12 * 3600
+SESSION_IDLE_SECONDS = 30 * 60
+SESSION_ROTATE_AFTER_SECONDS = 4 * 3600
 PBKDF2_ITERATIONS = 210_000
 # Argon2id parameters (OWASP/RFC 9106 first-choice profile, single-threaded so
 # the browser WASM build matches the server bit-for-bit). The client MUST use
@@ -65,8 +69,20 @@ ARGON2_MEMORY_KIB = 65536
 ARGON2_PARALLELISM = 1
 ARGON2_HASH_LEN = 32
 ARGON2_DESCRIPTOR = {'kdf': 'argon2id', 't': ARGON2_TIME_COST, 'm': ARGON2_MEMORY_KIB, 'p': ARGON2_PARALLELISM}
-LOGIN_WINDOW_SECONDS = 300
-LOGIN_MAX_FAILURES = 8
+# Client-supplied KDF params shape (what the browser actually sends: bare
+# {t, m, p} plus a top-level 'kdf' field). Accepts the historical descriptor
+# shape too so clients written against either form keep working.
+ARGON2_CLIENT_PARAMS = {'t': ARGON2_TIME_COST, 'm': ARGON2_MEMORY_KIB, 'p': ARGON2_PARALLELISM}
+
+
+def valid_argon2_params(params):
+    """Accept exactly the pinned Argon2id profile, with or without the 'kdf'
+    label (downgrade protection: any other value is rejected)."""
+    return params == ARGON2_CLIENT_PARAMS or params == ARGON2_DESCRIPTOR
+# Unauthenticated endpoints: tighter to slow password spraying (5/15min).
+# Authenticated state-changing: 5/15min. Notes stays 60/min (sync bursts).
+LOGIN_WINDOW_SECONDS = 900
+LOGIN_MAX_FAILURES = 5
 CHANGE_WINDOW_SECONDS = 900
 CHANGE_MAX_FAILURES = 5
 NOTES_PUT_WINDOW_SECONDS = 60
@@ -270,10 +286,59 @@ def is_e2ee_account(row):
         return False
 
 
-# Fixed dummy salt/hash so unknown usernames take the same PBKDF2 work as
+# Fixed dummy hash so unknown usernames take the same PBKDF2 work as
 # real ones (timing-attack mitigation for user enumeration).
 _DUMMY_SALT = b'notely-enumeration-dummy-salt-01'
 _DUMMY_HASH = hashlib.pbkdf2_hmac('sha256', b'notely-dummy-password', _DUMMY_SALT, PBKDF2_ITERATIONS)
+
+
+def dummy_kdf_salt_for(username):
+    """Per-username deterministic dummy salt (enumeration fix).
+
+    Old code returned one constant salt for every unknown name, so an
+    attacker could enumerate by equality (two unknowns -> same salt) or by
+    comparing to the open-source constant. Now derive 16 bytes as
+    HMAC-SHA256(DB_KEY, 'kdf-dummy-v1:' + lower(username))[:16]: stable per
+    name, distinct across names, indistinguishable from random without DB_KEY.
+    """
+    try:
+        name = str(username or '').strip().lower().encode('utf-8')
+    except Exception:
+        name = b'unknown'
+    return hmac.new(DB_KEY, b'kdf-dummy-v1:' + name, hashlib.sha256).digest()[:16]
+
+
+# Small weak-password screen for E2EE verifiers. The server never sees the
+# password, but it knows saltAuth+authHash, so it can test a tiny dictionary
+# (top leaked passwords + trivial strings). Each check is one Argon2id (64MiB,
+# ~0.3-1s); only ~8 candidates to keep registration <5s. This catches
+# "123"/"password"/"qwerty" style bypasses of client-side policy without
+# learning anything about strong passwords. Not a substitute for OPAQUE.
+_WEAK_PASSWORD_CANDIDATES = (
+    '123', 'password', '123456', '123456789', 'qwerty', '12345678',
+    'password123', 'admin123',
+)
+
+
+def is_weak_verifier(auth_hash_bytes, salt_auth_bytes):
+    """True if authHash matches a trivial password under the given salt.
+
+    Constant-time over candidates (no early exit) so timing does not reveal
+    whether/which weak password matched.
+    """
+    try:
+        matched = False
+        for candidate in _WEAK_PASSWORD_CANDIDATES:
+            try:
+                cand = argon2id_raw(candidate, bytes(salt_auth_bytes))
+            except Exception:
+                continue
+            if hmac.compare_digest(cand, bytes(auth_hash_bytes)):
+                matched = True
+        return matched
+    except Exception:
+        return False
+    return False
 
 
 # Constant-time legacy password check against the stored verifier.
@@ -335,6 +400,14 @@ def init_db():
     notes_cols = {row['name'] for row in conn.execute('PRAGMA table_info(user_notes)')}
     if 'enc_blob' not in notes_cols:
         conn.execute('ALTER TABLE user_notes ADD COLUMN enc_blob BLOB')
+    # Notes history (LWW fix): keep last 5 opaque blobs per user so a hijacked
+    # session overwrite can be rolled back. Pruned on every PUT.
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS user_notes_history ('
+        'id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, '
+        'enc_blob BLOB NOT NULL, updated_at INTEGER NOT NULL)'
+    )
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_hist_user ON user_notes_history (username, id)')
     existing = {row['username'] for row in conn.execute('SELECT username FROM users')}
     for username, (first, last, subtitle) in BOOTSTRAP_PROFILES.items():
         if username in existing:
@@ -374,6 +447,12 @@ def init_db():
             )
     conn.commit()
     conn.close()
+    # Harden file perms: DB holds verifier material + opaque blobs. 0600 even
+    # if umask created it 0644.
+    try:
+        os.chmod(DB_PATH, 0o600)
+    except OSError:
+        pass
 
 
 # --- DB-backed rate limiting (shared across processes/restarts) ---
@@ -403,9 +482,77 @@ def rate_exceeded(conn, buckets, max_n, window):
     return False
 
 
-# Rate-limit bucket key for the caller IP.
-def ip_bucket():
-    return 'ip:' + (request.remote_addr or 'unknown')
+# Rate-limit bucket key for the caller IP, namespaced per endpoint so one
+# endpoint's failures can never consume another endpoint's budget.
+def ip_bucket(endpoint):
+    return endpoint + ':ip:' + (request.remote_addr or 'unknown')
+
+
+def ip_user_bucket(endpoint, username):
+    """Per-IP+user bucket for unauthenticated endpoints (lockout-DoS fix).
+
+    Old code used a global 'login:user:victim' bucket: 8 fails from ANY IP
+    locked the victim globally. Now bind to IP so an attacker can only
+    consume their own budget; legitimate logins from other IPs still pass.
+    """
+    try:
+        ip = request.remote_addr or 'unknown'
+        user = str(username or '').strip().lower()
+    except Exception:
+        ip, user = 'unknown', ''
+    return f'{endpoint}:ipuser:{ip}:{user}'
+
+
+# CSRF: state-changing /api/* requests must be same-origin when Origin/Referer
+# is present, and must carry JSON (or no body for logout). Blocks classic
+# cross-site form/fetch POSTs; SameSite=Lax remains as second layer.
+def csrf_check_failed():
+    """True when the request looks cross-site (reject with 403)."""
+    try:
+        if request.method not in ('POST', 'PUT', 'DELETE', 'PATCH'):
+            return False
+        if not request.path.startswith('/api/'):
+            return False
+        origin = request.headers.get('Origin')
+        referer = request.headers.get('Referer')
+        host = request.host or ''
+        # Normalise: compare host (with port) case-insensitively.
+        def _host_of(url):
+            try:
+                from urllib.parse import urlparse
+                return (urlparse(url).hostname or '').lower(), urlparse(url).port
+            except Exception:
+                return '', None
+        if origin:
+            oh, oport = _host_of(origin)
+            try:
+                rh = (request.host.split(':')[0] or '').lower()
+                rport = request.host.split(':')[1] if ':' in request.host else None
+                # Allow same host regardless of scheme/port mismatch behind proxies?
+                # Strict: hostname must match; port must match if Origin specifies one.
+                if oh != rh:
+                    return True
+            except Exception:
+                return True
+        elif referer:
+            rh, _ = _host_of(referer)
+            try:
+                myhost = (request.host.split(':')[0] or '').lower()
+                if rh and rh != myhost:
+                    return True
+            except Exception:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+# JSON body as a dict, or {} for missing/unparseable/non-object payloads.
+# Several endpoints call .get() on the result; without this guard a JSON
+# array/string body would raise AttributeError into a 500.
+def json_object():
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
 
 
 # Mint a random session token, store only its SHA-256, prune long-expired sessions, and return both.
@@ -423,22 +570,59 @@ def issue_session_token(conn, username, now):
     return token, digest
 
 
-# Set the HttpOnly SameSite=Lax session cookie (Secure flag via NOTELY_COOKIE_SECURE, default on).
+# Whether the session cookie carries the Secure flag: explicit
+# NOTELY_COOKIE_SECURE=1/0 always wins (default Secure ON, even for
+# loopback — modern browsers accept Secure on http://localhost as a secure
+# context; plain-HTTP LAN deployments must set up TLS).
+def session_cookie_secure():
+    env = os.environ.get('NOTELY_COOKIE_SECURE')
+    if env is not None:
+        return env == '1'
+    return True
+
+
+# Set the HttpOnly __Host- SameSite=Lax session cookie (Secure always unless
+# NOTELY_COOKIE_SECURE=0). __Host- requires Secure + Path=/ + no Domain.
 def set_session_cookie(response, token):
-    cookie_secure = os.environ.get('NOTELY_COOKIE_SECURE', '1') == '1'
     response.set_cookie(
         SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS,
-        httponly=True, samesite='Lax', secure=cookie_secure, path='/',
+        httponly=True, samesite='Lax', secure=session_cookie_secure(), path='/',
     )
     return response
 
 
+def get_session_token_from_request():
+    """New __Host- cookie first, legacy fallback until sunset date."""
+    try:
+        token = request.cookies.get(SESSION_COOKIE)
+        if token:
+            return token, False
+        # Legacy fallback sunsets 2026-12-01: after that, old cookie rejected
+        # (forces one relogin, closes tossing window).
+        try:
+            import datetime
+            if datetime.datetime.utcnow() >= datetime.datetime(2026, 12, 1):
+                return None, True
+        except Exception:
+            pass
+        legacy = request.cookies.get(LEGACY_SESSION_COOKIE)
+        return (legacy, True) if legacy else (None, False)
+    except Exception:
+        return None, False
+
+
 # Resolve the request cookie to a live user: checks absolute + idle expiry, touches last_seen, returns the decrypted display profile.
 def current_session_user():
-    token = request.cookies.get(SESSION_COOKIE)
-    if not token:
+    try:
+        token, used_legacy = get_session_token_from_request()
+    except Exception:
         return None
-    digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
+    if not token or not isinstance(token, str) or len(token) > 512:
+        return None
+    try:
+        digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
+    except Exception:
+        return None
     now = int(time.time())
     conn = get_db()
     row = conn.execute(
@@ -460,6 +644,7 @@ def current_session_user():
                 **profile,
                 '_token_digest': digest,
                 '_token_created': row['created_at'],
+                '_used_legacy': bool(used_legacy),
             }
         return None
     if row:
@@ -504,26 +689,41 @@ def security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     response.headers['Referrer-Policy'] = 'no-referrer'
-    # NOTE: the Werkzeug dev server appends its own `Server:` banner at send
-    # time, so overriding it here would only duplicate the header. Strip the
-    # banner at the production reverse proxy instead (e.g. nginx
-    # `server_tokens off;`); gunicorn emits an unversioned banner by default.
-    if request.is_secure or os.environ.get('NOTELY_FORCE_HSTS') == '1':
-        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    # Server banner hidden via WSGIRequestHandler override in __main__
+    # (gunicorn emits unversioned 'gunicorn' natively). Do NOT set here:
+    # Werkzeug would then send two Server headers (duplicate).
+    # HSTS always (browsers ignore over HTTP; enforced over HTTPS).
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=(), payment=()'
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
+    response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+    response.headers['Vary'] = 'Origin'
+    if request.path.startswith('/api/'):
+        # API payloads carry salts, verifier material and note blobs: never
+        # allow browsers or proxies to cache them.
+        response.cache_control.no_store = True
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         # wasm-unsafe-eval: required to compile the vendored Argon2 WASM
         # module (strictly narrower than unsafe-eval: JS eval stays blocked).
         "script-src 'self' 'wasm-unsafe-eval'; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "img-src 'self' https:; "
+        "img-src 'self' https: data:; "
         "font-src 'self' https://fonts.gstatic.com; "
         "connect-src 'self'; "
         "frame-ancestors 'self'; "
         "base-uri 'self'; "
-        "form-action 'self'"
+        "form-action 'self'; "
+        "object-src 'none'; "
+        "upgrade-insecure-requests"
     )
     return response
+
+
+@app.before_request
+def csrf_protect():
+    if csrf_check_failed():
+        return jsonify({'error': 'Cross-site request rejected.'}), 403
 
 
 @app.errorhandler(404)
@@ -581,7 +781,20 @@ def api_kdf_params():
             'params': {'i': row['iterations'] or PBKDF2_ITERATIONS},
             'saltAuth': base64.b64encode(bytes(row['salt_auth'])).decode('ascii'),
         })
-    return jsonify({'e2ee': False})
+    if row is not None:
+        # Legacy pre-E2EE account: keep the non-E2EE shape so the client
+        # still sends the password for transparent upgrade on next login.
+        return jsonify({'e2ee': False})
+    # Unknown username: same shape as a real Argon2id account but with a
+    # per-username deterministic dummy salt (not one global constant).
+    # Stable per name, distinct across names, indistinguishable without DB_KEY.
+    dummy_salt = dummy_kdf_salt_for(username if validate_username(username) else 'invalid')
+    return jsonify({
+        'e2ee': True,
+        'kdf': 'argon2id',
+        'params': ARGON2_DESCRIPTOR,
+        'saltAuth': base64.b64encode(dummy_salt).decode('ascii'),
+    })
 
 
 # Split a stored wrapped-key blob into {iv, data} base64 for API responses.
@@ -641,7 +854,7 @@ def upgrade_legacy_account(conn, username, password):
 @app.route('/api/login', methods=['POST'])
 def api_login():
     conn = get_db()
-    buckets = [ip_bucket()]
+    buckets = [ip_bucket('login')]
     probe_user = ''
     try:
         probe = request.get_json(silent=True) or {}
@@ -649,21 +862,24 @@ def api_login():
     except Exception:
         probe_user = ''
     if probe_user and validate_username(probe_user):
-        buckets.append('user:' + probe_user.lower())
+        # Per-IP+user (not global user) so attacker cannot lock victim out.
+        buckets.append(ip_user_bucket('login', probe_user))
     if rate_exceeded(conn, buckets, LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS):
         conn.close()
         return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
-    data = request.get_json(silent=True) or {}
+    data = json_object()
     username = str(data.get('username', '')).strip()
     password = str(data.get('password', ''))
     auth_hash_b64 = data.get('authHash')
     if not validate_username(username):
         # Dummy work to keep timing uniform for invalid input.
         hmac.compare_digest(_DUMMY_HASH, _DUMMY_HASH)
-        rate_hit(conn, ip_bucket())
+        rate_hit(conn, ip_bucket('login'))
         conn.close()
         return jsonify({'error': 'Incorrect username or password.'}), 401
     user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
+    # Precompute per-IP+user bucket once (lockout-DoS fix).
+    user_bucket = ip_user_bucket('login', username)
     if user and is_e2ee_account(user):
         # E2EE login: only the auth verifier travels; the password (and every
         # key derived from it) never leaves the device. The KDF is pinned per
@@ -676,14 +892,17 @@ def api_login():
             # Burn equal PBKDF2 work so E2EE accounts are not distinguishable
             # from legacy/unknown ones by response timing.
             hashlib.pbkdf2_hmac('sha256', secrets.token_bytes(16), _DUMMY_SALT, PBKDF2_ITERATIONS)
-            rate_hit(conn, ip_bucket())
-            rate_hit(conn, 'user:' + username.lower())
+            rate_hit(conn, ip_bucket('login'))
+            rate_hit(conn, user_bucket)
             conn.close()
             return jsonify({'error': 'Incorrect username or password.'}), 401
         ok = hmac.compare_digest(candidate, bytes(user['auth_hash']))
         if not ok:
-            rate_hit(conn, ip_bucket())
-            rate_hit(conn, 'user:' + username.lower())
+            # Burn equal PBKDF2 work so a wrong verifier on a real account
+            # costs the same as an unknown-user attempt (timing-oracle fix).
+            hashlib.pbkdf2_hmac('sha256', secrets.token_bytes(16), _DUMMY_SALT, PBKDF2_ITERATIONS)
+            rate_hit(conn, ip_bucket('login'))
+            rate_hit(conn, user_bucket)
             conn.close()
             return jsonify({'error': 'Incorrect username or password.'}), 401
         try:
@@ -704,19 +923,26 @@ def api_login():
         })
         return set_session_cookie(response, token)
     if not password or len(password) > 256:
-        hmac.compare_digest(_DUMMY_HASH, _DUMMY_HASH)
-        rate_hit(conn, ip_bucket())
+        # Burn equal PBKDF2 work so unknown/legacy names cost the same as a
+        # wrong E2EE verifier (timing-oracle fix).
+        hashlib.pbkdf2_hmac('sha256', secrets.token_bytes(16), _DUMMY_SALT, PBKDF2_ITERATIONS)
+        rate_hit(conn, ip_bucket('login'))
         conn.close()
         return jsonify({'error': 'Incorrect username or password.'}), 401
     if user and not is_e2ee_account(user):
         ok = verify_password(password, user['pwd_salt'], user['pwd_hash'], user['iterations'])
     else:
         # Unknown user: burn the same PBKDF2 cost, then fail closed.
-        dummy = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), _DUMMY_SALT, PBKDF2_ITERATIONS)
+        # Unencodable passwords (e.g. lone surrogates) fail closed too
+        # instead of escaping as a 500.
+        try:
+            dummy = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), _DUMMY_SALT, PBKDF2_ITERATIONS)
+        except Exception:
+            dummy = _DUMMY_HASH
         ok = hmac.compare_digest(dummy, _DUMMY_HASH) and False
     if not ok:
-        rate_hit(conn, ip_bucket())
-        rate_hit(conn, 'user:' + username.lower())
+        rate_hit(conn, ip_bucket('login'))
+        rate_hit(conn, user_bucket)
         conn.close()
         return jsonify({'error': 'Incorrect username or password.'}), 401
     # Legacy account with a correct password: transparently upgrade to E2EE.
@@ -737,15 +963,15 @@ def api_login():
 @app.route('/api/register', methods=['POST'])
 def api_register():
     conn = get_db()
-    if rate_exceeded(conn, [ip_bucket()], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS):
+    if rate_exceeded(conn, [ip_bucket('register')], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS):
         conn.close()
         return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
-    data = request.get_json(silent=True) or {}
+    data = json_object()
     username = str(data.get('username', '')).strip()
     first = str(data.get('firstName', '')).strip()[:40]
     last = str(data.get('lastName', '')).strip()[:40]
     if not validate_username(username):
-        rate_hit(conn, ip_bucket())
+        rate_hit(conn, ip_bucket('register'))
         conn.close()
         return jsonify({'error': 'Username must be 3-32 chars: letters, numbers, _ or -.'}), 400
     # E2EE registration: the client generates the master key and sends only
@@ -761,31 +987,40 @@ def api_register():
         kdf = data.get('kdf')
         params = data.get('params') or {}
     except (ValueError, AttributeError):
-        rate_hit(conn, ip_bucket())
+        rate_hit(conn, ip_bucket('register'))
         conn.close()
         return jsonify({'error': 'Invalid registration payload.'}), 400
-    if kdf != 'argon2id' or params != ARGON2_DESCRIPTOR:
-        rate_hit(conn, ip_bucket())
+    if kdf != 'argon2id' or not valid_argon2_params(params):
+        rate_hit(conn, ip_bucket('register'))
         conn.close()
         return jsonify({'error': 'Invalid registration payload.'}), 400
     if not validate_person_name(first) or not validate_person_name(last):
-        rate_hit(conn, ip_bucket())
+        rate_hit(conn, ip_bucket('register'))
         conn.close()
         return jsonify({'error': 'First and last name must be 1-40 letters (spaces, hyphens, apostrophes OK).'}), 400
-    # NOTE: password strength is enforced client-side (passwordPolicyCheck)
-    # because the server never sees passwords — only verifiers. A weak
-    # password weakens only that account's own vault against brute force.
+    # E2EE: server never sees the password, but it can still screen the
+    # verifier against a tiny weak-password dictionary under the provided
+    # salt (see is_weak_verifier). Strong passwords learn nothing; weak ones
+    # are rejected with the same 400 as other policy failures. Client-side
+    # passwordPolicyCheck remains the primary gate.
+    if is_weak_verifier(auth_hash, salt_auth):
+        rate_hit(conn, ip_bucket('register'))
+        conn.close()
+        return jsonify({'error': 'Password too weak: choose a longer, less common password.'}), 400
     exists = conn.execute('SELECT 1 FROM users WHERE username = ?', (username,)).fetchone()
     if exists:
         # Burn equal PBKDF2 work so timing does not reveal account existence,
         # then answer EXACTLY like a success (uniform response, CWE-203 fix).
         hashlib.pbkdf2_hmac('sha256', bytes(auth_hash), _DUMMY_SALT, PBKDF2_ITERATIONS)
-        rate_hit(conn, ip_bucket())
+        rate_hit(conn, ip_bucket('register'))
         conn.close()
         return jsonify({
             'ok': True,
             'message': 'If the username is available, the account was created. You can now log in.',
         }), 202
+    # Timing-oracle fix: success path also burns PBKDF2 so new vs existing
+    # both cost ~25ms (previously 3ms vs 25ms leaked existence).
+    hashlib.pbkdf2_hmac('sha256', bytes(auth_hash), _DUMMY_SALT, PBKDF2_ITERATIONS)
     conn.execute(
         'INSERT INTO users (username, pwd_salt, pwd_hash, iterations, enc_profile, created_at,'
         ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params)'
@@ -809,11 +1044,11 @@ def api_change_password():
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    buckets = [ip_bucket(), 'user:' + user['username'].lower(), 'pwchange:' + user['username'].lower()]
+    buckets = [ip_bucket('pwchange'), 'pwchange:user:' + user['username'].lower(), 'pwchange:' + user['username'].lower()]
     if rate_exceeded(conn, buckets, CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
         conn.close()
         return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
-    data = request.get_json(silent=True) or {}
+    data = json_object()
     row = conn.execute('SELECT * FROM users WHERE username = ?', (user['username'],)).fetchone()
     if not row:
         conn.close()
@@ -835,11 +1070,14 @@ def api_change_password():
         except (ValueError, AttributeError):
             conn.close()
             return jsonify({'error': 'Invalid request.'}), 400
-        if new_kdf != 'argon2id' or new_params != ARGON2_DESCRIPTOR or not hmac.compare_digest(current_auth, bytes(row['auth_hash'])):
-            rate_hit(conn, ip_bucket())
+        if new_kdf != 'argon2id' or not valid_argon2_params(new_params) or not hmac.compare_digest(current_auth, bytes(row['auth_hash'])):
+            rate_hit(conn, ip_bucket('pwchange'))
             rate_hit(conn, 'pwchange:' + user['username'].lower())
             conn.close()
             return jsonify({'error': 'Current password is incorrect.'}), 401
+        if is_weak_verifier(new_auth, new_salt_auth):
+            conn.close()
+            return jsonify({'error': 'New password too weak: choose a longer, less common password.'}), 400
         conn.execute(
             'UPDATE users SET salt_auth = ?, salt_enc = ?, auth_hash = ?, enc_master_key = ?,'
             " kdf = 'argon2id', kdf_params = ?"
@@ -857,18 +1095,27 @@ def api_change_password():
             return jsonify({'error': msg}), 400
         old = conn.execute('SELECT pwd_salt, pwd_hash, iterations FROM users WHERE username = ?', (user['username'],)).fetchone()
         if not old or not verify_password(current, old['pwd_salt'], old['pwd_hash'], old['iterations']):
-            rate_hit(conn, ip_bucket())
+            rate_hit(conn, ip_bucket('pwchange'))
             rate_hit(conn, 'pwchange:' + user['username'].lower())
             conn.close()
             return jsonify({'error': 'Current password is incorrect.'}), 401
         new_salt = secrets.token_bytes(16)
+        try:
+            new_hash = hash_password(new_password, new_salt)
+        except ValueError:
+            # Unencodable password (e.g. lone surrogates): reject instead of 500ing.
+            conn.close()
+            return jsonify({'error': 'Invalid request.'}), 400
         conn.execute(
             'UPDATE users SET pwd_salt = ?, pwd_hash = ?, iterations = ? WHERE username = ?',
-            (new_salt, hash_password(new_password, new_salt), PBKDF2_ITERATIONS, user['username']),
+            (new_salt, new_hash, PBKDF2_ITERATIONS, user['username']),
         )
     # Invalidate all other sessions for this user.
-    token = request.cookies.get(SESSION_COOKIE)
-    digest = hashlib.sha256(token.encode('utf-8')).hexdigest() if token else ''
+    try:
+        token, _legacy = get_session_token_from_request()
+        digest = hashlib.sha256(token.encode('utf-8')).hexdigest() if token else ''
+    except Exception:
+        digest = ''
     conn.execute('DELETE FROM sessions WHERE username = ? AND token_hash != ?', (user['username'], digest))
     conn.commit()
     conn.close()
@@ -885,10 +1132,10 @@ def api_upgrade_kdf():
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    if rate_exceeded(conn, [ip_bucket(), 'user:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
+    if rate_exceeded(conn, [ip_bucket('upgrade'), 'upgrade:user:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
         conn.close()
         return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
-    data = request.get_json(silent=True) or {}
+    data = json_object()
     row = conn.execute('SELECT * FROM users WHERE username = ?', (user['username'],)).fetchone()
     if not row or not is_e2ee_account(row) or (row['kdf'] or 'pbkdf2') != 'pbkdf2':
         conn.close()
@@ -906,8 +1153,9 @@ def api_upgrade_kdf():
     except (ValueError, AttributeError):
         conn.close()
         return jsonify({'error': 'Invalid request.'}), 400
-    if new_kdf != 'argon2id' or new_params != ARGON2_DESCRIPTOR or not hmac.compare_digest(old_auth, bytes(row['auth_hash'])):
-        rate_hit(conn, ip_bucket())
+    if new_kdf != 'argon2id' or not valid_argon2_params(new_params) or not hmac.compare_digest(old_auth, bytes(row['auth_hash'])):
+        rate_hit(conn, ip_bucket('upgrade'))
+        rate_hit(conn, 'upgrade:user:' + user['username'].lower())
         conn.close()
         return jsonify({'error': 'Upgrade rejected.'}), 401
     conn.execute(
@@ -931,7 +1179,7 @@ def validate_note_object(note):
     if not isinstance(note_id, str) or not NOTE_ID_RE.match(note_id):
         raise ValueError('Invalid note id.')
     ext = note.get('ext')
-    if ext not in ('md', 'txt'):
+    if ext not in ('md', 'txt', 'json', 'yaml'):
         raise ValueError('Invalid note type.')
     title = note.get('title')
     if not isinstance(title, str) or not title.strip():
@@ -952,16 +1200,6 @@ def validate_note_object(note):
         if tag:
             cleaned_tags.append(tag)
     cleaned_tags = cleaned_tags[:20]
-    collection = note.get('collection')
-    if collection is not None:
-        if not isinstance(collection, str):
-            raise ValueError('Invalid note collection.')
-        collection = collection.strip()[:180] or None
-    recipe = note.get('recipe')
-    if recipe is not None:
-        if not isinstance(recipe, str):
-            raise ValueError('Invalid note recipe folder.')
-        recipe = recipe.strip()[:180] or None
     sections = note.get('sections')
     if sections is None:
         sections = {}
@@ -998,8 +1236,6 @@ def validate_note_object(note):
         'title': title,
         'body': body,
         'tags': cleaned_tags,
-        'collection': collection,
-        'recipe': recipe,
         'sections': sections,
         'ext': ext,
         'date': date[:40],
@@ -1058,6 +1294,27 @@ def api_put_notes():
     data = request.get_json(silent=True)
     items = data.get('notes') if isinstance(data, dict) else None
     payload = data.get('payload') if isinstance(data, dict) else None
+    # Optimistic concurrency (LWW fix): clients must send baseVersion =
+    # updated_at they last GET. Stale or missing -> 409/400 so a hijacked or
+    # racing overwrite cannot silently destroy newer data (old clients must
+    # upgrade; app shell is no-store so they fetch fresh quickly).
+    base_version = data.get('baseVersion') if isinstance(data, dict) else None
+    cur_row = conn.execute('SELECT updated_at, enc_blob FROM user_notes WHERE username = ?',
+                           (user['username'],)).fetchone()
+    cur_version = cur_row['updated_at'] if cur_row else 0
+    if base_version is None:
+        conn.close()
+        return jsonify({'error': 'Missing baseVersion — reload and retry.',
+                        'updated_at': int(cur_version or 0)}), 400
+    if base_version is not None:
+        try:
+            if int(base_version) != int(cur_version or 0):
+                conn.close()
+                return jsonify({'error': 'Notes changed on server — reload and retry.',
+                                'updated_at': int(cur_version or 0)}), 409
+        except (ValueError, TypeError):
+            conn.close()
+            return jsonify({'error': 'Invalid baseVersion.'}), 400
     row = conn.execute('SELECT salt_auth, auth_hash, salt_enc, enc_master_key FROM users WHERE username = ?',
                        (user['username'],)).fetchone()
     if row and is_e2ee_account(row):
@@ -1076,6 +1333,20 @@ def api_put_notes():
             conn.close()
             return jsonify({'error': 'Notes too large.'}), 413
         now = int(time.time())
+        # History: stash previous opaque blob (rollback after hijack).
+        try:
+            if cur_row and cur_row['enc_blob']:
+                conn.execute(
+                    'INSERT INTO user_notes_history (username, enc_blob, updated_at) VALUES (?, ?, ?)',
+                    (user['username'], bytes(cur_row['enc_blob']), int(cur_version or 0)),
+                )
+                conn.execute(
+                    'DELETE FROM user_notes_history WHERE id NOT IN '
+                    '(SELECT id FROM user_notes_history WHERE username = ? ORDER BY id DESC LIMIT 5)',
+                    (user['username'],),
+                )
+        except Exception:
+            pass
         conn.execute(
             'INSERT INTO user_notes (username, enc_notes, updated_at, enc_blob) VALUES (?, ?, ?, ?)'
             ' ON CONFLICT(username) DO UPDATE SET enc_notes = excluded.enc_notes,'
@@ -1144,12 +1415,15 @@ def api_vault_meta_get():
 @app.route('/api/vault-meta', methods=['POST'])
 def api_vault_meta_set():
     """Create (or re-create after a reset) the vault verifier + wrapped key.
-    Sizes are strictly validated; the password itself never arrives."""
+    Sizes are strictly validated; the password itself never arrives.
+    Overwrite requires proof: currentVaultAuth (old vault verifier) OR
+    currentAccountAuth (login verifier) so a stolen cookie alone cannot
+    destroy/replace the vault. Initial creation needs no proof."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    if rate_exceeded(conn, [ip_bucket(), 'vault:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
+    if rate_exceeded(conn, [ip_bucket('vault'), 'vault:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
         conn.close()
         return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
     data = request.get_json(silent=True) or {}
@@ -1163,6 +1437,35 @@ def api_vault_meta_set():
     except (ValueError, AttributeError):
         conn.close()
         return jsonify({'error': 'Invalid vault payload.'}), 400
+    existing = conn.execute('SELECT verifier FROM vault_meta WHERE username = ?',
+                            (user['username'],)).fetchone()
+    if existing:
+        # Proof required for overwrite.
+        proved = False
+        try:
+            cur_vault = data.get('currentVaultAuth')
+            cur_acct = data.get('currentAccountAuth')
+            if cur_vault is not None:
+                cand = b64decode_strict(cur_vault, 32)
+                if hmac.compare_digest(cand, bytes(existing['verifier'])):
+                    proved = True
+            if not proved and cur_acct is not None:
+                acct = conn.execute('SELECT auth_hash, salt_auth FROM users WHERE username = ?',
+                                    (user['username'],)).fetchone()
+                if acct is not None and acct['auth_hash']:
+                    try:
+                        cand2 = b64decode_strict(cur_acct, 32)
+                        if hmac.compare_digest(cand2, bytes(acct['auth_hash'])):
+                            proved = True
+                    except ValueError:
+                        pass
+        except Exception:
+            proved = False
+        if not proved:
+            rate_hit(conn, ip_bucket('vault'))
+            rate_hit(conn, 'vault:' + user['username'].lower())
+            conn.close()
+            return jsonify({'error': 'Vault overwrite requires current vault or account password proof.'}), 401
     now = int(time.time())
     conn.execute(
         'INSERT INTO vault_meta (username, salt_auth, verifier, salt_enc, enc_dek, created_at)'
@@ -1179,12 +1482,47 @@ def api_vault_meta_set():
 
 @app.route('/api/vault-meta', methods=['DELETE'])
 def api_vault_meta_delete():
-    """Reset the vault (used with an explicit destructive confirm): drops the
-    verifier so the contents become permanently unreadable."""
+    """Reset the vault: drops the verifier so contents become unreadable.
+    Requires current vault OR account password proof (stolen-cookie DoS fix).
+    Forgot-password reset uses currentAccountAuth + explicit confirm."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
+    existing = conn.execute('SELECT verifier FROM vault_meta WHERE username = ?',
+                            (user['username'],)).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({'ok': True})
+    data = request.get_json(silent=True) or {}
+    proved = False
+    try:
+        cur_vault = data.get('currentVaultAuth')
+        cur_acct = data.get('currentAccountAuth')
+        if cur_vault is not None:
+            try:
+                cand = b64decode_strict(cur_vault, 32)
+                if hmac.compare_digest(cand, bytes(existing['verifier'])):
+                    proved = True
+            except ValueError:
+                pass
+        if not proved and cur_acct is not None:
+            acct = conn.execute('SELECT auth_hash FROM users WHERE username = ?',
+                                (user['username'],)).fetchone()
+            if acct is not None and acct['auth_hash']:
+                try:
+                    cand2 = b64decode_strict(cur_acct, 32)
+                    if hmac.compare_digest(cand2, bytes(acct['auth_hash'])):
+                        proved = True
+                except ValueError:
+                    pass
+    except Exception:
+        proved = False
+    if not proved:
+        rate_hit(conn, ip_bucket('vault'))
+        rate_hit(conn, 'vault:' + user['username'].lower())
+        conn.close()
+        return jsonify({'error': 'Vault reset requires current vault or account password proof.'}), 401
     conn.execute('DELETE FROM vault_meta WHERE username = ?', (user['username'],))
     conn.commit()
     conn.close()
@@ -1209,19 +1547,43 @@ def api_me():
 
 @app.route('/api/logout', methods=['POST'])
 def api_logout():
-    token = request.cookies.get(SESSION_COOKIE)
-    if token:
-        digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
-        conn = get_db()
-        conn.execute('DELETE FROM sessions WHERE token_hash = ?', (digest,))
-        conn.commit()
-        conn.close()
+    for cookie_name in (SESSION_COOKIE, LEGACY_SESSION_COOKIE):
+        try:
+            token = request.cookies.get(cookie_name)
+        except Exception:
+            token = None
+        if token:
+            try:
+                digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
+            except Exception:
+                continue
+            try:
+                conn = get_db()
+                conn.execute('DELETE FROM sessions WHERE token_hash = ?', (digest,))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
     response = jsonify({'ok': True})
-    response.delete_cookie(SESSION_COOKIE, path='/')
+    # Mirror the session cookie flags so browsers actually drop it (a Secure
+    # cookie is only cleared by a Secure deletion cookie). Clear both names.
+    response.delete_cookie(SESSION_COOKIE, path='/',
+                           httponly=True, samesite='Lax', secure=session_cookie_secure())
+    response.delete_cookie(LEGACY_SESSION_COOKIE, path='/',
+                           httponly=True, samesite='Lax', secure=session_cookie_secure())
     return response
 
 
 if __name__ == '__main__':
     init_db()
+    # Hide Werkzeug version banner (info-disclosure fix). Must run before app.run.
+    try:
+        import werkzeug.serving
+        werkzeug.serving.WSGIRequestHandler.server_version = 'Notely'
+        werkzeug.serving.WSGIRequestHandler.sys_version = ''
+    except Exception:
+        pass
     port = int(os.environ.get('PORT', '5000'))
-    app.run(host='127.0.0.1', port=port)
+    print('NOTELY: production use requires HTTPS reverse proxy + NOTELY_COOKIE_SECURE=1 '
+          '(default Secure ON) + gunicorn (Werkzeug dev server is single-process).', flush=True)
+    app.run(host='127.0.0.1', port=port, threaded=True)

@@ -1,15 +1,15 @@
 // ============================================================================
 // Notely frontend (app.js) — single IIFE, 'use strict'.
-// WHAT IT DOES: sidebar navigation, collections folders, note list tree,
+// WHAT IT DOES: sidebar navigation, custom sections/folders, note list tree,
 // Markdown editor with live preview, templates, import/export, Bin (3-day
 // soft-delete), Archive, right-click menus, themes, and the login gate.
 // HOW DATA FLOWS: notes live in memory (`notes`) and sync encrypted to the
 // server (PUT/GET /api/notes). Auth/session/profile live in the "Auth & E2EE"
 // section near the end. localStorage holds ONLY non-secret UI state:
-// collections order, deleted-folder entries, collapsed folders, theme,
+// section/folder order, collapsed folders, theme,
 // sidebar state. Rendering rule: every dynamic string goes through
 // escapeHtml(); every rendered link/image URL through sanitizeUrl().
-// SECTIONS (in order): Icons · Notes data + E2EE vault · Collections & Bin ·
+// SECTIONS (in order): Icons · Notes data + E2EE vault · Sections & Bin ·
 // Note list tree · Editor · Context menu + delete dialogs · Templates ·
 // Shell wiring (search/filters/nav/import/sidebar) · Auth & E2EE session ·
 // Themes/settings · Boot.
@@ -73,7 +73,7 @@ document.querySelectorAll('[data-icon]').forEach((element) => {
 
 const starterNotes = [
   {
-    id: 'inbox', title: 'Designing a calmer inbox', date: 'Today', tags: ['product', 'systems'], favorite: true, ext: 'md', collection: null,
+    id: 'inbox', title: 'Designing a calmer inbox', date: 'Today', tags: ['product', 'systems'], favorite: true, ext: 'md', sections: {},
     body: `# Designing a calmer inbox
 
 The best inbox is not the one that holds everything. It is the one that makes the next right thing feel obvious.
@@ -97,7 +97,7 @@ For one week, I am trying a simple rhythm: check twice a day, process to zero, a
 The goal is not perfect productivity. It is making room for better work.`
   },
   {
-    id: 'reading', title: 'A reading list for 2026', date: 'Yesterday', tags: ['reading'], favorite: false, ext: 'md', collection: 'Reading list',
+    id: 'reading', title: 'A reading list for 2026', date: 'Yesterday', tags: ['reading'], favorite: false, ext: 'md', sections: { 'section-collections': 'Reading list' },
     body: `# A reading list for 2026
 
 Books, essays, and field notes I want to spend time with this year.
@@ -111,7 +111,7 @@ Books, essays, and field notes I want to spend time with this year.
 I want to read fewer things, more slowly, and keep a small note for each one.`
   },
   {
-    id: 'north-star', title: 'Project north star', date: 'Mar 18', tags: ['product', 'work'], favorite: false, ext: 'md', collection: 'Work',
+    id: 'north-star', title: 'Project north star', date: 'Mar 18', tags: ['product', 'work'], favorite: false, ext: 'md', sections: { 'section-collections': 'Work' },
     body: `# Project north star
 
 Build the smallest useful version, then learn from the people using it.
@@ -125,7 +125,7 @@ Build the smallest useful version, then learn from the people using it.
 > Make the important thing easy to find.`
   },
   {
-    id: 'weekend', title: 'Weekend field notes', date: 'Mar 15', tags: ['personal'], favorite: false, ext: 'txt', collection: 'Personal',
+    id: 'weekend', title: 'Weekend field notes', date: 'Mar 15', tags: ['personal'], favorite: false, ext: 'txt', sections: { 'section-collections': 'Personal' },
     body: `# Weekend field notes
 
 The farmers market was quieter than usual. Picked up citrus, sourdough, and a new plant for the studio.
@@ -133,7 +133,7 @@ The farmers market was quieter than usual. Picked up citrus, sourdough, and a ne
 The good kind of unplanned day.`
   },
   {
-    id: 'meeting', title: 'Team check-in notes', date: 'Mar 12', tags: ['work'], favorite: false, ext: 'md', collection: 'Work',
+    id: 'meeting', title: 'Team check-in notes', date: 'Mar 12', tags: ['work'], favorite: false, ext: 'md', sections: { 'section-collections': 'Work' },
     body: `# Team check-in notes
 
 ## Open threads
@@ -145,7 +145,7 @@ The good kind of unplanned day.`
 Next check-in: Thursday afternoon.`
   },
   {
-    id: 'morning', title: 'A better morning ritual', date: 'Mar 09', tags: ['personal'], favorite: true, ext: 'txt', collection: 'Personal',
+    id: 'morning', title: 'A better morning ritual', date: 'Mar 09', tags: ['personal'], favorite: true, ext: 'txt', sections: { 'section-collections': 'Personal' },
     body: `# A better morning ritual
 
 No phone for the first thirty minutes. Water, a short walk, then a page of notes before the day starts asking for things.`
@@ -173,32 +173,96 @@ function isValidNoteId(id) {
 function sanitizeFilename(name, ext) {
   const base = String(name == null ? 'note' : name).trim() || 'note';
   const clean = base.replace(/[^a-zA-Z0-9-_. ]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || 'note';
-  const safeExt = ext === 'txt' ? 'txt' : 'md';
+  const safeExt = normalizeExt(ext);
   // Strip any extension confusion: never allow double extensions to hide type.
   const withoutDots = clean.replace(/\.+/g, '_');
   return `${withoutDots}.${safeExt}`;
 }
 
-// Clamp/normalize one stored note into the current schema (id, ext, collection, tags/title/body caps, deleted/archived flags, sane bin timestamps). Never throws on hostile input.
+// Note file types: Markdown renders + previews; txt/json/yaml are edited as
+// plain source (no preview, no Markdown toolbar).
+const NOTE_EXTS = ['md', 'txt', 'json', 'yaml'];
+const EXT_LABELS = { md: 'MD', txt: 'TXT', json: 'JSON', yaml: 'YAML' };
+const EXT_MIME = {
+  md: 'text/markdown', txt: 'text/plain',
+  json: 'application/json', yaml: 'application/x-yaml',
+};
+// Canonicalize a stored/typed extension (accepts yml/markdown/text aliases).
+function normalizeExt(ext, fallback = 'md') {
+  const clean = String(ext == null ? '' : ext).trim().toLowerCase().replace(/^\./, '');
+  if (clean === 'yml') return 'yaml';
+  if (clean === 'markdown') return 'md';
+  if (clean === 'text') return 'txt';
+  return NOTE_EXTS.includes(clean) ? clean : fallback;
+}
+
+// Note cover pictures: uploaded images stored as data URLs on the note
+// (inside the E2EE envelope like everything else). Strictly validated on
+// every read: image MIME only, base64 payload only, hard length cap.
+const COVER_MAX_CHARS = 380000;
+const COVER_ACCEPT = [
+  'image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif',
+  'image/avif', 'image/bmp', 'image/x-ms-bmp',
+];
+const COVER_MAX_DIM = 1200;
+// Accept by MIME, falling back to the file extension (some systems report
+// generic or missing MIME types for camera/gallery files).
+function isImageFile(file) {
+  if (!file) return false;
+  if (COVER_ACCEPT.includes(String(file.type || '').toLowerCase())) return true;
+  return /\.(png|jpe?g|jfif|webp|gif|avif|bmp)$/i.test(file.name || '');
+}
+function cleanCoverSrc(raw) {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  const m = s.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/);
+  if (!m) return null;
+  if (s.length > COVER_MAX_CHARS) return null;
+  return s;
+}
+
+// Clamp/normalize one stored note into the current schema (id, ext, sections, tags/title/body caps, deleted/archived flags, sane bin timestamps). Never throws on hostile input.
 function migrateNote(note) {
   const migrated = (note && typeof note === 'object' && !Array.isArray(note)) ? { ...note } : {};
   if (!isValidNoteId(migrated.id)) migrated.id = newNoteId();
-  if (migrated.ext !== 'txt' && migrated.ext !== 'md') {
-    const extMatch = typeof migrated.title === 'string' ? migrated.title.match(/\.((md|markdown|txt|text))$/i) : null;
+  if (!NOTE_EXTS.includes(migrated.ext)) {
+    const extMatch = typeof migrated.title === 'string' ? migrated.title.match(/\.((md|markdown|txt|text|json|yaml|yml))$/i) : null;
     if (extMatch) {
-      const ext = extMatch[1].toLowerCase();
-      migrated.ext = ext.startsWith('txt') || ext === 'text' ? 'txt' : 'md';
+      migrated.ext = normalizeExt(extMatch[1]);
       migrated.title = migrated.title.slice(0, -(extMatch[0].length));
     } else {
       migrated.ext = 'md';
     }
+  } else {
+    migrated.ext = normalizeExt(migrated.ext);
   }
-  if (!('collection' in migrated) || (migrated.collection !== null && typeof migrated.collection !== 'string')) {
+  if (typeof migrated.cover === 'string') {
+    migrated.cover = cleanCoverSrc(migrated.cover);
+  } else if (migrated.cover != null) {
+    migrated.cover = null;
+  }
+  // Vertical focal point of the cover banner (0 = top, 100 = bottom).
+  if (!migrated.cover || typeof migrated.coverPos !== 'number' || !Number.isFinite(migrated.coverPos)) {
+    migrated.coverPos = null;
+  } else {
+    migrated.coverPos = Math.min(100, Math.max(0, migrated.coverPos));
+  }
+  if (!migrated.sections || typeof migrated.sections !== 'object' || Array.isArray(migrated.sections)) migrated.sections = {};
+  // Legacy collection/tags -> default custom section (same value, new home).
+  if (typeof migrated.collection === 'string' && migrated.collection.trim()) {
+    const folder = migrated.collection.trim().slice(0, 180);
+    if (typeof migrated.sections[MIGRATED_COLLECTIONS_SECTION_ID] !== 'string' || !migrated.sections[MIGRATED_COLLECTIONS_SECTION_ID]) {
+      migrated.sections[MIGRATED_COLLECTIONS_SECTION_ID] = folder;
+    }
+  } else if (!('collection' in migrated) || migrated.collection == null) {
     const tags = Array.isArray(migrated.tags) ? migrated.tags : [];
-    if (tags.includes('work')) migrated.collection = 'Work';
-    else if (tags.includes('personal')) migrated.collection = 'Personal';
-    else if (tags.includes('reading')) migrated.collection = 'Reading list';
-    else migrated.collection = null;
+    let tagFolder = null;
+    if (tags.includes('work')) tagFolder = 'Work';
+    else if (tags.includes('personal')) tagFolder = 'Personal';
+    else if (tags.includes('reading')) tagFolder = 'Reading list';
+    if (tagFolder && (typeof migrated.sections[MIGRATED_COLLECTIONS_SECTION_ID] !== 'string' || !migrated.sections[MIGRATED_COLLECTIONS_SECTION_ID])) {
+      migrated.sections[MIGRATED_COLLECTIONS_SECTION_ID] = tagFolder;
+    }
   }
   if (!Array.isArray(migrated.tags)) migrated.tags = [];
   else {
@@ -231,9 +295,9 @@ function migrateNote(note) {
   } else if ('deletedAt' in migrated) delete migrated.deletedAt;
   if (typeof migrated.favorite !== 'boolean') migrated.favorite = false;
   if (typeof migrated.date !== 'string') migrated.date = 'Now';
-  if (typeof migrated.collection === 'string') migrated.collection = migrated.collection.trim().slice(0, 180) || null;
-  if (!('recipe' in migrated) || (migrated.recipe !== null && typeof migrated.recipe !== 'string')) migrated.recipe = null;
-  if (typeof migrated.recipe === 'string') migrated.recipe = migrated.recipe.trim().slice(0, 180) || null;
+  // Built-in Collections/Recipes removed: drop legacy fields (migrated above into custom sections).
+  if ('collection' in migrated) delete migrated.collection;
+  if ('recipe' in migrated) delete migrated.recipe;
   if (!migrated.sections || typeof migrated.sections !== 'object' || Array.isArray(migrated.sections)) migrated.sections = {};
   else {
     const cleanedSections = {};
@@ -253,6 +317,10 @@ function migrateNote(note) {
 // legacy plaintext keys are migrated once, then wiped (CWE-312 fix).
 let notes = [];
 let notesLoaded = false;
+// Last server updated_at seen (optimistic concurrency: sent as baseVersion on
+// PUT; server rejects 409 on stale overwrites so hijacked/racing writes fail
+// instead of silently destroying newer data).
+let serverNotesVersion = 0;
 // True when the server E2EE envelope already supplied per-account UI state
 // (v2 `ui`). loadUiVault() respects it and never overwrites it with a stale
 // device-local copy from another account.
@@ -280,7 +348,7 @@ function wipeLegacyLocalNotes() {
 let syncTimer;
 
 // --- End-to-end encryption -------------------------------------------------
-// Note bodies/titles/tags/collections are encrypted on this device with the
+// Note bodies/titles/tags/sections are encrypted on this device with the
 // account master key (AES-GCM-256). The server only stores opaque blobs.
 // The master key lives in memory only: it is created at registration (or
 // unwrapped at login) and wiped on logout. Reloading with a valid session
@@ -478,6 +546,16 @@ function refreshEditorLock() {
   const importBtn = document.getElementById('import-notes');
   if (newNoteBtn) newNoteBtn.hidden = locked || activeView === 'bin';
   if (importBtn) importBtn.hidden = locked || activeView === 'bin';
+  const coverAddBtn = document.getElementById('cover-add');
+  if (coverAddBtn) setCoverAddHidden(readOnly || activeView === 'vault' || !note || Boolean(note.cover));
+  const coverChangeBtn = document.getElementById('cover-change');
+  if (coverChangeBtn) coverChangeBtn.disabled = readOnly;
+  const coverRemoveBtn = document.getElementById('cover-remove');
+  if (coverRemoveBtn) coverRemoveBtn.disabled = readOnly;
+  const coverReposBtn = document.getElementById('cover-repos');
+  if (coverReposBtn) coverReposBtn.disabled = readOnly;
+  const coverDoneBtn = document.getElementById('cover-done');
+  if (coverDoneBtn) coverDoneBtn.disabled = readOnly;
 }
 
 // Debounced encrypted upload of the workspace (notes + vault ciphertext +
@@ -496,8 +574,19 @@ async function syncNotesToServer() {
       if (typeof uiSnapshot === 'function') envelope.ui = uiSnapshot();
     } catch (error) {}
     const payload = await e2eeEncryptNotes(envelope);
-    const response = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload }) });
+    const response = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload, baseVersion: serverNotesVersion }) });
+    if (response.status === 409) {
+      saveLabel.textContent = 'Out of date';
+      try { showToast('Notes changed on server — reloading'); } catch (error) {}
+      try { await loadNotesFromServer(); } catch (error) {}
+      try { renderNoteList(); } catch (error) {}
+      return;
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    try {
+      const data = await response.json();
+      if (data && typeof data.updated_at === 'number') serverNotesVersion = data.updated_at;
+    } catch (error) {}
     saveLabel.textContent = 'Saved';
   } catch (error) {
     saveLabel.textContent = 'Sync failed';
@@ -520,6 +609,9 @@ async function loadNotesFromServer() {
     const response = await apiFetch('/api/notes');
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
+    try {
+      if (data && typeof data.updated_at === 'number') serverNotesVersion = data.updated_at;
+    } catch (error) {}
     if (data && data.payload) {
       // E2EE blob: only this device can read it. Envelope is either a legacy
       // bare notes array or {v, notes, vault} (vault items stay ciphertext).
@@ -569,16 +661,18 @@ async function loadNotesFromServer() {
   }
 }
 
-const GENERAL_FOLDER = 'General';
 const BIN_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
-const DEFAULT_COLLECTIONS = ['Work', 'Personal', 'Reading list'];
-const COLLECTION_COLORS = ['coral', 'yellow', 'blue', 'mint', 'violet', 'rose'];
-const COLLECTION_STORAGE_KEY = 'notely-collections';
-const DELETED_COLLECTIONS_KEY = 'notely-deleted-collections';
+// Default folders carried over from the removed built-in Collections section.
+// New custom sections share the same folder palette/behavior (same value).
+const DEFAULT_CUSTOM_FOLDERS = ['Work', 'Personal', 'Reading list'];
+const FOLDER_COLORS = ['coral', 'yellow', 'blue', 'mint', 'violet', 'rose'];
+const COLLECTION_COLORS = FOLDER_COLORS;
 const COLLAPSED_FOLDERS_KEY = 'notely-tree-collapsed';
-const RECIPE_STORAGE_KEY = 'notely-recipe-collections';
 const SECTION_DATA_KEY = 'notely-section-data';
-// Per-account UI state (sidebar folders, recipes, custom sections, hidden
+// Built-in Collections section removed: all sections are custom sections.
+// The former Collections folders/notes migrate into MIGRATED_COLLECTIONS_SECTION_ID.
+const MIGRATED_COLLECTIONS_SECTION_ID = 'section-collections';
+// Per-account UI state (sidebar folders, custom sections, hidden
 // sections, Bin entries, collapsed state). Source of truth is the server E2EE
 // envelope (`ui` field, v2) so every account keeps its own sidebar across
 // relogs and devices. A per-account encrypted localStorage copy is only a
@@ -586,20 +680,11 @@ const SECTION_DATA_KEY = 'notely-section-data';
 const UI_VAULT_KEY = 'notely-ui-vault';
 
 // Locked-boot defaults: folder names stay unreadable until the vault unlocks.
-// The legacy plaintext keys below are only ever READ, once, right after
-// unlock (adoptLegacyUiKeys), then replaced by the encrypted vault.
-let collections = [...DEFAULT_COLLECTIONS];
-let deletedCollections = [];
 let collapsedFolders = new Set();
-let recipeCollections = [];
-// User-built sidebar sections: [{ id, name, folders: [...] }]. Notes point at
-// them via note.sections = { sectionId: folderPath }.
+// Sidebar sections: [{ id, name, folders: [...] }]. Notes point at
+// them via note.sections = { sectionId: folderPath }. All sections (including
+// the migrated former Collections) share the same implementation/value.
 let customSections = [];
-// Display-name overrides for the built-in sections ({ collections?, recipes? }).
-let sectionNames = {};
-// Built-in sections the user hid via Delete (e.g. ['recipes']). Persisted in
-// the encrypted UI vault so an empty unwanted header stays gone.
-let hiddenSections = [];
 // Custom sections moved to Bin: [{ id, name, folders, deletedAt }]. Binned
 // notes keep their section tags, so restoring a note revives its section.
 let deletedCustomSections = [];
@@ -624,13 +709,8 @@ function uiSnapshot() {
     if (['light', 'dark', 'dracula'].includes(current)) theme = current;
   } catch (error) {}
   return {
-    collections: [...collections],
-    deletedCollections: deletedCollections.map((entry) => ({ name: entry.name, deletedAt: entry.deletedAt })),
     collapsed: [...collapsedFolders],
-    recipes: [...recipeCollections],
     customSections: customSections.map((section) => ({ id: section.id, name: section.name, folders: [...section.folders] })),
-    sectionNames: { ...sectionNames },
-    hiddenSections: [...(hiddenSections || [])],
     deletedCustomSections: (deletedCustomSections || []).map((entry) => ({
       id: entry.id, name: entry.name,
       folders: [...(entry.folders || [])], deletedAt: entry.deletedAt,
@@ -644,20 +724,19 @@ function uiSnapshot() {
 function cleanUiSnapshot(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const out = {};
-  out.collections = Array.isArray(value.collections)
-    ? value.collections.filter((name) => typeof name === 'string' && name.trim()).slice(0, 200) : null;
-  out.deletedCollections = Array.isArray(value.deletedCollections)
-    ? value.deletedCollections.filter((entry) => entry && typeof entry.name === 'string' && entry.name.trim() && typeof entry.deletedAt === 'number').slice(0, 200) : null;
   out.collapsed = Array.isArray(value.collapsed)
     ? value.collapsed.filter((name) => typeof name === 'string').slice(0, 500) : null;
-  out.recipes = Array.isArray(value.recipes)
-    ? value.recipes.filter((name) => typeof name === 'string' && name.trim()).slice(0, 200) : null;
   const cleanCustom = cleanCustomSections(value.customSections);
   if (cleanCustom) out.customSections = cleanCustom;
-  const cleanNames = cleanSectionNames(value.sectionNames);
-  if (cleanNames) out.sectionNames = cleanNames;
-  const cleanHidden = cleanHiddenSections(value.hiddenSections);
-  if (cleanHidden) out.hiddenSections = cleanHidden;
+  // Legacy built-in Collections data (pre-unification): carried for migration
+  // in applyUiSnapshot into the default custom section.
+  if (Array.isArray(value.collections)) {
+    const legacyCols = value.collections.filter((name) => typeof name === 'string' && name.trim()).slice(0, 200);
+    if (legacyCols.length) out.legacyCollections = legacyCols;
+  }
+  if (value.sectionNames && typeof value.sectionNames.collections === 'string' && value.sectionNames.collections.trim()) {
+    out.legacyCollectionsName = value.sectionNames.collections.trim().slice(0, 40);
+  }
   if (Array.isArray(value.deletedCustomSections)) {
     const cleanSections = value.deletedCustomSections.filter((entry) => (
       entry && typeof entry.id === 'string' && entry.id.trim()
@@ -676,8 +755,8 @@ function cleanUiSnapshot(value) {
   if (typeof value.theme === 'string' && ['light', 'dark', 'dracula'].includes(value.theme)) {
     out.theme = value.theme;
   }
-  if (out.collections === null && out.deletedCollections === null && out.collapsed === null
-    && out.recipes === null && !out.customSections && !out.sectionNames && !out.hiddenSections && !out.deletedCustomSections && !out.theme) return null;
+  if (out.collapsed === null
+    && !out.customSections && !out.legacyCollections && !out.legacyCollectionsName && !out.deletedCustomSections && !out.theme) return null;
   return out;
 }
 
@@ -686,14 +765,14 @@ function applyUiSnapshot(value) {
   const clean = cleanUiSnapshot(value);
   if (!clean) return false;
   let adopted = false;
-  if (clean.collections !== null) { collections = clean.collections; adopted = true; }
-  if (clean.deletedCollections !== null) { deletedCollections = clean.deletedCollections; adopted = true; }
   if (clean.collapsed !== null) { collapsedFolders = new Set(clean.collapsed); adopted = true; }
-  if (clean.recipes !== null) { recipeCollections = clean.recipes; adopted = true; }
   if (clean.customSections) { customSections = clean.customSections; adopted = true; }
-  if (clean.sectionNames) { sectionNames = clean.sectionNames; adopted = true; }
-  if (clean.hiddenSections) { hiddenSections = clean.hiddenSections; adopted = true; }
   if (clean.deletedCustomSections) { deletedCustomSections = clean.deletedCustomSections; adopted = true; }
+  // One-time migration of legacy built-in Collections into the default custom
+  // section (same folders/value, unified implementation).
+  if (clean.legacyCollections || clean.legacyCollectionsName) {
+    try { ensureMigratedCollectionsSection(clean.legacyCollections || [], clean.legacyCollectionsName || null); adopted = true; } catch (error) {}
+  }
   if (clean.theme) {
     try { applyTheme(clean.theme, false); } catch (error) {}
     adopted = true;
@@ -712,9 +791,8 @@ async function writeUiVaultLocal() {
     if (['light', 'dark', 'dracula'].includes(current)) theme = current;
   } catch (error) {}
   const snapshot = JSON.stringify({
-    collections, deletedCollections, collapsed: [...collapsedFolders],
-    recipes: recipeCollections, customSections, sectionNames,
-    hiddenSections, deletedCustomSections, theme,
+    collapsed: [...collapsedFolders],
+    customSections, deletedCustomSections, theme,
   });
   const iv = e2eeRandomBytes(12);
   const ct = await window.crypto.subtle.encrypt(
@@ -736,10 +814,9 @@ async function writeUiVaultLocal() {
         }
       }
     } catch (error) {}
-    localStorage.removeItem(COLLECTION_STORAGE_KEY);
-    localStorage.removeItem(DELETED_COLLECTIONS_KEY);
+    localStorage.removeItem('notely-collections');
+    localStorage.removeItem('notely-deleted-collections');
     localStorage.removeItem(COLLAPSED_FOLDERS_KEY);
-    localStorage.removeItem(RECIPE_STORAGE_KEY);
   } catch (error) {}
 }
 
@@ -777,70 +854,75 @@ function cleanCustomSections(value) {
   return out;
 }
 
-function cleanSectionNames(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const out = {};
-  ['collections', 'recipes'].forEach((kind) => {
-    if (typeof value[kind] === 'string' && value[kind].trim()) {
-      out[kind] = value[kind].trim().slice(0, 40);
+// Ensure the migrated former-Collections custom section exists and carries
+// the same folders/value. All new sections share this implementation.
+function ensureMigratedCollectionsSection(legacyFolders, legacyName) {
+  const folders = Array.isArray(legacyFolders)
+    ? legacyFolders.filter((name) => typeof name === 'string' && name.trim()).map((name) => name.trim().slice(0, 180)).slice(0, 200)
+    : [];
+  let section = customSections.find((entry) => entry.id === MIGRATED_COLLECTIONS_SECTION_ID);
+  if (!section) {
+    const baseName = (typeof legacyName === 'string' && legacyName.trim() ? legacyName.trim().slice(0, 40) : 'Collections');
+    const taken = new Set(customSections.map((entry) => entry.name.toLowerCase()));
+    let name = baseName;
+    if (taken.has(name.toLowerCase())) {
+      let counter = 2;
+      while (taken.has(`${baseName} ${counter}`.toLowerCase())) counter += 1;
+      name = `${baseName} ${counter}`;
     }
+    const merged = [...folders];
+    if (!merged.length) DEFAULT_CUSTOM_FOLDERS.forEach((name) => { if (!merged.some((entry) => entry.toLowerCase() === name.toLowerCase())) merged.push(name); });
+    section = { id: MIGRATED_COLLECTIONS_SECTION_ID, name, folders: merged };
+    customSections.unshift(section);
+  } else {
+    folders.forEach((name) => {
+      if (!section.folders.some((entry) => entry.toLowerCase() === name.toLowerCase())) section.folders.push(name);
+    });
+    if (typeof legacyName === 'string' && legacyName.trim() && section.name !== legacyName.trim()) {
+      const taken = new Set(customSections.filter((entry) => entry.id !== section.id).map((entry) => entry.name.toLowerCase()));
+      if (!taken.has(legacyName.trim().toLowerCase())) section.name = legacyName.trim().slice(0, 40);
+    }
+  }
+  // Migrate note.collection -> note.sections[migratedId] (same value, new home).
+  let notesDirty = false;
+  notes.forEach((note) => {
+    if (typeof note.collection === 'string' && note.collection.trim()) {
+      const folder = note.collection.trim().slice(0, 180);
+      if (!note.sections || typeof note.sections !== 'object' || Array.isArray(note.sections)) note.sections = {};
+      if (typeof note.sections[section.id] !== 'string' || !note.sections[section.id]) {
+        note.sections[section.id] = folder;
+        notesDirty = true;
+      }
+      if (!section.folders.some((entry) => entry.toLowerCase() === folder.toLowerCase())) {
+        section.folders.push(folder);
+      }
+    }
+    if ('collection' in note) { delete note.collection; notesDirty = true; }
   });
-  return out;
-}
-
-function cleanHiddenSections(value) {
-  if (!Array.isArray(value)) return null;
-  const out = value.filter((kind) => kind === 'collections' || kind === 'recipes').slice(0, 2);
-  return [...new Set(out)];
-}
-
-// True when a built-in sidebar section was hidden via Delete.
-function isBuiltinHidden(kind) {
-  return Array.isArray(hiddenSections) && hiddenSections.includes(kind);
-}
-
-// Hide/show a built-in section and persist the choice.
-function setBuiltinHidden(kind, hidden) {
-  if (kind !== 'collections' && kind !== 'recipes') return;
-  const next = new Set(hiddenSections || []);
-  if (hidden) next.add(kind);
-  else next.delete(kind);
-  hiddenSections = [...next];
-  persistUiVault();
-  renderCollections();
+  if (notesDirty) persistNotes();
+  persistCustomSections();
+  return section;
 }
 
 function readLegacyUiKeys() {
-  const out = { cols: null, del: null, collapsed: null, recipes: null, sections: null };
+  const out = { cols: null, colsName: null, collapsed: null, sections: null };
   try {
     const storedSections = JSON.parse(localStorage.getItem(SECTION_DATA_KEY) || 'null');
     if (storedSections && typeof storedSections === 'object') {
       const clean = cleanCustomSections(storedSections.sections);
-      const names = cleanSectionNames(storedSections.names);
-      if ((clean && clean.length) || (names && Object.keys(names).length)) {
-        out.sections = { sections: clean || [], names: names || {} };
+      if (clean && clean.length) {
+        out.sections = { sections: clean };
+      }
+      if (storedSections.names && typeof storedSections.names.collections === 'string' && storedSections.names.collections.trim()) {
+        out.colsName = storedSections.names.collections.trim().slice(0, 40);
       }
     }
   } catch (error) {}
   try {
-    const storedRecipes = JSON.parse(localStorage.getItem(RECIPE_STORAGE_KEY) || 'null');
-    if (Array.isArray(storedRecipes)) {
-      const recipes = storedRecipes.filter((name) => typeof name === 'string' && name.trim()).slice(0, 200);
-      if (recipes.length) out.recipes = recipes;
-    }
-  } catch (error) {}
-  try {
-    const stored = JSON.parse(localStorage.getItem(COLLECTION_STORAGE_KEY) || 'null');
+    const stored = JSON.parse(localStorage.getItem('notely-collections') || 'null');
     if (Array.isArray(stored)) {
       const cols = stored.filter((name) => typeof name === 'string' && name.trim()).slice(0, 200);
       if (cols.length) out.cols = cols;
-    }
-  } catch (error) {}
-  try {
-    const storedDeleted = JSON.parse(localStorage.getItem(DELETED_COLLECTIONS_KEY) || 'null');
-    if (Array.isArray(storedDeleted)) {
-      const del = storedDeleted.filter((entry) => entry && typeof entry.name === 'string' && entry.name.trim() && typeof entry.deletedAt === 'number').slice(0, 200);
-      if (del.length) out.del = del;
     }
   } catch (error) {}
   try {
@@ -894,32 +976,19 @@ async function loadUiVault() {
   }
   const legacy = readLegacyUiKeys();
   let adopted = false;
-  if (legacy.cols) { collections = legacy.cols; adopted = true; }
-  if (legacy.del) { deletedCollections = legacy.del; adopted = true; }
   if (legacy.collapsed) { collapsedFolders = new Set(legacy.collapsed); adopted = true; }
-  if (legacy.recipes) { recipeCollections = legacy.recipes; adopted = true; }
   if (legacy.sections) {
     customSections = legacy.sections.sections;
-    sectionNames = legacy.sections.names;
     adopted = true;
+  }
+  if (legacy.cols || legacy.colsName) {
+    try { ensureMigratedCollectionsSection(legacy.cols || [], legacy.colsName || null); adopted = true; } catch (error) {}
   }
   if (adopted) {
     persistUiVault();
     try { persistNotes(); } catch (error) {}
   }
   return adopted;
-}
-// Persist the sidebar folder order/names into the encrypted UI vault.
-function persistCollections() {
-  persistUiVault();
-}
-// Persist the sidebar recipe-folder names into the encrypted UI vault.
-function persistRecipeCollections() {
-  persistUiVault();
-}
-// Persist binned-folder entries {name, deletedAt} into the encrypted UI vault.
-function persistDeletedCollections() {
-  persistUiVault();
 }
 // Persist binned custom-section records {id, name, folders, deletedAt}.
 function persistDeletedCustomSections() {
@@ -940,32 +1009,7 @@ function pruneDeletedCustomSections() {
   ));
   if (deletedCustomSections.length !== before) persistDeletedCustomSections();
 }
-// True when a folder name currently sits in Bin.
-function isCollectionDeleted(name) {
-  return deletedCollections.some((entry) => entry.name === name);
-}
-// Stable dot color per folder: fixed brand colors for defaults, palette rotation by sidebar order, hash fallback for orphans.
-function collectionColor(name) {
-  const known = { Work: 'coral', Personal: 'yellow', 'Reading list': 'blue' };
-  if (known[name]) return known[name];
-  const index = collections.findIndex((entry) => entry === name);
-  if (index >= 0) return COLLECTION_COLORS[index % COLLECTION_COLORS.length];
-  let hash = 0;
-  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  return COLLECTION_COLORS[Math.abs(hash) % COLLECTION_COLORS.length];
-}
-// De-duplicate a folder name (case-insensitive) against live, binned and reserved names by appending a counter.
-function uniqueCollectionName(base) {
-  const taken = new Set(collections.map((name) => name.toLowerCase()));
-  deletedCollections.forEach((entry) => taken.add(entry.name.toLowerCase()));
-  taken.add(GENERAL_FOLDER.toLowerCase());
-  if (!taken.has(base.toLowerCase())) return base;
-  let counter = 2;
-  while (taken.has(`${base} ${counter}`.toLowerCase())) counter += 1;
-  return `${base} ${counter}`;
-}
-
-// Permanently drop notes/folders past the 3-day retention; repairs tampered timestamps; drops folder entries with no binned notes left.
+// Permanently drop notes/sections past the 3-day retention; repairs tampered timestamps; drops section entries with no binned notes left.
 function purgeExpiredBin() {
   const now = Date.now();
   let changed = false;
@@ -979,12 +1023,6 @@ function purgeExpiredBin() {
   const before = notes.length;
   notes = notes.filter((note) => !(note.deleted && typeof note.deletedAt === 'number' && now - note.deletedAt > BIN_RETENTION_MS));
   if (notes.length !== before) changed = true;
-  const foldersBefore = deletedCollections.length;
-  deletedCollections = deletedCollections.filter((entry) => (
-    now - entry.deletedAt <= BIN_RETENTION_MS
-    && notes.some((note) => note.deleted && note.collection === entry.name)
-  ));
-  if (deletedCollections.length !== foldersBefore) changed = true;
   const sectionsBefore = (deletedCustomSections || []).length;
   deletedCustomSections = (deletedCustomSections || []).filter((entry) => (
     now - entry.deletedAt <= BIN_RETENTION_MS
@@ -993,7 +1031,6 @@ function purgeExpiredBin() {
   ));
   if (deletedCustomSections.length !== sectionsBefore) changed = true;
   if (changed) {
-    persistDeletedCollections();
     persistDeletedCustomSections();
     persistNotes();
   }
@@ -1004,172 +1041,14 @@ purgeExpiredBin();
 let currentId = null;
 let activeView = 'notes';
 let activeFilter = 'all';
-let activeCollection = null;
-let activeRecipe = null;
-let activeSection = null; // 'collections' | 'recipes' | null — whole-section filter
-let activeCustom = null; // { section: id, folder: path | null } | null — custom section/folder filter
+let activeCustom = null; // { section: id, folder: path | null } | null — section/folder filter
 let searchQuery = '';
 let saveTimer;
 // Persist collapsed tree-folder state into the encrypted UI vault.
 function persistCollapsedFolders() {
   persistUiVault();
 }
-// ---- Sidebar collections & Bin: folder CRUD, sidebar render, sync with note data ----
-
-const collectionList = document.getElementById('collection-list');
-
-// Render the sidebar folder list (live folders only) plus the implicit General row whenever truly
-// uncategorized notes exist (no collection AND not filed in a recipe/custom section).
-function renderCollections() {
-  if (!collectionList) return;
-  const liveHasGeneral = notes.some((note) => !note.deleted && !note.collection && !hidesInGeneral(note));
-  const generalRow = liveHasGeneral ? `
-    <a href="#" class="collection-item${activeCollection === GENERAL_FOLDER ? ' active' : ''}" data-collection="${GENERAL_FOLDER}" data-depth="0" title="${GENERAL_FOLDER}">
-      <span class="collection-dot general"></span>
-      <span class="collection-label">${GENERAL_FOLDER}</span>
-      <span class="collection-actions">
-        <button type="button" class="collection-action" data-collection-rename="${GENERAL_FOLDER}" title="Rename folder" aria-label="Rename ${GENERAL_FOLDER}">${icon('pencil')}</button>
-      </span>
-      <input class="collection-rename-input" value="${GENERAL_FOLDER}" hidden maxlength="180" aria-label="Folder name" />
-    </a>` : '';
-  collectionList.innerHTML = collections.filter((name) => !isCollectionDeleted(name)).map((name) => `
-    <a href="#" draggable="true" class="collection-item${activeCollection === name ? ' active' : ''}" data-collection="${escapeHtml(name)}" data-depth="${folderDepth(name)}" title="${escapeHtml(name)}">
-      <span class="collection-dot ${collectionColor(name)}"></span>
-      <span class="collection-label">${escapeHtml(folderLeaf(name))}</span>
-      <span class="collection-actions">
-        <button type="button" class="collection-action" data-collection-rename="${escapeHtml(name)}" title="Rename folder" aria-label="Rename ${escapeHtml(name)}">${icon('pencil')}</button>
-      </span>
-      <input class="collection-rename-input" value="${escapeHtml(folderLeaf(name))}" hidden maxlength="180" aria-label="Folder name" />
-    </a>`).join('') + generalRow;
-  // The Recipes + custom sections always mirror alongside (same sidebar, own namespaces).
-  renderRecipeCollections();
-  renderCustomSections();
-  updateSectionHeaders();
-  const collectionsSection = document.querySelector('.sidebar-section[data-section="collections"]');
-  if (collectionsSection) {
-    collectionsSection.classList.toggle('active-section', activeSection === 'collections');
-    collectionsSection.style.display = isBuiltinHidden('collections') ? 'none' : '';
-  }
-}
-
-// Reconcile sidebar with note data: adopt unknown live folders (normalizing case/whitespace), never resurrect binned ones.
-function syncCollectionsWithNotes() {
-  let notesDirty = false;
-  let collectionsDirty = false;
-  const binnedNames = new Set(deletedCollections.map((entry) => entry.name.toLowerCase()));
-  notes.forEach((note) => {
-    if (note.deleted) return;
-    if (typeof note.collection !== 'string' || !note.collection.trim()) {
-      if (note.collection !== null && note.collection !== undefined) {
-        note.collection = null;
-        notesDirty = true;
-      }
-      return;
-    }
-    const trimmed = note.collection.trim();
-    if (binnedNames.has(trimmed.toLowerCase())) return;
-    const canonical = collections.find((entry) => entry.toLowerCase() === trimmed.toLowerCase());
-    if (canonical) {
-      if (note.collection !== canonical) {
-        note.collection = canonical;
-        notesDirty = true;
-      }
-    } else {
-      collections.push(trimmed);
-      if (note.collection !== trimmed) {
-        note.collection = trimmed;
-        notesDirty = true;
-      }
-      collectionsDirty = true;
-    }
-  });
-  if (notesDirty) persistNotes();
-  if (collectionsDirty) persistCollections();
-  if (collectionsDirty && isBuiltinHidden('collections')) {
-    hiddenSections = (hiddenSections || []).filter((kind) => kind !== 'collections');
-    persistUiVault();
-    syncSideMenuSettings();
-  }
-  // Recipes + custom sections ride along: one choke point keeps all sidebars in sync.
-  syncRecipeCollections();
-  syncCustomSections();
-}
-
-// Filter the list to one folder: resets view/filter/search, updates the heading, re-renders.
-function selectCollection(name) {
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  activeView = 'notes';
-  activeFilter = 'all';
-  activeCollection = name;
-  activeRecipe = null;
-  activeSection = null;
-  activeCustom = null;
-  clearSearch();
-  updateListHeading();
-  renderCollections();
-  renderNoteList();
-}
-
-// Validate and rename a folder everywhere (notes, collapsed state, selection, Bin entries).
-// Renaming General spawns a real folder. Renaming a parent re-parents its whole subtree.
-function renameCollection(oldName, rawNewName, opts) {
-  const newName = cleanFolderPath(rawNewName);
-  if (!newName) { renderCollections(); renderNoteList(); return false; }
-  if (newName === oldName) { renderCollections(); renderNoteList(); return true; }
-  if (newName.toLowerCase() === GENERAL_FOLDER.toLowerCase() && oldName !== GENERAL_FOLDER) {
-    showToast(`“${GENERAL_FOLDER}” is reserved`);
-    renderCollections(); renderNoteList();
-    return false;
-  }
-  const duplicate = oldName === GENERAL_FOLDER
-    ? collections.some((entry) => entry.toLowerCase() === newName.toLowerCase())
-    : collections.some((entry) => entry !== oldName && entry.toLowerCase() === newName.toLowerCase());
-  const collidesWithBin = deletedCollections.some((entry) => entry.name.toLowerCase() === newName.toLowerCase());
-  if (duplicate || collidesWithBin) {
-    showToast(collidesWithBin && !duplicate ? 'A folder with that name is in Bin' : 'A folder with that name already exists');
-    renderCollections(); renderNoteList();
-    return false;
-  }
-  if (oldName === GENERAL_FOLDER) {
-    // Renaming General gives its truly uncategorized notes a real collection
-    // (notes filed in a recipe/custom section keep living only there).
-    collections.push(newName);
-    notes.forEach((note) => { if (!note.collection && !hidesInGeneral(note)) note.collection = newName; });
-    if (collapsedFolders.has(GENERAL_FOLDER)) { collapsedFolders.delete(GENERAL_FOLDER); }
-  } else {
-    const index = collections.findIndex((entry) => entry === oldName);
-    if (index === -1) return false;
-    const oldPrefix = `${oldName}${FOLDER_SEP}`;
-    collections = repathList(collections, oldName, newName);
-    notes.forEach((note) => {
-      if (typeof note.collection === 'string' && isFolderOrSub(note.collection, oldName)) {
-        note.collection = note.collection === oldName ? newName : newName + note.collection.slice(oldName.length);
-      }
-    });
-    const collapsed = new Set();
-    collapsedFolders.forEach((entry) => {
-      collapsed.add(entry === oldName ? newName : (entry.startsWith(oldPrefix) ? newName + entry.slice(oldName.length) : entry));
-    });
-    collapsedFolders = collapsed;
-    deletedCollections.forEach((entry) => {
-      if (entry.name === oldName) entry.name = newName;
-      else if (entry.name.startsWith(oldPrefix)) entry.name = newName + entry.name.slice(oldName.length);
-    });
-    if (activeCollection && isFolderOrSub(activeCollection, oldName)) {
-      activeCollection = activeCollection === oldName ? newName : newName + activeCollection.slice(oldName.length);
-      updateListHeading();
-    }
-  }
-  persistCollections();
-  persistCollapsedFolders();
-  persistNotes();
-  persistDeletedCollections();
-  renderCollections();
-  renderNoteList();
-  if (!opts || !opts.silent) showToast(`Folder renamed to “${newName}”`);
-  return true;
-}
+// ---- Sidebar sections & Bin: folder CRUD, sidebar render, sync with note data ----
 
 // Rewrite exact + descendant paths in a folder list (sidebar, collapsed keys).
 function repathList(list, oldPath, newPath) {
@@ -1181,94 +1060,8 @@ function repathList(list, oldPath, newPath) {
   });
 }
 
-// Soft-delete a folder: removes it from the sidebar and bins all its live notes for 3 days (General clears
-// truly uncategorized notes into Bin — notes filed in a recipe/custom section are left alone).
-function deleteCollection(name) {
-  if (name === GENERAL_FOLDER) {
-    const now = Date.now();
-    let count = 0;
-    notes.forEach((note) => {
-      if (!note.deleted && !note.collection && !hidesInGeneral(note)) {
-        note.deleted = true;
-        note.deletedAt = now;
-        count += 1;
-      }
-    });
-    if (!count) return;
-    if (activeCollection === GENERAL_FOLDER) {
-      activeCollection = null;
-      activeSection = null;
-      activeCustom = null;
-      activeFilter = 'all';
-      listHeading.textContent = 'All notes';
-      document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-      document.querySelectorAll('#collection-list .collection-item').forEach((item) => item.classList.remove('active'));
-      document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-    }
-    const current = currentId ? notes.find((item) => item.id === currentId) : null;
-    if (!current || current.deleted) {
-      activeView = 'notes';
-      document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-      const live = notes.filter((item) => !item.deleted && !item.archived);
-      if (live.length) selectNote(live[0].id);
-      else clearEditor();
-    }
-    persistNotes();
-    renderCollections();
-    renderNoteList();
-    showToast(`General cleared — ${count} note${count === 1 ? '' : 's'} moved to Bin`);
-    return;
-  }
-  const index = collections.findIndex((entry) => entry === name);
-  if (index === -1) return;
-  // Cascade: the folder and every nested subfolder move to Bin together.
-  const doomed = collections.filter((entry) => isFolderOrSub(entry, name));
-  collections = collections.filter((entry) => !isFolderOrSub(entry, name));
-  const movedAt = Date.now();
-  notes.forEach((note) => {
-    if (!note.deleted && typeof note.collection === 'string' && isFolderOrSub(note.collection, name)) {
-      note.deleted = true;
-      note.deletedAt = movedAt;
-    }
-  });
-  deletedCollections = deletedCollections.filter((entry) => !isFolderOrSub(entry.name, name));
-  doomed.forEach((entry) => {
-    if (notes.some((note) => note.deleted && note.collection === entry)) {
-      deletedCollections.push({ name: entry, deletedAt: movedAt });
-    }
-  });
-  persistDeletedCollections();
-  const keptCollapsed = new Set();
-  collapsedFolders.forEach((entry) => { if (!isFolderOrSub(entry, name)) keptCollapsed.add(entry); });
-  collapsedFolders = keptCollapsed;
-  if (activeCollection && isFolderOrSub(activeCollection, name)) {
-    activeCollection = null;
-    activeSection = null;
-    activeCustom = null;
-    activeFilter = 'all';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    document.querySelectorAll('#collection-list .collection-item').forEach((item) => item.classList.remove('active'));
-    document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  }
-  const current = currentId ? notes.find((item) => item.id === currentId) : null;
-  if (!current || current.deleted) {
-    activeView = 'notes';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    const live = notes.filter((item) => !item.deleted && !item.archived);
-    if (live.length) selectNote(live[0].id);
-    else clearEditor();
-  }
-  updateListHeading();
-  persistCollections();
-  persistCollapsedFolders();
-  persistNotes();
-  renderCollections();
-  renderNoteList();
-  showToast(`Folder “${name}” moved to Bin — kept for 3 days`);
-}
-
 // Revive binned custom sections a (newly live) note belongs to, so it has
-// a home. Recipe/custom folders inside live sections are re-adopted by the
+// a home. Custom folders inside live sections are re-adopted by the
 // sidebar sync that callers run afterwards.
 function reviveSectionsForNote(note) {
   if (!note || !note.sections || typeof note.sections !== 'object') return false;
@@ -1294,492 +1087,25 @@ function reviveSectionsForNote(note) {
 }
 
 // Restore a binned folder: drops its Bin entry and unbans (undeletes) all its notes, then re-syncs the sidebar.
-function restoreCollection(name) {
-  if (!isCollectionDeleted(name)) return;
-  deletedCollections = deletedCollections.filter((entry) => entry.name !== name);
-  persistDeletedCollections();
-  notes.forEach((note) => {
-    if (note.deleted && note.collection === name) {
-      note.deleted = false;
-      delete note.deletedAt;
-      reviveSectionsForNote(note);
-    }
-  });
-  syncCollectionsWithNotes();
-  persistNotes();
-  renderCollections();
-  if (activeView === 'bin') {
-    const binned = notes.filter((item) => item.deleted);
-    if (binned.length) selectNote(binned[0].id);
-    else clearEditor();
-  }
-  renderNoteList();
-  showToast(`Folder “${name}” restored`);
-}
-
 // Erase a binned folder and all its binned notes at once; repairs the current selection.
-function permanentlyDeleteCollection(name) {
-  if (!isCollectionDeleted(name)) return;
-  deletedCollections = deletedCollections.filter((entry) => entry.name !== name);
-  persistDeletedCollections();
-  notes = notes.filter((note) => !(note.deleted && note.collection === name));
-  if (currentId && !notes.some((item) => item.id === currentId)) {
-    const pool = activeView === 'bin' ? notes.filter((item) => item.deleted) : notes.filter((item) => !item.deleted);
-    if (pool.length) selectNote(pool[0].id);
-    else clearEditor();
-  } else {
-    renderNoteList();
-  }
-  persistNotes();
-  try { pruneDeletedCustomSections(); } catch (error) {}
-  renderNoteList();
-  showToast(`Folder “${name}” permanently deleted`);
-}
-
 // Find a sidebar row by exact dataset value (avoids CSS-escaping pitfalls of quoted selectors).
-function findSidebarItem(name) {
-  if (!collectionList) return null;
-  return [...collectionList.querySelectorAll('.collection-item')].find((item) => item.dataset.collection === name) || null;
-}
-
 // Find an All-Notes folder group by exact dataset value (avoids CSS-escaping pitfalls).
 function findTreeWrap(folder) {
   return [...noteList.querySelectorAll('[data-folder-wrap]')].find((wrap) => wrap.dataset.folderWrap === folder) || null;
 }
 
 // Inline sidebar rename: swaps the label for an input; Enter commits, Escape cancels, blur commits.
-function startSidebarRename(name) {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  renderCollections();
-  const item = findSidebarItem(name);
-  if (!item) return;
-  const input = item.querySelector('.collection-rename-input');
-  const label = item.querySelector('.collection-label');
-  const actions = item.querySelector('.collection-actions');
-  if (!input) return;
-  input.hidden = false;
-  if (label) label.hidden = true;
-  if (actions) actions.hidden = true;
-  input.value = folderLeaf(name);
-  input.focus();
-  input.select();
-  let done = false;
-  const finish = (commit) => {
-    if (done) return;
-    done = true;
-    // Leaf-only commit: the parent prefix is re-attached so the folder (and
-    // its children) cannot slip out of place.
-    if (commit) renameCollection(name, joinLeafRename(name, input.value));
-    else { renderCollections(); renderNoteList(); }
-  };
-  input.onkeydown = (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
-    event.stopPropagation();
-  };
-  input.onclick = (event) => event.stopPropagation();
-  input.onblur = () => finish(true);
-}
-
 // Create a uniquely-named folder, reset view/filters, and immediately open inline rename.
-function addCollectionFolder() {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  const name = uniqueCollectionName('New folder');
-  collections.push(name);
-  if (isBuiltinHidden('collections')) {
-    hiddenSections = (hiddenSections || []).filter((kind) => kind !== 'collections');
-    syncSideMenuSettings();
-  }
-  persistCollections();
-  if (collapsedFolders.has(name)) { collapsedFolders.delete(name); persistCollapsedFolders(); }
-  activeView = 'notes';
-  activeCollection = null;
-  activeRecipe = null;
-  activeSection = null;
-  activeCustom = null;
-  activeFilter = 'all';
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  clearSearch();
-  updateListHeading();
-  renderCollections();
-  renderNoteList();
-  showToast('Folder added — name it');
-  startSidebarRename(name);
-}
-
 // Delegated sidebar clicks (rename/delete/select) plus double-click to rename. Delegation survives innerHTML re-renders.
-function bindCollectionListEvents() {
-  if (!collectionList) return;
-  collectionList.addEventListener('click', (event) => {
-    const renameBtn = event.target.closest('[data-collection-rename]');
-    if (renameBtn) {
-      event.preventDefault();
-      event.stopPropagation();
-      startSidebarRename(renameBtn.dataset.collectionRename);
-      return;
-    }
-    const item = event.target.closest('.collection-item');
-    if (!item) return;
-    if (event.target.closest('.collection-rename-input')) return;
-    event.preventDefault();
-    selectCollection(item.dataset.collection);
-  });
-  collectionList.addEventListener('dblclick', (event) => {
-    const item = event.target.closest('.collection-item');
-    if (!item || event.target.closest('.collection-rename-input') || event.target.closest('.collection-action')) return;
-    event.preventDefault();
-    startSidebarRename(item.dataset.collection);
-  });
-}
-
-// ---- Sidebar Recipes: same folder mechanics as Collections, own namespace.
-// A note holds at most one recipe folder (note.recipe); selecting a recipe
-// folder filters the list, and new notes created inside it join it.
-const recipeList = document.getElementById('recipe-list');
-
-// Render the sidebar recipe folders (only folders that exist; no General row).
-function renderRecipeCollections() {
-  if (!recipeList) return;
-  recipeList.innerHTML = recipeCollections.map((name) => `
-    <a href="#" draggable="true" class="collection-item${activeRecipe === name ? ' active' : ''}" data-recipe="${escapeHtml(name)}" data-depth="${folderDepth(name)}" title="${escapeHtml(name)}">
-      <span class="collection-dot ${recipeColor(name)}"></span>
-      <span class="collection-label">${escapeHtml(folderLeaf(name))}</span>
-      <span class="collection-actions">
-        <button type="button" class="collection-action" data-recipe-rename="${escapeHtml(name)}" title="Rename folder" aria-label="Rename ${escapeHtml(name)}">${icon('pencil')}</button>
-      </span>
-      <input class="collection-rename-input" value="${escapeHtml(folderLeaf(name))}" hidden maxlength="180" aria-label="Folder name" />
-    </a>`).join('');
-  const recipesSection = document.querySelector('.sidebar-section[data-section="recipes"]');
-  if (recipesSection) {
-    recipesSection.classList.toggle('active-section', activeSection === 'recipes');
-    recipesSection.style.display = isBuiltinHidden('recipes') ? 'none' : '';
-  }
-}
-
-// Stable dot color per recipe folder (palette rotation by sidebar order).
-function recipeColor(name) {
-  const index = recipeCollections.findIndex((entry) => entry === name);
-  if (index >= 0) return COLLECTION_COLORS[(index + 2) % COLLECTION_COLORS.length];
-  let hash = 0;
-  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  return COLLECTION_COLORS[Math.abs(hash) % COLLECTION_COLORS.length];
-}
-
-// De-duplicate a recipe folder name (case-insensitive) by appending a counter.
-function uniqueRecipeName(base) {
-  const taken = new Set(recipeCollections.map((name) => name.toLowerCase()));
-  if (!taken.has(base.toLowerCase())) return base;
-  let counter = 2;
-  while (taken.has(`${base} ${counter}`.toLowerCase())) counter += 1;
-  return `${base} ${counter}`;
-}
-
-// Adopt recipe folders found on live notes that the sidebar does not list yet
-// (imports, older data), normalizing case onto the sidebar spelling.
-function syncRecipeCollections() {
-  let notesDirty = false;
-  let recipesDirty = false;
-  notes.forEach((note) => {
-    if (note.deleted || typeof note.recipe !== 'string' || !note.recipe.trim()) return;
-    const trimmed = note.recipe.trim();
-    const canonical = recipeCollections.find((entry) => entry.toLowerCase() === trimmed.toLowerCase());
-    if (canonical) {
-      if (note.recipe !== canonical) { note.recipe = canonical; notesDirty = true; }
-    } else {
-      recipeCollections.push(trimmed);
-      if (note.recipe !== trimmed) { note.recipe = trimmed; notesDirty = true; }
-      recipesDirty = true;
-    }
-  });
-  if (notesDirty) persistNotes();
-  if (recipesDirty) persistRecipeCollections();
-  if (recipesDirty && isBuiltinHidden('recipes')) {
-    hiddenSections = (hiddenSections || []).filter((kind) => kind !== 'recipes');
-    persistUiVault();
-    syncSideMenuSettings();
-  }
-}
-
-// Filter the list to one recipe folder (clears any collection selection).
-function selectRecipe(name) {
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  activeView = 'notes';
-  activeFilter = 'all';
-  activeCollection = null;
-  activeRecipe = name;
-  activeSection = null;
-  activeCustom = null;
-  clearSearch();
-  updateListHeading();
-  renderCollections();
-  renderRecipeCollections();
-  renderNoteList();
-}
-
-function findRecipeItem(name) {
-  if (!recipeList) return null;
-  return [...recipeList.querySelectorAll('.collection-item')].find((item) => item.dataset.recipe === name) || null;
-}
-
-// Inline sidebar rename for a recipe folder; Enter commits, Escape cancels.
-function startRecipeRename(name) {
-  renderRecipeCollections();
-  const item = findRecipeItem(name);
-  if (!item) return;
-  const input = item.querySelector('.collection-rename-input');
-  const label = item.querySelector('.collection-label');
-  const actions = item.querySelector('.collection-actions');
-  if (!input) return;
-  input.hidden = false;
-  if (label) label.hidden = true;
-  if (actions) actions.hidden = true;
-  input.value = folderLeaf(name);
-  input.focus();
-  input.select();
-  let done = false;
-  const finish = (commit) => {
-    if (done) return;
-    done = true;
-    // Leaf-only commit: the parent prefix is re-attached so the folder (and
-    // its children) cannot slip out of place.
-    if (commit) renameRecipe(name, joinLeafRename(name, input.value));
-    else { renderRecipeCollections(); renderNoteList(); }
-  };
-  input.onkeydown = (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
-    event.stopPropagation();
-  };
-  input.onclick = (event) => event.stopPropagation();
-  input.onblur = () => finish(true);
-}
-
-// Validate and rename a recipe folder on the folder, its subtree and all matching notes.
-function renameRecipe(oldName, rawNewName, opts) {
-  const newName = cleanFolderPath(rawNewName);
-  if (!newName) { renderRecipeCollections(); renderNoteList(); return false; }
-  if (newName === oldName) { renderRecipeCollections(); renderNoteList(); return true; }
-  if (recipeCollections.some((entry) => entry !== oldName && entry.toLowerCase() === newName.toLowerCase())) {
-    showToast('A folder with that name already exists');
-    renderRecipeCollections(); renderNoteList();
-    return false;
-  }
-  const index = recipeCollections.findIndex((entry) => entry === oldName);
-  if (index === -1) return false;
-  recipeCollections = repathList(recipeCollections, oldName, newName);
-  notes.forEach((note) => {
-    if (typeof note.recipe === 'string' && isFolderOrSub(note.recipe, oldName)) {
-      note.recipe = note.recipe === oldName ? newName : newName + note.recipe.slice(oldName.length);
-    }
-  });
-  if (activeRecipe && isFolderOrSub(activeRecipe, oldName)) {
-    activeRecipe = activeRecipe === oldName ? newName : newName + activeRecipe.slice(oldName.length);
-    updateListHeading();
-  }
-  persistRecipeCollections();
-  persistNotes();
-  renderRecipeCollections();
-  renderNoteList();
-  if (!opts || !opts.silent) showToast(`Folder renamed to “${newName}”`);
-  return true;
-}
-
-// Delete a recipe folder and its nested subfolders: the folder is removed
-// from the sidebar and every live note inside moves to Bin for 3 days (tags
-// are kept, so restoring a note revives its folder via the sidebar sync).
-function deleteRecipe(name) {
-  const index = recipeCollections.findIndex((entry) => entry === name);
-  if (index === -1) return;
-  const movedAt = Date.now();
-  let count = 0;
-  notes.forEach((note) => {
-    if (!note.deleted && typeof note.recipe === 'string' && isFolderOrSub(note.recipe, name)) {
-      note.deleted = true;
-      note.deletedAt = movedAt;
-      count += 1;
-    }
-  });
-  recipeCollections = recipeCollections.filter((entry) => !isFolderOrSub(entry, name));
-  if (activeRecipe && isFolderOrSub(activeRecipe, name)) {
-    activeRecipe = null;
-    activeSection = null;
-    activeFilter = 'all';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-    updateListHeading();
-  }
-  const current = currentId ? notes.find((item) => item.id === currentId) : null;
-  if (!current || current.deleted) {
-    activeView = 'notes';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    const live = notes.filter((item) => !item.deleted && !item.archived);
-    if (live.length) selectNote(live[0].id);
-    else clearEditor();
-  }
-  persistRecipeCollections();
-  persistNotes();
-  renderRecipeCollections();
-  renderNoteList();
-  showToast(count
-    ? `Recipe folder “${name}” moved to Bin — ${count} note${count === 1 ? '' : 's'} kept for 3 days`
-    : `Recipe folder “${name}” deleted`);
-}
-
-function openBuiltinSectionDeleteConfirm(kind) {
-  if (!e2ee.masterKey) { showToast('Log in to manage sections'); return; }
-  if (kind !== 'collections' && kind !== 'recipes') return;
-  const name = sectionDisplayName(kind);
-  const count = notes.filter((note) => {
-    if (note.deleted) return false;
-    if (kind === 'recipes') return typeof note.recipe === 'string' && note.recipe;
-    return true;
-  }).length;
-  pendingDeleteId = kind;
-  pendingDeleteMode = 'builtin-section';
-  setDeleteDialog({
-    eyebrow: 'Delete section',
-    title: `Delete section “${name}”?`,
-    name,
-    message: count
-      ? `” organizes ${count} note${count === 1 ? '' : 's'}. The notes stay in place, only the folders are removed and the section is hidden (restore it in Settings → Side Menu). Are you sure?`
-      : '” has no notes in it. The section will be hidden (restore it in Settings → Side Menu). Are you sure?'
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
+// Recipes section removed.
 
 // Delete every folder in a built-in section and hide the section header;
 // notes keep everything else. Restore via Settings → Side Menu.
 // (Custom sections have deleteCustomSection; single folders use their own confirms.)
-function deleteBuiltinSection(kind) {
-  if (kind !== 'collections' && kind !== 'recipes') return;
-  const name = sectionDisplayName(kind);
-  if (kind === 'recipes') {
-    recipeCollections = [];
-    notes.forEach((note) => { if (typeof note.recipe === 'string') note.recipe = null; });
-    if (activeRecipe || activeSection === 'recipes') {
-      activeRecipe = null;
-      activeSection = null;
-      activeFilter = 'all';
-      document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-      document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-      updateListHeading();
-    }
-    persistRecipeCollections();
-  } else {
-    collections = [];
-    // Live notes lose their folder; binned notes keep their paths so Bin and
-    // folder restore stay coherent.
-    notes.forEach((note) => { if (!note.deleted && typeof note.collection === 'string') note.collection = null; });
-    if (activeCollection || activeSection === 'collections') {
-      activeCollection = null;
-      activeSection = null;
-      activeFilter = 'all';
-      document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-      document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-      updateListHeading();
-    }
-    persistCollections();
-  }
-  if (!isBuiltinHidden(kind)) {
-    hiddenSections = [...(hiddenSections || []), kind];
-    persistUiVault();
-  }
-  persistNotes();
-  renderCollections();
-  syncSideMenuSettings();
-  renderNoteList();
-  showToast(`Section “${name}” deleted`);
-}
-
-function openRecipeDeleteConfirm(name) {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  if (!recipeCollections.includes(name)) return;
-  const count = notes.filter((note) => !note.deleted && typeof note.recipe === 'string' && isFolderOrSub(note.recipe, name)).length;
-  pendingDeleteId = name;
-  pendingDeleteMode = 'recipe';
-  setDeleteDialog({
-    eyebrow: 'Delete folder',
-    title: 'Delete this folder?',
-    name,
-    message: count
-      ? `” holds ${count} note${count === 1 ? '' : 's'}. The folder and its notes will move to Bin for 3 days. Are you sure?`
-      : '” is empty. Are you sure you want to delete it?'
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
-
-function addRecipeFolder() {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  const name = uniqueRecipeName('New folder');
-  recipeCollections.push(name);
-  if (isBuiltinHidden('recipes')) {
-    hiddenSections = (hiddenSections || []).filter((kind) => kind !== 'recipes');
-    syncSideMenuSettings();
-  }
-  persistRecipeCollections();
-  activeView = 'notes';
-  activeCollection = null;
-  activeRecipe = null;
-  activeSection = null;
-  activeCustom = null;
-  activeFilter = 'all';
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  clearSearch();
-  updateListHeading();
-  renderCollections();
-  renderRecipeCollections();
-  renderNoteList();
-  showToast('Folder added — name it');
-  startRecipeRename(name);
-}
-
-function bindRecipeListEvents() {
-  if (!recipeList) return;
-  recipeList.addEventListener('click', (event) => {
-    const renameBtn = event.target.closest('[data-recipe-rename]');
-    if (renameBtn) {
-      event.preventDefault();
-      event.stopPropagation();
-      startRecipeRename(renameBtn.dataset.recipeRename);
-      return;
-    }
-    const item = event.target.closest('.collection-item');
-    if (!item) return;
-    if (event.target.closest('.collection-rename-input')) return;
-    event.preventDefault();
-    selectRecipe(item.dataset.recipe);
-  });
-  recipeList.addEventListener('dblclick', (event) => {
-    const item = event.target.closest('.collection-item');
-    if (!item || event.target.closest('.collection-rename-input') || event.target.closest('.collection-action')) return;
-    event.preventDefault();
-    startRecipeRename(item.dataset.recipe);
-  });
-}
 function bindSectionHeaderEvents() {
   const sidebar = document.getElementById('sidebar');
   if (!sidebar) return;
   sidebar.addEventListener('click', (event) => {
-    const delBtn = event.target.closest('[data-del-section]');
-    if (delBtn) {
-      event.preventDefault();
-      event.stopPropagation();
-      openBuiltinSectionDeleteConfirm(delBtn.dataset.delSection);
-      return;
-    }
     if (event.target.closest('button') || event.target.closest('input')) return;
     const label = event.target.closest('.section-label-text');
     if (!label) return;
@@ -1788,8 +1114,6 @@ function bindSectionHeaderEvents() {
     event.preventDefault();
     if (section.dataset.customSection) {
       if (!isSectionEmpty('custom', section.dataset.customSection)) selectCustomSection(section.dataset.customSection);
-    } else if (section.dataset.section) {
-      if (!isSectionEmpty(section.dataset.section)) selectSection(section.dataset.section);
     }
   });
   sidebar.addEventListener('dblclick', (event) => {
@@ -1800,7 +1124,6 @@ function bindSectionHeaderEvents() {
     if (!section) return;
     event.preventDefault();
     if (section.dataset.customSection) startSectionRename({ kind: 'custom', id: section.dataset.customSection });
-    else if (section.dataset.section) startSectionRename({ kind: section.dataset.section });
   });
 }
 
@@ -1834,6 +1157,9 @@ function renderCustomSections() {
 }
 
 function customFolderColor(section, name) {
+  // Same value as removed Collections had: fixed brand colors for defaults.
+  const known = { Work: 'coral', Personal: 'yellow', 'Reading list': 'blue' };
+  if (known[name]) return known[name];
   const index = section.folders.findIndex((entry) => entry === name);
   if (index >= 0) return COLLECTION_COLORS[(index + 4) % COLLECTION_COLORS.length];
   let hash = 0;
@@ -1841,54 +1167,35 @@ function customFolderColor(section, name) {
   return COLLECTION_COLORS[Math.abs(hash) % COLLECTION_COLORS.length];
 }
 
-// Paint built-in header texts + initials from display-name overrides.
+// Paint section headers (all sections share the same custom implementation).
 function updateSectionHeaders() {
-  ['collections', 'recipes'].forEach((kind) => {
-    const label = document.querySelector(`.sidebar-section[data-section="${kind}"] .section-label-text`);
-    if (label) label.textContent = sectionDisplayName(kind);
-    const badge = document.querySelector(`.sidebar-section[data-section="${kind}"] .section-initial`);
-    if (badge) {
-      const name = sectionDisplayName(kind);
-      badge.textContent = name.charAt(0).toUpperCase();
-      badge.title = name;
-    }
-  });
   document.querySelectorAll('#custom-sections .sidebar-section').forEach((wrap) => {
     const id = wrap.dataset.customSection;
     wrap.classList.toggle('active-section', Boolean(activeCustom && !activeCustom.folder && activeCustom.section === id));
     wrap.classList.toggle('is-empty', isSectionEmpty('custom', id));
-  });
-  document.querySelectorAll('.sidebar-section[data-section]:not([data-custom-section])').forEach((wrap) => {
-    wrap.classList.toggle('is-empty', isSectionEmpty(wrap.dataset.section));
   });
 }
 
 // A sidebar section header filters the list — pointless when the section
 // holds nothing, so empty sections are unclickable (rename still works).
 function isSectionEmpty(kind, id) {
-  if (kind === 'custom') {
-    const section = customSections.find((entry) => entry.id === id);
-    return !section || !section.folders.length;
-  }
-  if (kind === 'recipes') return !recipeCollections.length;
-  if (collections.filter((name) => !isCollectionDeleted(name)).length) return false;
-  return !notes.some((note) => !note.deleted && !note.collection && !hidesInGeneral(note));
+  const sectionId = kind === 'custom' ? id : kind;
+  const section = customSections.find((entry) => entry.id === sectionId);
+  if (section) return !section.folders.length;
+  return true;
 }
 
 // All taken section display names (lowercased), optionally skipping one entry.
-function takenSectionNames(except) {
+function takenSectionNames(exceptId) {
   const names = [];
-  ['collections', 'recipes'].forEach((kind) => {
-    if (!(except && except.kind === kind)) names.push(sectionDisplayName(kind));
-  });
   customSections.forEach((section) => {
-    if (!(except && except.kind === 'custom' && except.id === section.id)) names.push(section.name);
+    if (!(exceptId && exceptId === section.id)) names.push(section.name);
   });
   return names.map((name) => name.toLowerCase());
 }
 
 function uniqueSectionName() {
-  const taken = new Set(takenSectionNames());
+  const taken = new Set(takenSectionNames(null));
   let counter = 1;
   while (taken.has(`section ${counter}`)) counter += 1;
   return `Section ${counter}`;
@@ -1907,15 +1214,12 @@ function addCustomSection() {
   persistCustomSections();
   activeView = 'notes';
   activeFilter = 'all';
-  activeCollection = null;
-  activeRecipe = null;
-  activeSection = null;
   activeCustom = null;
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   clearSearch();
   updateListHeading();
-  renderCollections();
+  renderCustomSections();
   renderNoteList();
   showToast('Section added — name it');
   startSectionRename({ kind: 'custom', id: section.id });
@@ -1923,14 +1227,12 @@ function addCustomSection() {
 
 // Inline rename for a section header (built-in or custom); Enter commits.
 function startSectionRename(target) {
-  renderCollections();
+  renderCustomSections();
   let label = null;
   if (target.kind === 'custom') {
     const wrap = [...document.querySelectorAll('#custom-sections [data-custom-section]')]
       .find((el) => el.dataset.customSection === target.id);
     label = wrap ? wrap.querySelector('.section-label-text') : null;
-  } else {
-    label = document.querySelector(`.sidebar-section[data-section="${target.kind}"] .section-label-text`);
   }
   if (!label) return;
   // The label is hidden (not replaced): built-in headers are static markup
@@ -1940,9 +1242,7 @@ function startSectionRename(target) {
   if (pending) { pending.focus(); pending.select(); return; }
   const input = document.createElement('input');
   input.className = 'section-rename-input';
-  input.value = target.kind === 'custom'
-    ? (customSections.find((section) => section.id === target.id) || {}).name || ''
-    : sectionDisplayName(target.kind);
+  input.value = (customSections.find((section) => section.id === target.id) || {}).name || '';
   input.maxLength = 40;
   input.setAttribute('aria-label', 'Section name');
   label.hidden = true;
@@ -1955,8 +1255,8 @@ function startSectionRename(target) {
     done = true;
     input.remove();
     label.hidden = false;
-    if (commit) renameSectionDisplay(target.kind, target.id, input.value);
-    else { renderCollections(); renderNoteList(); }
+    if (commit) renameSectionDisplay(target.id, input.value);
+    else { renderCustomSections(); renderNoteList(); }
   };
   input.onkeydown = (event) => {
     if (event.key === 'Enter') { event.preventDefault(); finish(true); }
@@ -1967,28 +1267,23 @@ function startSectionRename(target) {
   input.onblur = () => finish(true);
 }
 
-// Validate and apply a section display-name edit.
-function renameSectionDisplay(kind, id, rawNewName) {
+// Validate and apply a section display-name edit (all sections share the same implementation).
+function renameSectionDisplay(id, rawNewName) {
   const newName = String(rawNewName == null ? '' : rawNewName).replace(/[\x00-\x1F<>"]/g, '').trim().replace(/\s+/g, ' ').slice(0, 40);
-  if (!newName) { renderCollections(); renderNoteList(); return false; }
-  const current = kind === 'custom'
-    ? ((customSections.find((section) => section.id === id) || {}).name || '')
-    : sectionDisplayName(kind);
-  if (!current) { renderCollections(); renderNoteList(); return false; }
-  if (newName === current) { renderCollections(); renderNoteList(); return true; }
-  if (takenSectionNames({ kind, id }).includes(newName.toLowerCase())) {
+  if (!newName) { renderCustomSections(); renderNoteList(); return false; }
+  const section = customSections.find((entry) => entry.id === id);
+  if (!section) { renderCustomSections(); renderNoteList(); return false; }
+  const current = section.name || '';
+  if (newName === current) { renderCustomSections(); renderNoteList(); return true; }
+  if (takenSectionNames(id).includes(newName.toLowerCase())) {
     showToast('A section with that name already exists');
-    renderCollections(); renderNoteList();
+    renderCustomSections(); renderNoteList();
     return false;
   }
-  if (kind === 'custom') {
-    customSections.find((section) => section.id === id).name = newName;
-  } else {
-    sectionNames[kind] = newName;
-  }
+  section.name = newName;
   persistCustomSections();
   updateListHeading();
-  renderCollections();
+  renderCustomSections();
   renderNoteList();
   showToast('Section renamed');
   return true;
@@ -2036,7 +1331,7 @@ function deleteCustomSection(id) {
   }
   persistCustomSections();
   persistNotes();
-  renderCollections();
+  renderCustomSections();
   renderNoteList();
   showToast(count
     ? `Section “${name}” moved to Bin — ${count} note${count === 1 ? '' : 's'} kept for 3 days`
@@ -2067,16 +1362,13 @@ function addCustomFolder(sectionId) {
   section.folders.push(name);
   persistCustomSections();
   activeView = 'notes';
-  activeCollection = null;
-  activeRecipe = null;
-  activeSection = null;
   activeCustom = null;
   activeFilter = 'all';
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   clearSearch();
   updateListHeading();
-  renderCollections();
+  renderCustomSections();
   renderNoteList();
   showToast('Folder added — name it');
   startCustomFolderRename(sectionId, name);
@@ -2135,6 +1427,16 @@ function renameCustomFolder(sectionId, oldName, rawNewName, opts) {
       note.sections[sectionId] = current === oldName ? newName : newName + current.slice(oldName.length);
     }
   });
+  // Keep collapsed state following the rename (same value as Collections had).
+  if (collapsedFolders.size) {
+    const oldPrefix = `${oldName}${FOLDER_SEP}`;
+    const next = new Set();
+    collapsedFolders.forEach((entry) => {
+      next.add(entry === oldName ? newName : (entry.startsWith(oldPrefix) ? newName + entry.slice(oldName.length) : entry));
+    });
+    collapsedFolders = next;
+    persistCollapsedFolders();
+  }
   if (activeCustom && activeCustom.section === sectionId && activeCustom.folder && isFolderOrSub(activeCustom.folder, oldName)) {
     activeCustom.folder = activeCustom.folder === oldName ? newName : newName + activeCustom.folder.slice(oldName.length);
     updateListHeading();
@@ -2330,8 +1632,8 @@ function openCustomSectionDeleteConfirm(id) {
 // Clicking a section header filters the list to every folder under it.
 // ---- Folder context menu (right-click): Open / Rename / New subfolder /
 // Delete. One shared menu for sidebar rows and All-Notes folder headers;
-// the target carries its namespace so collections and recipes stay separate.
-let folderMenuTarget = null; // { ns: 'collections' | 'recipes' | 'custom', path, section? }
+// the target carries its section so folders stay separate.
+let folderMenuTarget = null; // { ns: 'custom', path, section }
 
 function getFolderContextMenu() {
   return document.getElementById('folder-context-menu');
@@ -2345,18 +1647,14 @@ function closeFolderContextMenu() {
 
 function openFolderContextMenu(ns, path, x, y, sectionId) {
   const menu = getFolderContextMenu();
-  if (!menu || !path) return;
-  folderMenuTarget = sectionId ? { ns, path, section: sectionId } : { ns, path };
-  const binned = activeView === 'bin' && ns === 'collections' && path !== GENERAL_FOLDER && isCollectionDeleted(path);
-  const generalInBin = activeView === 'bin' && ns === 'collections' && path === GENERAL_FOLDER;
+  if (!menu || !path || !sectionId) return;
+  folderMenuTarget = { ns: 'custom', path, section: sectionId };
   menu.querySelectorAll('[data-folder-action]').forEach((btn) => {
     const actionName = btn.dataset.folderAction;
-    if (binned) btn.hidden = !(actionName === 'restore' || actionName === 'delete');
-    else if (generalInBin) btn.hidden = actionName !== 'open';
-    else btn.hidden = actionName === 'restore';
+    btn.hidden = actionName === 'restore';
   });
   const deleteLabel = document.getElementById('folder-delete-label');
-  if (deleteLabel) deleteLabel.textContent = binned ? 'Delete permanently' : 'Delete';
+  if (deleteLabel) deleteLabel.textContent = 'Delete';
   menu.hidden = false;
   const padding = 8;
   menu.style.left = `${x}px`;
@@ -2369,26 +1667,17 @@ function openFolderContextMenu(ns, path, x, y, sectionId) {
 function handleFolderMenuAction(action, target) {
   const resolved = target || folderMenuTarget;
   if (!resolved || typeof action !== 'string') return;
-  const { ns, path } = resolved;
-  const sectionId = resolved.section;
+  const { path, section: sectionId } = resolved;
   if (action === 'open') {
-    if (ns === 'recipes') selectRecipe(path);
-    else if (ns === 'custom' && sectionId) selectCustomFolder(sectionId, path);
-    else selectCollection(path);
+    selectCustomFolder(sectionId, path);
   } else if (action === 'rename') {
-    if (ns === 'recipes') startRecipeRename(path);
-    else if (ns === 'custom' && sectionId) startCustomFolderRename(sectionId, path);
-    else startSidebarRename(path);
+    startCustomFolderRename(sectionId, path);
   } else if (action === 'subfolder') {
-    createSubfolder(ns, path, sectionId);
+    createSubfolder('custom', path, sectionId);
   } else if (action === 'restore') {
-    if (ns === 'collections') restoreCollection(path);
+    return;
   } else if (action === 'delete') {
-    if (activeView === 'bin' && ns === 'collections' && path !== GENERAL_FOLDER && isCollectionDeleted(path)) {
-      openFolderPermanentDeleteConfirm(path);
-    } else if (ns === 'recipes') openRecipeDeleteConfirm(path);
-    else if (ns === 'custom' && sectionId) openCustomFolderDeleteConfirm(sectionId, path);
-    else openFolderDeleteConfirm(path);
+    openCustomFolderDeleteConfirm(sectionId, path);
   }
 }
 
@@ -2412,20 +1701,10 @@ function insertFolderAfterParent(list, parentPath, newPath) {
 }
 
 // Create a nested folder under a parent path and jump straight into naming
-// it. General has no true children, so it creates a top-level folder.
+// it. Without a parent, a top-level folder is created.
 function createSubfolder(ns, parentPath, sectionId) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  if (ns === 'recipes') {
-    const name = uniqueRecipeName(`${parentPath}${FOLDER_SEP}New folder`);
-    insertFolderAfterParent(recipeCollections, parentPath, name);
-    persistRecipeCollections();
-    renderRecipeCollections();
-    renderNoteList();
-    showToast('Folder added — name it');
-    startRecipeRename(name);
-    return;
-  }
-  if (ns === 'custom') {
+  if (true) {
     const section = customSections.find((entry) => entry.id === sectionId);
     if (!section) return;
     const name = uniqueCustomFolderName(sectionId, `${parentPath}${FOLDER_SEP}New folder`);
@@ -2437,41 +1716,11 @@ function createSubfolder(ns, parentPath, sectionId) {
     startCustomFolderRename(sectionId, name);
     return;
   }
-  if (!parentPath || parentPath === GENERAL_FOLDER) { addCollectionFolder(); return; }
-  const name = uniqueCollectionName(`${parentPath}${FOLDER_SEP}New folder`);
-  insertFolderAfterParent(collections, parentPath, name);
-  persistCollections();
-  renderCollections();
-  renderNoteList();
-  showToast('Folder added — name it');
-  startSidebarRename(name);
 }
 
 function bindFolderContextMenu() {
   const menu = getFolderContextMenu();
   if (!menu) return;
-  const sidebarTarget = (event) => {
-    if (event.target.closest('.collection-rename-input')) return null;
-    const recipeRow = event.target.closest('#recipe-list .collection-item');
-    if (recipeRow) return { ns: 'recipes', path: recipeRow.dataset.recipe };
-    const collectionRow = event.target.closest('#collection-list .collection-item');
-    if (collectionRow) return { ns: 'collections', path: collectionRow.dataset.collection };
-    return null;
-  };
-  if (collectionList) collectionList.addEventListener('contextmenu', (event) => {
-    const target = sidebarTarget(event);
-    if (!target) return;
-    event.preventDefault();
-    event.stopPropagation();
-    openFolderContextMenu(target.ns, target.path, event.clientX, event.clientY);
-  });
-  if (recipeList) recipeList.addEventListener('contextmenu', (event) => {
-    const target = sidebarTarget(event);
-    if (!target) return;
-    event.preventDefault();
-    event.stopPropagation();
-    openFolderContextMenu(target.ns, target.path, event.clientX, event.clientY);
-  });
   if (noteList) noteList.addEventListener('contextmenu', (event) => {
     const row = event.target.closest('.tree-folder-row');
     if (!row || event.target.closest('.tree-rename-input')) return;
@@ -2480,14 +1729,10 @@ function bindFolderContextMenu() {
     event.preventDefault();
     event.stopPropagation();
     // Resolve the row's namespace so "New subfolder" becomes a child of the
-    // right-clicked folder: the active recipe/custom filter wins, otherwise
+    // right-clicked folder: the active custom filter wins, otherwise
     // the enclosing list-section shell (home view shows all namespaces).
     const shell = wrap.closest('[data-list-section]');
     const shellKind = shell ? shell.dataset.listSection : null;
-    if (activeRecipe || shellKind === 'recipes') {
-      openFolderContextMenu('recipes', wrap.dataset.folderWrap, event.clientX, event.clientY);
-      return;
-    }
     if (activeCustom) {
       openFolderContextMenu('custom', wrap.dataset.folderWrap, event.clientX, event.clientY, activeCustom.section);
       return;
@@ -2500,7 +1745,8 @@ function bindFolderContextMenu() {
         return;
       }
     }
-    openFolderContextMenu('collections', wrap.dataset.folderWrap, event.clientX, event.clientY);
+    // Unknown shell: no folder menu.
+    return;
   });
   menu.addEventListener('click', (event) => {
     const item = event.target.closest('[data-folder-action]');
@@ -2520,28 +1766,20 @@ function bindFolderContextMenu() {
 }
 
 // ---- Folder drag-and-drop: reorder siblings, or drop onto a folder to nest
-// inside it (top/bottom quarter = before/after, middle = nest). One shared
-// implementation for collections, recipes and custom sections; reparenting
+// inside it (top/bottom quarter = before/after, middle = nest). Unified custom
+// sections implementation (same value for all new sections); reparenting
 // reuses the rename functions so notes, collapse state and selection follow.
 function folderListOf(ns, sectionId) {
-  if (ns === 'recipes') return recipeCollections;
-  if (ns === 'custom') {
-    const section = customSections.find((entry) => entry.id === sectionId);
-    return section ? section.folders : null;
-  }
-  return collections;
+  const section = customSections.find((entry) => entry.id === sectionId);
+  return section ? section.folders : null;
 }
 
 function persistFolderList(ns) {
-  if (ns === 'recipes') persistRecipeCollections();
-  else if (ns === 'custom') persistCustomSections();
-  else persistCollections();
+  persistCustomSections();
 }
 
 function renameFolderPath(ns, sectionId, oldPath, newPath, opts) {
-  if (ns === 'recipes') return renameRecipe(oldPath, newPath, opts);
-  if (ns === 'custom') return renameCustomFolder(sectionId, oldPath, newPath, opts);
-  return renameCollection(oldPath, newPath, opts);
+  return renameCustomFolder(sectionId, oldPath, newPath, opts);
 }
 
 // Move a folder block (path + descendants) within its list.
@@ -2555,12 +1793,9 @@ function reorderFolderBlock(ns, sectionId, movedRoot, anchorPath, after) {
   if (index === -1) index = rest.length;
   else if (after) index += 1;
   const reordered = [...rest.slice(0, index), ...block, ...rest.slice(index)];
-  if (ns === 'recipes') recipeCollections = reordered;
-  else if (ns === 'custom') {
-    const section = customSections.find((entry) => entry.id === sectionId);
-    if (!section) return false;
-    section.folders = reordered;
-  } else collections = reordered;
+  const section = customSections.find((entry) => entry.id === sectionId);
+  if (!section) return false;
+  section.folders = reordered;
   persistFolderList(ns);
   return true;
 }
@@ -2579,7 +1814,6 @@ function reparentFolder(ns, sectionId, oldPath, newParent) {
   let newPath = newParent ? `${newParent}${FOLDER_SEP}${leaf}` : leaf;
   if (newPath !== oldPath) {
     const others = list.filter((entry) => !isFolderOrSub(entry, oldPath)).map((entry) => entry.toLowerCase());
-    if (ns === 'collections') deletedCollections.forEach((entry) => others.push(entry.name.toLowerCase()));
     if (others.includes(newPath.toLowerCase())) {
       let counter = 2;
       const stem = (suffix) => (newParent ? `${newParent}${FOLDER_SEP}${leaf} ${suffix}` : `${leaf} ${suffix}`);
@@ -2597,12 +1831,6 @@ function sidebarFolderTarget(event) {
   const customRow = event.target.closest('#custom-sections .collection-item');
   if (customRow && customRow.dataset.cfolder) {
     return { ns: 'custom', section: customRow.dataset.csection, path: customRow.dataset.cfolder };
-  }
-  const recipeRow = event.target.closest('#recipe-list .collection-item');
-  if (recipeRow) return { ns: 'recipes', path: recipeRow.dataset.recipe };
-  const collectionRow = event.target.closest('#collection-list .collection-item');
-  if (collectionRow && collectionRow.dataset.collection !== GENERAL_FOLDER) {
-    return { ns: 'collections', path: collectionRow.dataset.collection };
   }
   return null;
 }
@@ -2653,24 +1881,8 @@ function bindFolderDragDrop() {
     let dragged = null;
     try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notely-folder')); } catch (error) { dragged = null; }
     if (!dragged || !dragged.path) return;
-    // General is pinned (never draggable), but dropping onto it moves a
-    // collection folder back to the top level.
-    const generalRow = event.target.closest('#collection-list .collection-item');
-    if (generalRow && generalRow.dataset.collection === GENERAL_FOLDER) {
-      if (dragged.ns !== 'collections') return;
-      event.preventDefault();
-      if (folderParent(dragged.path) === null) return;
-      const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, null);
-      if (!newPath) return;
-      if (reorderFolderBlock(dragged.ns, dragged.section, newPath, null, false)) {
-        renderCollections();
-        renderNoteList();
-        showToast(`Moved to top level`);
-      }
-      return;
-    }
     const target = sidebarFolderTarget(event);
-    if (!target || target.ns !== dragged.ns || (target.ns === 'custom' && target.section !== dragged.section)) return;
+    if (!target || target.ns !== dragged.ns || target.section !== dragged.section) return;
     if (target.path === dragged.path) return;
     if (isFolderOrSub(target.path, dragged.path)) {
       event.preventDefault();
@@ -2695,13 +1907,10 @@ function bindFolderDragDrop() {
         if (isFolderOrSub(rest[i], target.path)) { index = i + 1; break; }
       }
       const reordered = [...rest.slice(0, index), ...moved, ...rest.slice(index)];
-      if (dragged.ns === 'recipes') recipeCollections = reordered;
-      else if (dragged.ns === 'custom') {
-        const section = customSections.find((entry) => entry.id === dragged.section);
-        if (section) section.folders = reordered;
-      } else collections = reordered;
+      const section = customSections.find((entry) => entry.id === dragged.section);
+      if (section) section.folders = reordered;
       persistFolderList(dragged.ns);
-      renderCollections();
+      renderCustomSections();
       renderNoteList();
       if (movedHome) showToast(`Moved to “${folderLeaf(target.path)}”`);
     } else {
@@ -2716,7 +1925,7 @@ function bindFolderDragDrop() {
       // Anchor may have been renamed if it sat inside the moved subtree —
       // guarded above, so it is stable here.
       if (reorderFolderBlock(dragged.ns, dragged.section, movedRoot, target.path, ratio > 0.75)) {
-        renderCollections();
+        renderCustomSections();
         renderNoteList();
       }
     }
@@ -2889,27 +2098,25 @@ function renderMarkdown(markdown) {
   return html || '<p class="preview-placeholder">Start writing to see your note here.</p>';
 }
 
-// Display folder of a note: its collection, or General when uncategorized.
+// First folder filing of a note across sections, or null when unfiled.
 // ---- Note list: filtering, grouping, counts, tree rendering ----
 
-function folderOf(note) {
-  return note.collection || GENERAL_FOLDER;
+function firstFilingOf(note) {
+  if (note && note.sections && typeof note.sections === 'object') {
+    const first = Object.values(note.sections).find((value) => typeof value === 'string' && value);
+    if (first) return first;
+  }
+  return null;
 }
 
-// A note filed in another section needs no General row: without this, a note
-// created inside a recipe/custom folder would also render under General
-// (same note twice in All Notes).
-function hidesInGeneral(note) {
-  if (note.collection) return false;
-  if (typeof note.recipe === 'string' && note.recipe) return true;
-  if (note.sections && typeof note.sections === 'object') {
-    return Object.values(note.sections).some((value) => typeof value === 'string' && value);
-  }
-  return false;
+// True when a note has no folder filing in any section.
+function isUnfiled(note) {
+  if (!note || !note.sections || typeof note.sections !== 'object') return true;
+  return !Object.values(note.sections).some((value) => typeof value === 'string' && value);
 }
 
 // ---- Nested folders: a folder path is segments joined with FOLDER_SEP
-// ("Work / Projects"). All folder namespaces (collections, recipes) share
+// ("Work / Projects"). All folder namespaces share
 // these helpers; matching is always exact-path or proper-descendant.
 const FOLDER_SEP = ' / ';
 
@@ -2975,10 +2182,7 @@ function updateListHeading() {
   else if (activeView === 'vault') listHeading.textContent = `Vault${suffix}`;
   else if (activeView === 'archive') listHeading.textContent = `Archive${suffix}`;
   else if (activeView === 'favorites') listHeading.textContent = 'Starred notes';
-  else if (activeCollection) listHeading.textContent = `${folderLeaf(activeCollection)}${suffix}`;
-  else if (activeRecipe) listHeading.textContent = `${folderLeaf(activeRecipe)}${suffix}`;
   else if (activeCustom) listHeading.textContent = `${activeCustom.folder ? folderLeaf(activeCustom.folder) : sectionDisplayName('custom', activeCustom.section)}${suffix}`;
-  else if (activeSection) listHeading.textContent = `${sectionDisplayName(activeSection)}${suffix}`;
   else listHeading.textContent = activeFilter === 'favorites' ? 'Starred notes' : activeFilter === 'recent' ? 'Recent notes' : 'All notes';
 }
 
@@ -3011,11 +2215,9 @@ function updateBreadcrumbs() {
   root.textContent = viewLabel(activeView);
   root.title = 'Back to All notes';
   trail.appendChild(root);
-  const activeFolderPath = activeCollection || activeRecipe
-    || (activeCustom ? activeCustom.folder : null);
+  const activeFolderPath = (activeCustom ? activeCustom.folder : null);
   const activeFolder = activeFolderPath
-    || (activeCustom ? sectionDisplayName('custom', activeCustom.section) : null)
-    || (activeSection ? sectionDisplayName(activeSection) : null);
+    || (activeCustom ? sectionDisplayName('custom', activeCustom.section) : null);
   if (activeFolder) {
     const sep = document.createElement('span');
     sep.className = 'crumb-separator';
@@ -3034,7 +2236,7 @@ function updateBreadcrumbs() {
 // Breadcrumb home: reset to All notes with nothing open and an enlarged
 // workspace (editor hidden). Selecting any note exits the enlarged mode.
 function goAllNotes() {
-  clearCollectionSelection();
+  clearSectionSelection();
   activeView = 'notes';
   activeFilter = 'all';
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
@@ -3045,7 +2247,7 @@ function goAllNotes() {
   currentVaultId = null;
   clearEditor();
   document.querySelector('.app-shell').classList.add('workspace-focus');
-  renderCollections();
+  renderCustomSections();
   renderNoteList();
 }
 
@@ -3055,11 +2257,8 @@ document.getElementById('breadcrumbs').addEventListener('click', (event) => {
   event.preventDefault();
   if (crumb.dataset.crumb === 'root') goAllNotes();
   else if (crumb.dataset.crumb === 'folder') {
-    if (activeCollection) selectCollection(activeCollection);
-    else if (activeRecipe) selectRecipe(activeRecipe);
-    else if (activeCustom && activeCustom.folder) selectCustomFolder(activeCustom.section, activeCustom.folder);
+    if (activeCustom && activeCustom.folder) selectCustomFolder(activeCustom.section, activeCustom.folder);
     else if (activeCustom) selectCustomSection(activeCustom.section);
-    else if (activeSection) selectSection(activeSection);
   }
 });
 
@@ -3085,18 +2284,9 @@ function visibleNotes() {
     const safeTags = Array.isArray(note.tags) ? note.tags.filter((t) => typeof t === 'string').join(' ') : '';
     const matchesSearch = !searchQuery || `${safeTitle} ${safeBody} ${safeTags}`.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesFilter = activeFilter === 'all' || (activeFilter === 'favorites' && note.favorite) || (activeFilter === 'recent' && isRecentNote(note));
-    const matchesCollection = !activeCollection || (activeCollection === GENERAL_FOLDER
-      // The General pseudo-folder holds only truly uncategorized notes, never
-      // notes filed in a recipe/custom section.
-      ? (!note.collection && !hidesInGeneral(note))
-      : isFolderOrSub(folderOf(note), activeCollection));
-    const matchesRecipe = !activeRecipe || (typeof note.recipe === 'string' && isFolderOrSub(note.recipe, activeRecipe));
-    const matchesSection = !activeSection || (activeSection === 'recipes'
-      ? (typeof note.recipe === 'string' && recipeCollections.some((entry) => note.recipe === entry || isFolderOrSub(note.recipe, entry)))
-      : true);
     const matchesCustom = !activeCustom || (customNoteFolder(note, activeCustom.section) !== null
       && (!activeCustom.folder || isFolderOrSub(customNoteFolder(note, activeCustom.section), activeCustom.folder)));
-    return matchesSearch && matchesFilter && matchesCollection && matchesRecipe && matchesSection && matchesCustom;
+    return matchesSearch && matchesFilter && matchesCustom;
   });
 }
 
@@ -3117,11 +2307,6 @@ function scopeNotes() {
         return false;
       }
     }
-    if (activeCollection === GENERAL_FOLDER) {
-      if (note.collection || hidesInGeneral(note)) return false;
-    } else if (activeCollection && !isFolderOrSub(folderOf(note), activeCollection)) return false;
-    if (activeRecipe && !(typeof note.recipe === 'string' && isFolderOrSub(note.recipe, activeRecipe))) return false;
-    if (activeSection === 'recipes' && !(typeof note.recipe === 'string' && recipeCollections.some((entry) => note.recipe === entry || isFolderOrSub(note.recipe, entry)))) return false;
     if (activeCustom) {
       const customFolder = customNoteFolder(note, activeCustom.section);
       if (customFolder === null) return false;
@@ -3150,24 +2335,247 @@ function autogrow() {
   markdownInput.style.height = `${markdownInput.scrollHeight}px`;
 }
 
-// Swap the writing area between Markdown source and rendered preview; plain-text notes never preview.
+// Swap the writing area between Markdown source and rendered preview; non-Markdown notes never preview.
 function renderPreview(note) {
   const bottomHint = document.querySelector('.editor-bottom span:first-child');
-  const isTxt = note.ext === 'txt';
-  const showPreview = !isTxt && writeMode === 'preview';
+  const isMd = note.ext === 'md';
+  const plainLabel = note.ext === 'txt' ? 'Plain text' : (EXT_LABELS[note.ext] || 'MD');
+  const showPreview = isMd && writeMode === 'preview';
   if (showPreview) preview.innerHTML = renderMarkdown(note.body);
   markdownInput.hidden = showPreview;
   preview.hidden = !showPreview;
-  if (modeLabel) modeLabel.textContent = isTxt ? 'Plain text' : (showPreview ? 'Preview' : 'Write');
-  if (idleHint) idleHint.textContent = isTxt ? 'Plain text file' : (showPreview ? 'Click the text to keep writing' : 'Markdown source · live preview after 10s idle');
+  if (modeLabel) modeLabel.textContent = isMd ? (showPreview ? 'Preview' : 'Write') : plainLabel;
+  if (idleHint) idleHint.textContent = isMd ? 'Markdown source · live preview after 10s idle' : `${plainLabel} file — no preview`;
   if (modeToggle) {
-    modeToggle.hidden = isTxt;
+    modeToggle.hidden = !isMd;
     modeToggle.textContent = showPreview ? 'Write' : 'Preview';
   }
-  if (bottomHint) bottomHint.textContent = isTxt ? 'Plain text file (.txt)' : 'Markdown · auto-preview after 10s idle';
-  if (typeBadge) typeBadge.textContent = isTxt ? 'TXT' : 'MD';
-  if (editorToolbar) editorToolbar.classList.toggle('is-plain', isTxt);
+  if (bottomHint) bottomHint.textContent = isMd ? 'Markdown · auto-preview after 10s idle' : `${plainLabel} file (.${note.ext})`;
+  if (typeBadge) typeBadge.textContent = EXT_LABELS[note.ext] || 'MD';
+  if (editorToolbar) editorToolbar.classList.toggle('is-plain', !isMd);
   if (!showPreview) autogrow();
+}
+
+// ---- Note cover pictures ------------------------------------------------
+// Covers ride on the note (inside the E2EE envelope) as validated data URLs.
+function coverFocalPos(note) {
+  if (note && typeof note.coverPos === 'number' && Number.isFinite(note.coverPos)) {
+    return Math.min(100, Math.max(0, note.coverPos));
+  }
+  return 50;
+}
+
+// The Add-cover row lives under the topbar line; hiding the button must
+// hide the row too, or its margin leaves a gap.
+function setCoverAddHidden(hide) {
+  const addBtn = document.getElementById('cover-add');
+  if (addBtn) addBtn.hidden = hide;
+  const row = document.querySelector('.cover-add-row');
+  if (row) row.style.display = hide ? 'none' : '';
+}
+
+// Paint the cover banner for the open note (null hides it). The src is
+// re-validated on every render and assigned as a property, never via HTML.
+function renderCover(note) {
+  const wrap = document.getElementById('cover-wrap');
+  const img = document.getElementById('cover-img');
+  const addBtn = document.getElementById('cover-add');
+  if (!wrap || !img) return;
+  const usable = note && activeView !== 'vault' ? cleanCoverSrc(note.cover) : null;
+  const heading = document.querySelector('.editor-heading');
+  if (heading) heading.classList.toggle('has-cover', Boolean(usable));
+  if (usable) {
+    if (img.getAttribute('src') !== usable) img.setAttribute('src', usable);
+    img.style.objectPosition = `50% ${coverFocalPos(note)}%`;
+    wrap.hidden = false;
+    if (addBtn) setCoverAddHidden(true);
+  } else {
+    wrap.hidden = true;
+    img.removeAttribute('src');
+    if (addBtn) {
+      const editable = Boolean(note) && activeView !== 'vault' && isUnlocked()
+        && !note.deleted && !note.archived;
+      setCoverAddHidden(!editable);
+    }
+  }
+}
+
+function requestCoverUpload() {
+  exitCoverRepos(true);
+  const note = currentNote();
+  if (activeView === 'vault') return;
+  if (!note) { showToast('Open a note first'); return; }
+  if (!isUnlocked()) { showToast('Log in to edit notes'); return; }
+  if (note.deleted) { showToast('Restore this note to edit it'); return; }
+  if (note.archived) { showToast('Unarchive this note to edit it'); return; }
+  const input = document.getElementById('cover-input');
+  if (input) { input.value = ''; input.click(); }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+}
+
+// Downscale to a JPEG banner (max 1200px side, quality 0.82).
+function downscaleCover(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onerror = () => reject(new Error('decode'));
+    img.onload = () => {
+      try {
+        const naturalW = img.naturalWidth || 800;
+        const naturalH = img.naturalHeight || 600;
+        const scale = Math.min(1, COVER_MAX_DIM / Math.max(naturalW, naturalH));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(naturalW * scale));
+        canvas.height = Math.max(1, Math.round(naturalH * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('canvas')); return; }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => {
+          if (!blob) { reject(new Error('encode')); return; }
+          readFileAsDataUrl(blob).then(resolve, reject);
+        }, 'image/jpeg', 0.82);
+      } catch (error) { reject(error); }
+    };
+    img.src = dataUrl;
+  });
+}
+
+async function handleCoverFile(file) {
+  const note = currentNote();
+  if (!note || activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return;
+  if (!file) return;
+  if (!isImageFile(file)) { showToast('Use a PNG, JPEG, WebP, GIF, AVIF or BMP image'); return; }
+  if (file.size > 5 * 1024 * 1024) { showToast('Image too large (5 MB max)'); return; }
+  const wasOptimized = file.size > 300000;
+  showToast('Loading picture…');
+  try {
+    const raw = await readFileAsDataUrl(file);
+    const dataUrl = wasOptimized ? await downscaleCover(raw) : raw;
+    const clean = cleanCoverSrc(dataUrl) || (!wasOptimized ? await downscaleCover(raw).then(cleanCoverSrc) : null);
+    if (!clean) { showToast('Could not use that image — try a smaller file'); return; }
+    if (!currentNote() || currentNote().id !== note.id) return; // moved on mid-upload
+    note.cover = clean;
+    if (typeof note.coverPos !== 'number' || !Number.isFinite(note.coverPos)) note.coverPos = 50;
+    note.date = 'Now';
+    renderCover(note);
+    persistNotes();
+    showToast(wasOptimized ? 'Cover added (optimized) — Reposition to adjust' : 'Cover added — Reposition to adjust');
+  } catch (error) {
+    showToast('Could not read that image');
+  }
+}
+
+// Drag the banner on the note itself to reposition the cover (Notion-style).
+// Repositioning is a locked mode: Reposition unlocks, Done saves + locks.
+let coverDragging = false;
+let coverRepositioning = false;
+let coverReposStart = 50;
+
+function canEditCoverNote() {
+  const note = currentNote();
+  if (!note || activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return null;
+  if (!cleanCoverSrc(note.cover)) return null;
+  return note;
+}
+
+function setCoverReposUI() {
+  const wrap = document.getElementById('cover-wrap');
+  const badge = document.getElementById('cover-pos');
+  const reposBtn = document.getElementById('cover-repos');
+  const doneBtn = document.getElementById('cover-done');
+  const changeBtn = document.getElementById('cover-change');
+  const removeBtn = document.getElementById('cover-remove');
+  if (wrap) wrap.classList.toggle('repositioning', coverRepositioning);
+  if (reposBtn) reposBtn.hidden = coverRepositioning;
+  if (doneBtn) doneBtn.hidden = !coverRepositioning;
+  if (changeBtn) changeBtn.hidden = coverRepositioning;
+  if (removeBtn) removeBtn.hidden = coverRepositioning;
+  if (badge) {
+    if (coverRepositioning) {
+      const note = currentNote();
+      badge.hidden = false;
+      badge.textContent = `${note ? coverFocalPos(note) : 50}%`;
+    } else {
+      badge.hidden = true;
+    }
+  }
+}
+
+function enterCoverRepos() {
+  const note = canEditCoverNote();
+  if (!note || coverRepositioning) return;
+  coverRepositioning = true;
+  coverReposStart = coverFocalPos(note);
+  setCoverReposUI();
+  showToast('Drag the cover to reposition — Done to lock');
+}
+
+// Leave reposition mode; save persists the staged position, cancel restores it.
+function exitCoverRepos(save) {
+  if (!coverRepositioning) return;
+  coverRepositioning = false;
+  coverDragging = false;
+  const wrap = document.getElementById('cover-wrap');
+  if (wrap) wrap.classList.remove('dragging');
+  const note = currentNote();
+  if (save && note && note.cover) {
+    note.date = 'Now';
+    if (currentId === note.id) renderCover(note);
+    persistNotes();
+    showToast('Cover position locked');
+  } else if (!save && note && note.cover) {
+    note.coverPos = coverReposStart;
+    if (currentId === note.id) renderCover(note);
+  }
+  setCoverReposUI();
+}
+
+function coverDragNote() {
+  if (!coverRepositioning) return null;
+  return canEditCoverNote();
+}
+
+function moveCoverOnNote(clientY) {
+  const note = coverDragNote();
+  const wrap = document.getElementById('cover-wrap');
+  const badge = document.getElementById('cover-pos');
+  if (!note || !wrap) return;
+  const rect = wrap.getBoundingClientRect();
+  const ratio = rect.height > 0 ? (clientY - rect.top) / rect.height : 0.5;
+  note.coverPos = Math.min(100, Math.max(0, Math.round(ratio * 100)));
+  const img = document.getElementById('cover-img');
+  if (img) img.style.objectPosition = `50% ${note.coverPos}%`;
+  if (badge) {
+    badge.hidden = false;
+    badge.textContent = `${note.coverPos}%`;
+  }
+}
+
+function endCoverDrag() {
+  if (!coverDragging) return;
+  coverDragging = false;
+  const wrap = document.getElementById('cover-wrap');
+  if (wrap) wrap.classList.remove('dragging');
+}
+
+function removeCover() {
+  exitCoverRepos(false);
+  const note = currentNote();
+  if (!note || activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return;
+  if (!note.cover) return;
+  note.cover = null;
+  note.coverPos = null;
+  note.date = 'Now';
+  renderCover(note);
+  persistNotes();
+  showToast('Cover removed');
 }
 
 // After 10s idle, auto-switch a non-empty Markdown note to preview.
@@ -3195,10 +2603,10 @@ function setWriteMode(mode, { focus = false } = {}) {
   }
 }
 
-// Inline rename for All-Notes folder headers; refused in Bin for General/binned folders (Bin offers restore/delete instead).
+// Inline rename for All-Notes folder headers; refused in Bin.
 function startTreeRename(folder) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  if (activeView === 'bin' && (folder === GENERAL_FOLDER || isCollectionDeleted(folder))) return;
+  if (activeView === 'bin') return;
   const wrap = findTreeWrap(folder);
   if (!wrap) return;
   const row = wrap.querySelector('.tree-folder-row');
@@ -3223,23 +2631,23 @@ function startTreeRename(folder) {
     if (done) return;
     done = true;
     if (commit) {
-      // Namespace follows the row (recipe/custom rows rename in place, never
-      // as collections), and the commit is leaf-only so children stay put.
-      let ns = null;
+      // Namespace follows the row; fall back to whichever custom section owns the folder.
       let sectionId = null;
-      if (activeRecipe) ns = 'recipes';
-      else if (activeCustom) { ns = 'custom'; sectionId = activeCustom.section; }
+      if (activeCustom) sectionId = activeCustom.section;
       else {
         const shell = wrap.closest('[data-list-section]');
         const kind = shell ? shell.dataset.listSection : null;
-        if (kind === 'recipes') ns = 'recipes';
-        else if (kind === 'custom') {
+        if (kind === 'custom') {
           const secBtn = shell.querySelector('[data-section-id]');
-          if (secBtn && secBtn.dataset.sectionId) { ns = 'custom'; sectionId = secBtn.dataset.sectionId; }
+          if (secBtn && secBtn.dataset.sectionId) sectionId = secBtn.dataset.sectionId;
         }
       }
-      if (!ns) ns = 'collections';
-      renameFolderPath(ns, sectionId, folder, joinLeafRename(folder, input.value));
+      if (!sectionId) {
+        const owner = customSections.find((section) => section.folders.some((entry) => entry === folder || isFolderOrSub(entry, folder) || isFolderOrSub(folder, entry)));
+        if (owner) sectionId = owner.id;
+      }
+      if (!sectionId) { renderNoteList(); return; }
+      renameFolderPath('custom', sectionId, folder, joinLeafRename(folder, input.value));
     }
     else renderNoteList();
   };
@@ -3270,17 +2678,8 @@ function dropNoteOnNote(draggedId, targetId, after) {
   const target = notes.find((note) => note.id === targetId);
   if (from === -1 || !target) return;
   const [moved] = notes.splice(from, 1);
-  // Adopt the target's folder in the current grouping namespace.
-  if (activeRecipe) {
-    const groupOf = (note) => ((activeRecipe && typeof note.recipe === 'string' && note.recipe) ? note.recipe : folderOf(note));
-    const folder = groupOf(target);
-    moved.recipe = folder === GENERAL_FOLDER ? null : folder;
-  } else if (!activeCustom) {
-    const folder = folderOf(target);
-    moved.collection = folder === GENERAL_FOLDER ? null : folder;
-  } else if (activeCustom.folder) {
-    // Custom-section context: adopt the target's folder in the same section,
-    // never touch the collections namespace.
+  // Adopt the target's folder when inside a specific folder view (same section only).
+  if (activeCustom && activeCustom.folder) {
     const folder = customNoteFolder(target, activeCustom.section);
     if (folder) {
       if (!moved.sections || typeof moved.sections !== 'object') moved.sections = {};
@@ -3294,24 +2693,27 @@ function dropNoteOnNote(draggedId, targetId, after) {
   renderNoteList();
 }
 
-function dropNoteOnFolder(draggedId, folder) {
+function dropNoteOnFolder(draggedId, folder, sectionId) {
   const index = notes.findIndex((note) => note.id === draggedId);
   if (index === -1 || typeof folder !== 'string') return;
   const [moved] = notes.splice(index, 1);
-  if (activeRecipe) moved.recipe = folder === GENERAL_FOLDER ? null : folder;
-  else if (activeCustom) {
-    // Custom-section context: file into the same section (General unfiles it
-    // from the section instead of touching the collections namespace).
-    if (!moved.sections || typeof moved.sections !== 'object') moved.sections = {};
-    if (folder === GENERAL_FOLDER) delete moved.sections[activeCustom.section];
-    else moved.sections[activeCustom.section] = folder;
+  // Resolve target section: explicit sectionId wins, else active custom section.
+  const targetSection = sectionId || (activeCustom ? activeCustom.section : null);
+  if (!moved.sections || typeof moved.sections !== 'object') moved.sections = {};
+  if (targetSection) {
+    moved.sections[targetSection] = folder;
+  } else {
+    // No section context (should not happen in unified UI): keep filing unchanged.
+    notes.splice(index, 0, moved);
+    persistNotes();
+    renderNoteList();
+    return;
   }
-  else moved.collection = folder === GENERAL_FOLDER ? null : folder;
   // Append after the folder's last note in global order (empty folders: end).
   const keyOf = (note) => {
-    if (activeRecipe) return (note.recipe || GENERAL_FOLDER);
-    if (activeCustom) return customNoteFolder(note, activeCustom.section) || GENERAL_FOLDER;
-    return folderOf(note);
+    if (targetSection) return customNoteFolder(note, targetSection);
+    if (activeCustom) return customNoteFolder(note, activeCustom.section);
+    return firstFilingOf(note);
   };
   let to = notes.length;
   for (let i = notes.length - 1; i >= 0; i -= 1) {
@@ -3368,7 +2770,21 @@ function enableNoteDragDrop() {
     header.addEventListener('dragleave', () => header.classList.remove('drop-target'));
     header.addEventListener('drop', (event) => {
       event.preventDefault();
-      dropNoteOnFolder(event.dataTransfer.getData('text/plain'), header.dataset.folder);
+      const wrap = header.closest('[data-folder-wrap]');
+      const shell = header.closest('[data-list-section]');
+      const shellKind = shell ? shell.dataset.listSection : null;
+      let sectionId = activeCustom ? activeCustom.section : null;
+      if (shellKind === 'custom') {
+        const secBtn = shell.querySelector('[data-section-id]');
+        if (secBtn && secBtn.dataset.sectionId) sectionId = secBtn.dataset.sectionId;
+      }
+      // Resolve section from wrap when possible (flat view has no shell context).
+      if (!sectionId && wrap) {
+        const folder = wrap.dataset.folderWrap;
+        const owner = customSections.find((section) => section.folders.some((entry) => entry === folder || isFolderOrSub(folder, entry) || isFolderOrSub(entry, folder)));
+        if (owner) sectionId = owner.id;
+      }
+      dropNoteOnFolder(event.dataTransfer.getData('text/plain'), header.dataset.folder, sectionId);
     });
   });
 }
@@ -3378,21 +2794,29 @@ function renderNoteList() {
   if (activeView === 'vault') { renderVaultList(); return; }
   const visible = visibleNotes();
   const searching = searchQuery.trim() !== '';
-  // Grouping follows the active folder namespace: recipe paths when a recipe
-  // folder is selected, custom-section paths when one of those is selected,
-  // collection paths otherwise — so nested folders render under their own name
-  // instead of leaking into General.
+  // Grouping follows the active folder namespace: custom-section paths when one
+  // of those is selected, otherwise each note's first filing (unfiled notes
+  // render as plain rows without a folder header).
   const groupKeyOfNote = (note) => {
-    if (activeRecipe && typeof note.recipe === 'string' && note.recipe) return note.recipe;
-    if (activeCustom) return customNoteFolder(note, activeCustom.section) || GENERAL_FOLDER;
-    return folderOf(note);
+    if (activeCustom) return customNoteFolder(note, activeCustom.section);
+    return firstFilingOf(note);
   };
   const groups = new Map();
+  const unfiledNotes = [];
   visible.forEach((note) => {
     const folder = groupKeyOfNote(note);
+    if (folder == null) { unfiledNotes.push(note); return; }
     if (!groups.has(folder)) groups.set(folder, []);
     groups.get(folder).push(note);
   });
+  // One bare note row (same markup as folder-grouped rows, minus the folder).
+  const renderBareNoteRow = (note) => `
+        <button class="tree-file${note.id === currentId ? ' selected' : ''}" data-note-id="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}">
+          <span class="tree-file-icon tree-file-icon-${note.ext}">${icon(note.ext === 'md' ? 'file' : 'file-text')}</span>
+          <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
+          ${activeView === 'bin' ? `<span class="bin-meta">${binRemainingText(note)}</span>` : ''}
+          ${note.favorite && activeView !== 'bin' ? `<span class="mini-star">${icon('star')}</span>` : ''}
+        </button>`;
   // Newest-first ordering (item 7): folders sort by their newest note, so a
   // freshly created note always lands on top of the list.
   const orderOf = new Map();
@@ -3430,12 +2854,8 @@ function renderNoteList() {
     const folder = node.fullPath;
     const files = node.files;
     const isCollapsed = !searching && collapsedFolders.has(folder);
-    const isBinnedFolder = activeView === 'bin' && folder !== GENERAL_FOLDER && isCollectionDeleted(folder);
     const folderActions = activeView === 'bin'
-      ? (isBinnedFolder
-        ? `<button type="button" class="tree-action" data-folder-restore="${escapeHtml(folder)}" title="Restore folder" aria-label="Restore ${escapeHtml(folder)}">${icon('restore')}</button>
-           <button type="button" class="tree-action danger" data-folder-delete="${escapeHtml(folder)}" title="Delete folder permanently" aria-label="Delete ${escapeHtml(folder)} permanently">${icon('trash')}</button>`
-        : '')
+      ? ''
       : `<button type="button" class="tree-rename" data-folder-rename="${escapeHtml(folder)}" title="Rename folder" aria-label="Rename ${escapeHtml(folder)}">${icon('pencil')}</button>`;
     const childrenHtml = node.children.slice().sort(byRecency).map(renderFolderNode).join('');
     return `
@@ -3454,7 +2874,7 @@ function renderNoteList() {
         ${childrenHtml}
         ${files.map((note) => `
         <button class="tree-file${note.id === currentId ? ' selected' : ''}" data-note-id="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}">
-          <span class="tree-file-icon tree-file-icon-${note.ext === 'txt' ? 'txt' : 'md'}">${icon(note.ext === 'txt' ? 'file-text' : 'file')}</span>
+          <span class="tree-file-icon tree-file-icon-${note.ext}">${icon(note.ext === 'md' ? 'file' : 'file-text')}</span>
           <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
           ${activeView === 'bin' ? `<span class="bin-meta">${binRemainingText(note)}</span>` : ''}
           ${note.favorite && activeView !== 'bin' ? `<span class="mini-star">${icon('star')}</span>` : ''}
@@ -3480,33 +2900,12 @@ function renderNoteList() {
   // Home-like views (no folder/search/chip filter) separate folders by
   // section to mirror the slide menu; everything else keeps the flat tree.
   const homeLike = activeView === 'notes' && activeFilter === 'all' && !searching
-    && !activeCollection && !activeRecipe && !(activeCustom && activeCustom.folder);
+    && !(activeCustom && activeCustom.folder);
   if (homeLike) {
     const parts = [];
-    const wantCols = !activeCustom && (!activeSection || activeSection === 'collections');
-    const wantRecipes = !activeCustom && (!activeSection || activeSection === 'recipes');
     const customTargets = activeCustom && !activeCustom.folder
       ? customSections.filter((section) => section.id === activeCustom.section)
-      : ((!activeSection && !activeCustom) ? customSections : []);
-    if (wantCols) {
-      const sectionGroups = new Map();
-      visible.forEach((note) => {
-        if (hidesInGeneral(note)) return;
-        const folder = folderOf(note);
-        if (!sectionGroups.has(folder)) sectionGroups.set(folder, []);
-        sectionGroups.get(folder).push(note);
-      });
-      if (sectionGroups.size) parts.push(renderSectionShell('collections', '', sectionDisplayName('collections'), sectionGroups));
-    }
-    if (wantRecipes) {
-      const sectionGroups = new Map();
-      visible.forEach((note) => {
-        if (typeof note.recipe !== 'string' || !note.recipe) return;
-        if (!sectionGroups.has(note.recipe)) sectionGroups.set(note.recipe, []);
-        sectionGroups.get(note.recipe).push(note);
-      });
-      if (sectionGroups.size) parts.push(renderSectionShell('recipes', '', sectionDisplayName('recipes'), sectionGroups));
-    }
+      : ((!activeCustom) ? customSections : []);
     customTargets.forEach((section) => {
       const sectionGroups = new Map();
       visible.forEach((note) => {
@@ -3517,9 +2916,14 @@ function renderNoteList() {
       });
       if (sectionGroups.size) parts.push(renderSectionShell('custom', section.id, section.name, sectionGroups));
     });
+    // Notes without a folder filing stay visible as plain rows.
+    if (!activeCustom) {
+      const unfiled = visible.filter((note) => isUnfiled(note));
+      if (unfiled.length) parts.push(unfiled.map(renderBareNoteRow).join(''));
+    }
     noteList.innerHTML = parts.join('');
   } else {
-    noteList.innerHTML = renderFolderGroups(groups);
+    noteList.innerHTML = renderFolderGroups(groups) + unfiledNotes.map(renderBareNoteRow).join('');
   }
   const inBin = activeView === 'bin';
   listEmpty.hidden = visible.length !== 0;
@@ -3535,9 +2939,7 @@ function renderNoteList() {
   if (allCount) allCount.textContent = scope.length;
   if (recentCountEl) recentCountEl.textContent = scope.filter((note) => isRecentNote(note)).length;
   if (starredCountEl) starredCountEl.textContent = scope.filter((note) => note.favorite).length;
-  const activeContextName = activeCollection || activeRecipe
-    || (activeCustom ? (activeCustom.folder || sectionDisplayName('custom', activeCustom.section)) : null)
-    || (activeSection ? sectionDisplayName(activeSection) : null);
+  const activeContextName = (activeCustom ? (activeCustom.folder || sectionDisplayName('custom', activeCustom.section)) : null);
   if (totalCount) totalCount.textContent = inBin ? `${visible.length} in bin` : (activeContextName ? `${visible.length} note${visible.length === 1 ? '' : 's'} in ${activeContextName}` : `${visible.length} note${visible.length === 1 ? '' : 's'}`);
   const navAllCount = document.getElementById('nav-all-count');
   if (navAllCount) navAllCount.textContent = liveNotes.length;
@@ -3561,33 +2963,22 @@ function renderNoteList() {
     event.stopPropagation();
     startTreeRename(item.dataset.folderRename);
   }));
-  noteList.querySelectorAll('[data-folder-restore]').forEach((item) => item.addEventListener('click', (event) => {
-    event.stopPropagation();
-    restoreCollection(item.dataset.folderRestore);
-  }));
-  noteList.querySelectorAll('[data-folder-delete]').forEach((item) => item.addEventListener('click', (event) => {
-    event.stopPropagation();
-    openFolderPermanentDeleteConfirm(item.dataset.folderDelete);
-  }));
   noteList.querySelectorAll('.tree-folder-name').forEach((item) => item.addEventListener('dblclick', (event) => {
     event.preventDefault();
     event.stopPropagation();
+    if (activeView === 'bin') return;
     const wrap = item.closest('[data-folder-wrap]');
     if (!wrap) return;
-    const folderName = wrap.dataset.folderWrap;
-    if (activeView === 'bin' && (folderName === GENERAL_FOLDER || isCollectionDeleted(folderName))) return;
-    startTreeRename(folderName);
+    startTreeRename(wrap.dataset.folderWrap);
   }));
   noteList.querySelectorAll('[data-section-jump]').forEach((item) => item.addEventListener('click', (event) => {
     event.stopPropagation();
     const kind = item.dataset.sectionJump;
     const id = item.dataset.sectionId || null;
     if (kind === 'custom' && id) selectCustomSection(id);
-    else selectSection(kind);
   }));
   const renameSectionFromList = (kind, id) => {
     if (kind === 'custom' && id) startSectionRename({ kind: 'custom', id });
-    else startSectionRename({ kind });
   };
   noteList.querySelectorAll('[data-section-rename]').forEach((item) => item.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -3620,6 +3011,7 @@ function updateMeta(note) {
 // Every note opens in PREVIEW mode (edit mode never carries over between
 // notes); clicking/focusing the preview switches that note to edit mode.
 function selectNote(id) {
+  exitCoverRepos(true);
   const note = notes.find((item) => item.id === id);
   if (!note) return;
   currentId = id;
@@ -3630,6 +3022,7 @@ function selectNote(id) {
   titleInput.value = typeof note.title === 'string' ? note.title : 'Untitled note';
   markdownInput.value = typeof note.body === 'string' ? note.body : '';
   breadcrumbTitle.textContent = note.title;
+  renderCover(note);
   renderPreview(note);
   updateMeta(note);
   renderNoteList();
@@ -3721,11 +3114,11 @@ function openNoteContextMenu(noteId, x, y) {
   if (rect.bottom > window.innerHeight - padding) menu.style.top = `${Math.max(padding, y - rect.height)}px`;
 }
 
-// Download one note as .md/.txt via a Blob URL with a sanitized filename.
+// Download one note with a sanitized filename and matching MIME type.
 function downloadNoteObject(note) {
   if (!note) return;
   const body = typeof note.body === 'string' ? note.body : '';
-  const blob = new Blob([body], { type: note.ext === 'txt' ? 'text/plain' : 'text/markdown' });
+  const blob = new Blob([body], { type: EXT_MIME[note.ext] || 'text/markdown' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -3781,6 +3174,7 @@ function toggleFavoriteById(id) {
 
 // Empty the editor for the no-notes state and re-render.
 function clearEditor() {
+  exitCoverRepos(true);
   currentId = null;
   currentVaultId = null;
   titleInput.value = '';
@@ -3790,6 +3184,7 @@ function clearEditor() {
   breadcrumbTitle.textContent = 'No notes';
   if (wordCount) wordCount.textContent = '0 words';
   if (tagList) tagList.innerHTML = '';
+  renderCover(null);
   renderNoteList();
 }
 
@@ -3819,17 +3214,12 @@ function restoreNoteById(id) {
   if (!note || !note.deleted) return;
   note.deleted = false;
   delete note.deletedAt;
-  if (note.collection && isCollectionDeleted(note.collection)) {
-    deletedCollections = deletedCollections.filter((entry) => entry.name !== note.collection);
-    persistDeletedCollections();
-  }
   // Revive a binned custom section the note belongs to, so it has a home.
-  // Recipe/custom folders inside live sections are re-adopted by the sync below.
+  // Custom folders inside live sections are re-adopted by the sync below.
   reviveSectionsForNote(note);
-  syncCollectionsWithNotes();
+  syncCustomSections();
   persistNotes();
-  renderCollections();
-  try { renderRecipeCollections(); } catch (error) {}
+  renderCustomSections();
   try { renderCustomSections(); } catch (error) {}
   if (activeView === 'bin') {
     const binned = notes.filter((item) => item.deleted);
@@ -3863,9 +3253,9 @@ function unarchiveNoteById(id) {
   const note = notes.find((item) => item.id === id);
   if (!note || note.deleted || !note.archived) return;
   note.archived = false;
-  syncCollectionsWithNotes();
+  syncCustomSections();
   persistNotes();
-  renderCollections();
+  renderCustomSections();
   renderNoteList();
   showToast('Note unarchived');
 }
@@ -3894,8 +3284,6 @@ function emptyBin() {
   const binned = notes.filter((item) => item.deleted);
   if (!binned.length) { showToast('Bin is already empty'); return; }
   notes = notes.filter((item) => !item.deleted);
-  deletedCollections = [];
-  persistDeletedCollections();
   deletedCustomSections = [];
   persistDeletedCustomSections();
   const currentAlive = currentId && notes.some((item) => item.id === currentId);
@@ -4014,54 +3402,6 @@ function openEmptyBinConfirm() {
   }
 }
 
-// Popup: delete a folder (its notes move to Bin, or to General for legacy text — see deleteCollection).
-function openFolderDeleteConfirm(name) {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  const isGeneral = name === GENERAL_FOLDER;
-  if (!isGeneral && !collections.includes(name)) return;
-  const count = notes.filter((note) => !note.deleted && isFolderOrSub(folderOf(note), name)
-    && (name !== GENERAL_FOLDER || !hidesInGeneral(note))).length;
-  pendingDeleteId = name;
-  pendingDeleteMode = 'folder';
-  setDeleteDialog({
-    eyebrow: 'Delete folder',
-    title: 'Delete this folder?',
-    name,
-    message: !count
-      ? '” is empty. Are you sure you want to delete it?'
-      : isGeneral
-        ? `” holds ${count} uncategorized note${count === 1 ? '' : 's'}. Notes inside will move to Bin for 3 days. Are you sure?`
-        : `” holds ${count} note${count === 1 ? '' : 's'}. The folder and its notes will move to Bin for 3 days. Are you sure?`
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
-
-// Popup: permanently erase a binned folder and all its binned notes.
-function openFolderPermanentDeleteConfirm(name) {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  if (!isCollectionDeleted(name)) return;
-  const count = notes.filter((note) => note.deleted && note.collection === name).length;
-  pendingDeleteId = name;
-  pendingDeleteMode = 'folder-permanent';
-  setDeleteDialog({
-    eyebrow: 'Permanently delete',
-    title: 'Delete folder forever?',
-    name,
-    message: `” and its ${count} binned note${count === 1 ? '' : 's'} will be permanently deleted and cannot be recovered. Are you sure?`
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
-
 // Hide the confirm popup and clear the pending action.
 function closeDeleteConfirm() {
   const overlay = document.getElementById('delete-overlay');
@@ -4080,12 +3420,8 @@ function confirmPendingDelete() {
   closeDeleteConfirm();
   if (mode === 'empty') emptyBin();
   else if (mode === 'permanent') permanentlyDeleteNoteById(id);
-  else if (mode === 'folder') deleteCollection(id);
-  else if (mode === 'folder-permanent') permanentlyDeleteCollection(id);
   else if (mode === 'vault-note') deleteVaultNote(id);
-  else if (mode === 'recipe') deleteRecipe(id);
   else if (mode === 'custom-section') deleteCustomSection(id);
-  else if (mode === 'builtin-section') deleteBuiltinSection(id);
   else if (mode === 'custom-folder') deleteCustomFolder(sectionId, id);
   else deleteNoteById(id);
 }
@@ -4146,10 +3482,10 @@ function timingSafeEqualStr(a, b) {
 async function vaultEncryptNote(note) {
   const iv = e2eeRandomBytes(12);
   const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, vault.dek,
-    new TextEncoder().encode(JSON.stringify({
+    new TextEncoder().encode(    JSON.stringify({
       id: note.id, title: note.title, body: note.body,
       tags: Array.isArray(note.tags) ? note.tags : [],
-      ext: note.ext === 'txt' ? 'txt' : 'md',
+      ext: normalizeExt(note.ext),
       date: note.date, favorite: !!note.favorite,
     })));
   return { id: note.id, payload: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) } };
@@ -4166,7 +3502,7 @@ async function vaultDecryptItem(item) {
     title: typeof obj.title === 'string' && obj.title.trim() ? obj.title.slice(0, 200) : 'Untitled note',
     body: typeof obj.body === 'string' ? obj.body.slice(0, 500000) : '',
     tags: Array.isArray(obj.tags) ? obj.tags.filter((tag) => typeof tag === 'string').slice(0, 20) : [],
-    ext: obj.ext === 'txt' ? 'txt' : 'md',
+    ext: normalizeExt(obj.ext),
     date: typeof obj.date === 'string' ? obj.date.slice(0, 40) : 'Now',
     favorite: false,
   };
@@ -4202,6 +3538,7 @@ function uniqueVaultTitle(base) {
 
 // Open a vault note in the editor (preview-first, like normal notes).
 function selectVaultNote(id) {
+  exitCoverRepos(true);
   const note = vault.unlocked ? vault.notes.find((item) => item.id === id) : null;
   if (!note) return;
   currentVaultId = id;
@@ -4212,6 +3549,7 @@ function selectVaultNote(id) {
   titleInput.value = note.title;
   markdownInput.value = note.body;
   breadcrumbTitle.textContent = note.title;
+  renderCover(null); // vault notes have no covers; clear any stale banner
   renderPreview(note);
   updateMeta(note);
   renderNoteList();
@@ -4377,16 +3715,13 @@ function updateVaultUI() {
 function enterVaultView() {
   if (!vault.unlocked) { openVaultModal(); return; }
   activeView = 'vault';
-  activeCollection = null;
-  activeRecipe = null;
-  activeSection = null;
   activeCustom = null;
   activeFilter = 'all';
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'vault'));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   clearSearch();
   updateListHeading();
-  renderCollections();
+  renderCustomSections();
   renderNoteList();
 }
 
@@ -4406,16 +3741,18 @@ async function lockVault() {
 }
 
 // Vault password modal: 'setup' (first run), 'unlock', or 'reset-confirm'.
+// reset-confirm reuses the masked unlock password field for the LOGIN
+// password proof (no window.prompt plaintext shoulder-surfing).
 function setVaultModal(mode, message) {
   vaultModalMode = mode;
   document.getElementById('vault-title').textContent = mode === 'setup' ? 'Set Vault Password' : mode === 'reset-confirm' ? 'Reset Vault?' : 'Unlock Vault';
   document.getElementById('vault-desc').textContent = mode === 'setup'
     ? 'Choose a password just for your vault. It is separate from your login and cannot be recovered.'
     : mode === 'reset-confirm'
-      ? 'This permanently deletes every note inside the vault. This cannot be undone.'
+      ? 'Enter your LOGIN password to confirm. This permanently deletes every note inside the vault. This cannot be undone.'
       : 'Enter your vault password to reveal your secret notes.';
   document.getElementById('vault-setup-block').hidden = mode !== 'setup';
-  document.getElementById('vault-unlock-block').hidden = mode !== 'unlock';
+  document.getElementById('vault-unlock-block').hidden = (mode !== 'unlock' && mode !== 'reset-confirm');
   const confirmBtn = document.getElementById('vault-confirm');
   confirmBtn.textContent = mode === 'setup' ? 'Set password' : mode === 'reset-confirm' ? 'Reset vault' : 'Unlock';
   confirmBtn.className = mode === 'unlock' ? 'btn btn-primary' : 'btn btn-danger';
@@ -4526,8 +3863,28 @@ async function unlockVaultFromModal() {
 }
 
 async function resetVault() {
+  // Re-auth fix: stolen cookie alone cannot wipe the vault. Read the LOGIN
+  // password from the masked modal field (shown in reset-confirm mode),
+  // derive the account verifier, and send as proof.
+  let proof = null;
   try {
-    const response = await apiFetch('/api/vault-meta', { method: 'DELETE' });
+    const input = document.getElementById('vault-password');
+    const pwd = String((input && input.value) || '');
+    if (!pwd) { vaultFail('Enter your login password to confirm reset.'); return; }
+    if (!e2ee.saltAuth) { vaultFail('Log in again, then retry reset.'); return; }
+    const saltBytes = (e2ee.saltAuth instanceof Uint8Array) ? e2ee.saltAuth : e2eeB64ToBytes(e2ee.saltAuth);
+    const raw = await argon2id32(pwd, saltBytes);
+    proof = e2eeBytesToB64(raw);
+  } catch (error) {
+    vaultFail('Could not confirm password.');
+    return;
+  }
+  try {
+    const response = await apiFetch('/api/vault-meta', { method: 'DELETE', body: JSON.stringify({ currentAccountAuth: proof }) });
+    if (response.status === 401) {
+      vaultFail('Incorrect login password — vault not reset.');
+      return;
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
   } catch (error) {
     vaultFail('Could not reset the vault. Try again.');
@@ -4566,13 +3923,12 @@ document.getElementById('vault-reset-link').addEventListener('click', () => setV
 document.getElementById('new-vault-note').addEventListener('click', addVaultNote);
 document.getElementById('lock-vault').addEventListener('click', lockVault);
 
-// Detect a trailing .md/.txt extension typed in the title and switch the note type instead.
+// Detect a trailing file extension typed in the title and switch the note type instead.
 function parseTitleExtension(rawTitle, note) {
   const input = typeof rawTitle === 'string' ? rawTitle : 'Untitled note';
-  const match = input.match(/\.((md|markdown|txt|text))$/i);
+  const match = input.match(/\.((md|markdown|txt|text|json|yaml|yml))$/i);
   if (match) {
-    const ext = match[1].toLowerCase();
-    note.ext = (ext.startsWith('txt') || ext === 'text') ? 'txt' : 'md';
+    note.ext = normalizeExt(match[1]);
     return input.slice(0, -(match[0].length)).trim().slice(0, 200) || 'Untitled note';
   }
   return input.slice(0, 200);
@@ -4631,7 +3987,7 @@ const NOTE_TEMPLATES = {
   }
 };
 
-// Create a note from the Standard/Recipe/To-Do template into the current view+collection and open it.
+// Create a note from a template (Standard/Recipe/To-Do) into the current view+collection and open it.
 function createNoteFromTemplate(templateKey) {
   const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
   if (activeView === 'bin') {
@@ -4649,15 +4005,29 @@ function createNoteFromTemplate(templateKey) {
   pendingSectionFolder = null;
   const pickedCustom = picked && picked.ns === 'custom' && activeCustom && picked.section === activeCustom.section
     ? picked.folder : null;
-  const pickedRecipe = picked && picked.ns === 'recipes' && activeSection === 'recipes' && !activeRecipe
-    ? picked.folder : null;
   const customSection = activeCustom ? customSections.find((entry) => entry.id === activeCustom.section) : null;
+  // No active folder context (e.g. All notes): inherit filing from the open
+  // note so the new note lands next to it instead of staying unfiled.
+  // Only live locations count — binned/deleted/removed folders are skipped.
+  const inheritSections = {};
+  if (!activeCustom && currentId) {
+    const openNote = notes.find((entry) => entry.id === currentId);
+    if (openNote) {
+      if (openNote.sections && typeof openNote.sections === 'object') {
+        for (const secId of Object.keys(openNote.sections)) {
+          const folder = openNote.sections[secId];
+          if (typeof folder !== 'string' || !folder) continue;
+          const sec = customSections.find((entry) => entry.id === secId);
+          if (sec && sec.folders.includes(folder)) inheritSections[secId] = folder;
+        }
+      }
+    }
+  }
   const customFolder = pickedCustom
     || (activeCustom && activeCustom.folder)
     || (customSection && customSection.folders.length ? customSection.folders[0] : null);
-  const recipeFolder = pickedRecipe || activeRecipe
-    || (activeSection === 'recipes' && recipeCollections.length ? recipeCollections[0] : null);
-  const note = { id, title, date: 'Now', tags, favorite: false, archived: false, deleted: false, ext: 'md', collection: activeCollection === GENERAL_FOLDER ? null : activeCollection, recipe: recipeFolder, sections: (activeCustom && customFolder) ? { [activeCustom.section]: customFolder } : {}, body: template.body(title) };
+  const filedSections = (activeCustom && customFolder) ? { [activeCustom.section]: customFolder } : inheritSections;
+  const note = { id, title, date: 'Now', tags, favorite: false, archived: false, deleted: false, ext: normalizeExt(template.ext), sections: filedSections, body: template.body(title) };
   notes.unshift(note);
   activeFilter = 'all';
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
@@ -4665,13 +4035,16 @@ function createNoteFromTemplate(templateKey) {
   clearSearch();
   currentId = id;
   selectNote(id);
+  // Mirror the new filing in the workspace sidebar immediately.
+  renderCustomSections();
   markdownInput.focus();
   markdownInput.setSelectionRange(markdownInput.value.length, markdownInput.value.length);
   persistNotes();
   // Confirm where it landed: if the current view filters it out, name the
   // destination so the note is findable instead of seemingly lost.
   const shown = visibleNotes().some((entry) => entry.id === id);
-  const dest = customFolder || recipeFolder || note.collection || GENERAL_FOLDER;
+  const sectionValues = Object.values(note.sections || {}).filter((value) => typeof value === 'string' && value);
+  const dest = customFolder || sectionValues[0] || 'All notes';
   showToast(shown ? `${template.label} created` : `${template.label} created in ${dest}`);
   return note;
 }
@@ -4697,7 +4070,7 @@ function closeTemplatePicker() {
 }
 
 // Folder picked in a bare section view, awaiting template choice.
-let pendingSectionFolder = null; // { ns: 'custom'|'recipes', section: id|null, folder } | null
+let pendingSectionFolder = null; // { ns: 'custom', section: id, folder } | null
 
 // + New note entry: a bare section view (no folder picked) asks for the
 // destination folder first, so the note lands where the user wants. A section
@@ -4712,12 +4085,6 @@ function onNewNoteClick() {
       return;
     }
     if (openFolderPicker('custom', activeCustom.section)) return;
-  } else if (activeSection === 'recipes' && !activeRecipe) {
-    if (!recipeCollections.length) {
-      showToast('Create a recipe folder first');
-      return;
-    }
-    if (openFolderPicker('recipes', null)) return;
   }
   openTemplatePicker();
 }
@@ -4734,8 +4101,7 @@ function openFolderPicker(ns, sectionId) {
     if (!section || !section.folders.length) return false;
     entries = section.folders.map((folder) => ({ ns, section: sectionId, folder, context: section.name }));
   } else {
-    if (!recipeCollections.length) return false;
-    entries = recipeCollections.map((folder) => ({ ns, section: null, folder, context: sectionDisplayName('recipes') }));
+    return false;
   }
   document.getElementById('folder-pick-desc').textContent = `Where in ${entries[0].context} should this note land?`;
   box.innerHTML = entries.map((entry) => {
@@ -4772,16 +4138,16 @@ function showToast(message) {
   toast.timer = setTimeout(() => toast.classList.remove('show'), 2200);
 }
 
-// True when the open note is .txt (Markdown tools stay disabled).
+// True when the open note is not Markdown (formatting tools stay disabled).
 function isPlainTextNote() {
   const note = activeEditorNote();
-  return note && note.ext === 'txt';
+  return note && note.ext !== 'md';
 }
 
 // Wrap the editor selection (or placeholder word) with a Markdown marker and save.
 function wrapSelection(before, after = before) {
   if (!cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  if (isPlainTextNote()) { showToast('Plain text note — switch to Markdown to format'); return; }
+  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
   const start = markdownInput.selectionStart;
   const end = markdownInput.selectionEnd;
   const selected = markdownInput.value.slice(start, end) || 'text';
@@ -4793,7 +4159,7 @@ function wrapSelection(before, after = before) {
 // Insert a Markdown line prefix (heading/list/quote) at the start of the current line and save.
 function linePrefix(prefix) {
   if (!cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  if (isPlainTextNote()) { showToast('Plain text note — switch to Markdown to format'); return; }
+  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
   const start = markdownInput.selectionStart;
   const lineStart = markdownInput.value.lastIndexOf('\n', start - 1) + 1;
   markdownInput.setRangeText(prefix, lineStart, lineStart, 'end');
@@ -4843,38 +4209,16 @@ function customNoteFolder(note, sectionId) {
   return typeof folder === 'string' && folder.trim() ? folder : null;
 }
 
-// Display name of a sidebar section: custom sections carry their own name,
-// built-ins fall back to defaults unless renamed.
+// Display name of a sidebar section (all sections share the custom implementation).
 function sectionDisplayName(kind, id) {
-  if (kind === 'custom') {
-    const section = customSections.find((entry) => entry.id === id);
-    return section ? section.name : 'Section';
-  }
-  if (sectionNames[kind]) return sectionNames[kind];
-  return kind === 'recipes' ? 'Recipes' : 'Collections';
+  const sectionId = kind === 'custom' ? id : kind;
+  const section = customSections.find((entry) => entry.id === sectionId);
+  return section ? section.name : 'Section';
 }
 
 // Persist custom sections + section display names into the encrypted UI vault.
 function persistCustomSections() {
   persistUiVault();
-}
-
-// Filter the list to every folder under a sidebar section (header click).
-// One filter at a time: this clears any selected folder.
-function selectSection(kind) {
-  if (kind !== 'collections' && kind !== 'recipes') return;
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  activeView = 'notes';
-  activeFilter = 'all';
-  activeCollection = null;
-  activeRecipe = null;
-  activeCustom = null;
-  activeSection = kind;
-  clearSearch();
-  updateListHeading();
-  renderCollections();
-  renderNoteList();
 }
 
 // Filter the list to a custom section (folder null) or one of its folders.
@@ -4886,13 +4230,10 @@ function selectCustomSection(sectionId) {
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   activeView = 'notes';
   activeFilter = 'all';
-  activeCollection = null;
-  activeRecipe = null;
-  activeSection = null;
   activeCustom = { section: sectionId, folder: null };
   clearSearch();
   updateListHeading();
-  renderCollections();
+  renderCustomSections();
   renderNoteList();
 }
 
@@ -4903,23 +4244,17 @@ function selectCustomFolder(sectionId, folder) {
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   activeView = 'notes';
   activeFilter = 'all';
-  activeCollection = null;
-  activeRecipe = null;
-  activeSection = null;
   activeCustom = { section: sectionId, folder };
   clearSearch();
   updateListHeading();
-  renderCollections();
+  renderCustomSections();
   renderNoteList();
 }
 
-// Clear the active collection/recipe filter and both sidebar highlights.
-function clearCollectionSelection() {
-  activeCollection = null;
-  activeRecipe = null;
-  activeSection = null;
+// Clear section/folder filters and sidebar highlights (unified custom implementation).
+function clearSectionSelection() {
   activeCustom = null;
-  document.querySelectorAll('#collection-list .collection-item, #recipe-list .collection-item').forEach((item) => item.classList.remove('active'));
+  document.querySelectorAll('#custom-sections .collection-item').forEach((item) => item.classList.remove('active'));
 }
 
 document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('click', (event) => {
@@ -4928,7 +4263,7 @@ document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('
   if (typeof view !== 'string' || !/^(notes|favorites|archive|bin|vault)$/.test(view)) return;
   if (view === 'vault' && !vault.unlocked) { openVaultModal(); return; }
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav === item));
-  clearCollectionSelection();
+  clearSectionSelection();
   activeView = view;
   searchQuery = '';
   document.getElementById('search-input').value = '';
@@ -4954,16 +4289,6 @@ document.getElementById('empty-bin').addEventListener('click', (event) => {
   openEmptyBinConfirm();
 });
 
-document.getElementById('new-collection').addEventListener('click', (event) => {
-  event.preventDefault();
-  addCollectionFolder();
-});
-
-document.getElementById('new-recipe').addEventListener('click', (event) => {
-  event.preventDefault();
-  addRecipeFolder();
-});
-
 preview.addEventListener('click', () => {
   if (writeMode === 'preview') setWriteMode('edit', { focus: true });
 });
@@ -4972,7 +4297,7 @@ preview.addEventListener('focus', () => {
 });
 if (modeToggle) modeToggle.addEventListener('click', () => {
   const note = activeEditorNote();
-  if (!note || note.ext === 'txt') return;
+  if (!note || note.ext !== 'md') return;
   if (writeMode === 'preview') setWriteMode('edit', { focus: true });
   else if (markdownInput.value.trim()) setWriteMode('preview');
   else showToast('Nothing to preview yet');
@@ -5025,23 +4350,62 @@ if (typeBadge) typeBadge.addEventListener('click', () => {
   if (!note) return;
   if (note.deleted) { showToast('Restore this note to edit it'); return; }
   if (note.archived) { showToast('Unarchive this note to edit it'); return; }
-  note.ext = note.ext === 'txt' ? 'md' : 'txt';
+  const order = ['md', 'txt', 'json', 'yaml'];
+  note.ext = order[(order.indexOf(note.ext) + 1) % order.length];
   writeMode = 'edit';
   clearTimeout(idleTimer);
   renderPreview(note);
   resetIdleTimer();
   persistNotes();
   renderNoteList();
-  showToast(note.ext === 'txt' ? 'Switched to plain text (.txt)' : 'Switched to Markdown (.md)');
+  const typeNames = { md: 'Markdown (.md)', txt: 'plain text (.txt)', json: 'JSON (.json)', yaml: 'YAML (.yaml)' };
+  showToast(`Switched to ${typeNames[note.ext]}`);
 });
 
 document.getElementById('import-notes').addEventListener('click', () => importInput.click());
+document.getElementById('cover-add').addEventListener('click', requestCoverUpload);
+document.getElementById('cover-change').addEventListener('click', requestCoverUpload);
+document.getElementById('cover-remove').addEventListener('click', removeCover);
+document.getElementById('cover-repos').addEventListener('click', enterCoverRepos);
+document.getElementById('cover-done').addEventListener('click', () => exitCoverRepos(true));
+document.getElementById('cover-input').addEventListener('change', (event) => {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  if (file) handleCoverFile(file);
+});
+// Reposition by dragging the banner on the note itself (buttons opt out).
+function coverDragStart(event, clientY) {
+  if (event.target && event.target.closest && event.target.closest('button')) return;
+  if (!coverDragNote()) return;
+  coverDragging = true;
+  const wrap = document.getElementById('cover-wrap');
+  if (wrap) wrap.classList.add('dragging');
+  moveCoverOnNote(clientY);
+  event.preventDefault();
+}
+document.getElementById('cover-wrap').addEventListener('pointerdown', (event) => {
+  if (event.button !== undefined && event.button !== 0) return;
+  coverDragStart(event, event.clientY);
+});
+document.getElementById('cover-wrap').addEventListener('pointermove', (event) => {
+  if (coverDragging) moveCoverOnNote(event.clientY);
+});
+document.getElementById('cover-wrap').addEventListener('pointerup', () => endCoverDrag());
+document.getElementById('cover-wrap').addEventListener('pointercancel', () => endCoverDrag());
+document.getElementById('cover-wrap').addEventListener('mousedown', (event) => {
+  if (event.button !== 0) return;
+  coverDragStart(event, event.clientY);
+});
+document.addEventListener('mousemove', (event) => {
+  if (coverDragging) moveCoverOnNote(event.clientY);
+});
+document.addEventListener('mouseup', () => endCoverDrag());
 const MAX_IMPORT_FILES = 20;
 const MAX_IMPORT_BYTES_PER_FILE = 1024 * 1024;
 const MAX_IMPORT_BYTES_TOTAL = 5 * 1024 * 1024;
 importInput.addEventListener('change', async (event) => {
-  const picked = [...(event.target.files || [])].filter((file) => /\.(md|markdown|txt|text)$/i.test(file.name || ''));
-  if (!picked.length) { showToast('Choose .md or .txt files to import'); return; }
+  const picked = [...(event.target.files || [])].filter((file) => /\.(md|markdown|txt|text|json|yaml|yml)$/i.test(file.name || ''));
+  if (!picked.length) { showToast('Choose .md, .txt, .json or .yaml files to import'); return; }
   if (picked.length > MAX_IMPORT_FILES) { showToast(`Choose up to ${MAX_IMPORT_FILES} files at once`); importInput.value = ''; return; }
   let imported = 0;
   let totalBytes = 0;
@@ -5054,7 +4418,9 @@ importInput.addEventListener('change', async (event) => {
       if (totalBytes > MAX_IMPORT_BYTES_TOTAL) { showToast('Import stopped: 5 MB total limit'); break; }
       const rawBase = String(file.name || 'Untitled note').replace(/\.[^.]+$/, '').trim().slice(0, 180) || 'Untitled note';
       const base = rawBase.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
-      const isText = /\.(txt|text)$/i.test(file.name);
+      const ext = /\.json$/i.test(file.name) ? 'json'
+        : (/\.(yaml|yml)$/i.test(file.name) ? 'yaml'
+        : (/\.(txt|text)$/i.test(file.name) ? 'txt' : 'md'));
       const note = {
         id: newNoteId(),
         title: uniqueTitle(base),
@@ -5063,11 +4429,9 @@ importInput.addEventListener('change', async (event) => {
         favorite: false,
         archived: false,
         deleted: false,
-        ext: isText ? 'txt' : 'md',
-        collection: activeCollection === GENERAL_FOLDER ? null : activeCollection,
-        recipe: activeRecipe,
+        ext,
         sections: (activeCustom && activeCustom.folder) ? { [activeCustom.section]: activeCustom.folder } : {},
-        body: (text || (isText ? '' : `# ${base}\n`)).slice(0, 500000)
+        body: (text || (ext === 'md' ? `# ${base}\n` : '')).slice(0, 500000)
       };
       notes.unshift(note);
       if (imported === 0) currentId = note.id;
@@ -5078,8 +4442,8 @@ importInput.addEventListener('change', async (event) => {
   if (imported) {
     activeFilter = 'all';
     document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-    syncCollectionsWithNotes();
-    renderCollections();
+    syncCustomSections();
+    renderCustomSections();
     selectNote(currentId);
     persistNotes();
     showToast(`Imported ${imported} file${imported === 1 ? '' : 's'}`);
@@ -5231,6 +4595,7 @@ async function logout() {
   // Wipe decrypted workspace: memory, editor DOM and any legacy local copy.
   notes = [];
   notesLoaded = false;
+  serverNotesVersion = 0;
   serverUiLoaded = false;
   currentId = null;
   currentVaultId = null;
@@ -5241,9 +4606,6 @@ async function logout() {
   vault.meta = null;
   activeView = 'notes';
   activeFilter = 'all';
-  activeCollection = null;
-  activeRecipe = null;
-  activeSection = null;
   activeCustom = null;
   searchQuery = '';
   clearTimeout(syncTimer);
@@ -5255,19 +4617,15 @@ async function logout() {
     // Drop only legacy plaintext keys (CWE-312). Per-account encrypted caches
     // (`notely-ui-vault:<user>`) stay so the next login boots fast offline —
     // the server envelope remains the source of truth.
-    localStorage.removeItem(COLLECTION_STORAGE_KEY);
-    localStorage.removeItem(DELETED_COLLECTIONS_KEY);
+    localStorage.removeItem('notely-collections');
+    localStorage.removeItem('notely-deleted-collections');
     localStorage.removeItem(COLLAPSED_FOLDERS_KEY);
-    localStorage.removeItem(RECIPE_STORAGE_KEY);
     localStorage.removeItem(SECTION_DATA_KEY);
   } catch (error) {}
-  collections = [...DEFAULT_COLLECTIONS];
-  deletedCollections = [];
   collapsedFolders = new Set();
-  recipeCollections = [];
   customSections = [];
-  sectionNames = {};
-  hiddenSections = [];
+  deletedCustomSections = [];
+  activeCustom = null;
   titleInput.value = '';
   markdownInput.value = '';
   breadcrumbTitle.textContent = 'No notes';
@@ -5276,7 +4634,7 @@ async function logout() {
   const passwordInput = document.getElementById('login-password');
   if (passwordInput) passwordInput.value = '';
   document.getElementById('sidebar').classList.remove('open');
-  renderCollections();
+  renderCustomSections();
   clearEditor();
   showLogin();
 }
@@ -5468,24 +4826,22 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
     applyProfile();
     // Fresh account context: never leak the previous login's sidebar into this one.
     serverUiLoaded = false;
-    collections = [...DEFAULT_COLLECTIONS];
-    deletedCollections = [];
     collapsedFolders = new Set();
-    recipeCollections = [];
     customSections = [];
-    sectionNames = {};
-    hiddenSections = [];
+    deletedCustomSections = [];
+    activeCustom = null;
     await loadNotesFromServer();
     if (purgeExpiredBin()) persistNotes();
     await loadUiVault();
-    syncCollectionsWithNotes();
+    try { ensureMigratedCollectionsSection([], null); } catch (error) {}
+    syncCustomSections();
     // First login on a v1 row (or a device that knew more than the server):
     // push the merged sidebar up so the next relog/device sees it.
     if (!serverUiLoaded) {
       try { await writeUiVaultLocal(); } catch (error) {}
       persistNotes();
     }
-    renderCollections();
+    renderCustomSections();
     const firstActiveNote = notes.find((note) => !note.deleted && !note.archived)
       || notes.find((note) => !note.deleted)
       || notes[0];
@@ -5676,13 +5032,8 @@ function openSettings() {
   settingsOverlay.hidden = false;
   document.getElementById('sidebar').classList.remove('open');
 }
-// Keep the Side Menu section toggles in sync with hiddenSections.
-function syncSideMenuSettings() {
-  const collectionsBox = document.getElementById('show-collections');
-  if (collectionsBox) collectionsBox.checked = !isBuiltinHidden('collections');
-  const recipesBox = document.getElementById('show-recipes');
-  if (recipesBox) recipesBox.checked = !isBuiltinHidden('recipes');
-}
+// Keep Side Menu settings in sync (unified custom sections have no hide toggles).
+function syncSideMenuSettings() {}
 // Switch the settings left-nav tab and its right-side pane.
 function setSettingsTab(name) {
   document.querySelectorAll('.settings-nav-item').forEach((item) => item.classList.toggle('active', item.dataset.settingsTab === name));
@@ -5700,14 +5051,7 @@ document.getElementById('start-collapsed').addEventListener('change', (event) =>
 function bindSideMenuSectionToggle(id, kind) {
   const box = document.getElementById(id);
   if (!box) return;
-  box.addEventListener('change', (event) => {
-    setBuiltinHidden(kind, !event.target.checked);
-    syncSideMenuSettings();
-    showToast(event.target.checked ? `Section “${sectionDisplayName(kind)}” shown` : `Section “${sectionDisplayName(kind)}” hidden`);
-  });
 }
-bindSideMenuSectionToggle('show-collections', 'collections');
-bindSideMenuSectionToggle('show-recipes', 'recipes');
 // Hide the settings modal.
 function closeSettings() {
   if (!settingsOverlay) return;
@@ -5750,6 +5094,7 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
+    if (coverRepositioning) { exitCoverRepos(false); return; }
     if (typeof loginThemeMenu !== 'undefined' && loginThemeMenu && !loginThemeMenu.hidden) { setLoginThemeMenu(false); return; }
     if (folderMenuTarget) { closeFolderContextMenu(); return; }
     if (contextMenuNoteId) { closeNoteContextMenu(); return; }
@@ -5783,8 +5128,6 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-bindCollectionListEvents();
-bindRecipeListEvents();
 bindSectionHeaderEvents();
 bindCustomSectionsEvents();
 bindNoteContextMenu();
@@ -5816,8 +5159,8 @@ async function boot() {
   clearEditor();
   showLogin();
   refreshEditorLock();
-  syncCollectionsWithNotes();
-  renderCollections();
+  syncCustomSections();
+  renderCustomSections();
   clearEditor();
   refreshEditorLock();
 }

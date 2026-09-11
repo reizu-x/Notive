@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
     <meta name="referrer" content="no-referrer" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="app-shell">
-    <!-- Sidebar: brand, profile card (rendered from session), nav views, collections folders -->
+    <!-- Sidebar: brand, profile card (rendered from session), nav views, sections folders -->
       <aside class="sidebar" id="sidebar">
         <div class="brand-row">
           <a class="brand" href="#" aria-label="Notely home">
@@ -53,22 +53,6 @@
         </nav>
 
         <div class="sidebar-scroll">
-        <!-- Collections: user folders, editable via hover buttons or double-click -->
-        <div class="sidebar-section" data-section="collections">
-          <div class="section-label"><span class="section-initial" title="Collections" aria-hidden="true">C</span><span class="section-label-text">Collections</span><span class="section-actions"><button class="text-icon-button" id="new-collection" aria-label="Add folder" title="Add folder">+</button><button class="section-delete" data-del-section="collections" aria-label="Delete section" title="Delete section">×</button></span></div>
-          <div class="collection-list" id="collection-list">
-            <a href="#" class="collection-item" title="Work" data-collection="Work"><span class="collection-dot coral"></span><span class="collection-label">Work</span></a>
-            <a href="#" class="collection-item" title="Personal" data-collection="Personal"><span class="collection-dot yellow"></span><span class="collection-label">Personal</span></a>
-            <a href="#" class="collection-item" title="Reading list" data-collection="Reading list"><span class="collection-dot blue"></span><span class="collection-label">Reading list</span></a>
-          </div>
-        </div>
-
-        <!-- Recipes: same folder mechanics as Collections, separate namespace -->
-        <div class="sidebar-section" data-section="recipes">
-          <div class="section-label"><span class="section-initial" title="Recipes" aria-hidden="true">R</span><span class="section-label-text">Recipes</span><span class="section-actions"><button class="text-icon-button" id="new-recipe" aria-label="Add recipe folder" title="Add recipe folder">+</button><button class="section-delete" data-del-section="recipes" aria-label="Delete section" title="Delete section">×</button></span></div>
-          <div class="collection-list" id="recipe-list"></div>
-        </div>
-
         <!-- Custom sections, rendered by renderCustomSections -->
         <div id="custom-sections"></div>
         <div class="sidebar-section add-section-wrap">
@@ -97,14 +81,14 @@
               <h1 id="list-heading">All notes</h1>
             </div>
             <div class="notes-actions">
-              <button class="import-button" id="import-notes" aria-label="Import .md or .txt files" title="Import .md / .txt files"><span data-icon="upload"></span></button>
+              <button class="import-button" id="import-notes" aria-label="Import .md, .txt, .json or .yaml files" title="Import .md / .txt / .json / .yaml files"><span data-icon="upload"></span></button>
               <button class="new-note-button" id="new-note"><span>+</span> New note</button>
               <button class="new-note-button danger" id="empty-bin" hidden>Empty Bin</button>
               <button class="new-note-button" id="new-vault-note" hidden><span>+</span> New secret note</button>
               <button class="new-note-button danger" id="lock-vault" hidden>Lock Vault</button>
             </div>
           </div>
-          <input type="file" id="import-input" accept=".md,.markdown,.txt,.text" multiple hidden />
+          <input type="file" id="import-input" accept=".md,.markdown,.txt,.text,.json,.yaml,.yml" multiple hidden />
           <label class="search-box">
             <span data-icon="search"></span>
             <input id="search-input" type="search" placeholder="Search notes" autocomplete="off" maxlength="200" />
@@ -138,7 +122,21 @@
         </header>
 
         <div class="editor-scroll">
+          <div class="cover-add-row">
+            <button type="button" class="cover-add" id="cover-add" title="Add cover picture" hidden>Add cover</button>
+          </div>
           <div class="editor-heading">
+            <div class="cover-wrap" id="cover-wrap" hidden>
+              <img id="cover-img" alt="Note cover" draggable="false" />
+              <span class="cover-pos" id="cover-pos" hidden>50%</span>
+              <div class="cover-actions">
+                <button type="button" class="cover-btn" id="cover-repos">Reposition</button>
+                <button type="button" class="cover-btn" id="cover-done" hidden>Done</button>
+                <button type="button" class="cover-btn" id="cover-change">Change cover</button>
+                <button type="button" class="cover-btn danger" id="cover-remove">Remove</button>
+              </div>
+            </div>
+            <input type="file" id="cover-input" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,image/bmp,.png,.jpg,.jpeg,.jfif,.webp,.gif,.avif,.bmp" hidden />
             <input class="title-input" id="title-input" value="Designing a calmer inbox" aria-label="Note title" maxlength="200" autocomplete="off" />
             <div class="note-meta">
               <span><span class="meta-icon" data-icon="clock"></span>Edited today</span>
@@ -294,8 +292,6 @@
             <h3 class="settings-pane-title">Side Menu</h3>
             <p class="modal-desc">Choose how the sidebar looks when Notely opens.</p>
             <label class="setting-row"><input type="checkbox" id="start-collapsed" /><span class="setting-row-text"><strong>Start collapsed</strong><span>Open with the icon-only sidebar. Uncheck to start expanded.</span></span></label>
-            <label class="setting-row"><input type="checkbox" id="show-collections" checked /><span class="setting-row-text"><strong>Show Collections</strong><span>Uncheck to hide the Collections section. Deleting it hides it here too.</span></span></label>
-            <label class="setting-row"><input type="checkbox" id="show-recipes" checked /><span class="setting-row-text"><strong>Show Recipes</strong><span>Uncheck to hide the Recipes section. You can bring it back here anytime.</span></span></label>
           </div>
         </div>
       </div>
