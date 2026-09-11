@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f0e9" />
+    <meta name="notely-build" content="dev20" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
+    <title>Notely - private notes</title>
+    <link rel="stylesheet" href="styles.css?v=dev20" />
+  </head>
+  <body>
+    <div class="app-shell">
+    <!-- Sidebar: brand, profile card (rendered from session), nav views, sections folders -->
+      <aside class="sidebar" id="sidebar">
+        <div class="brand-row">
+          <a class="brand" href="#" aria-label="Notely home">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
+            </span>
+            <span class="brand-name">Notely</span>
+          </a>
+          <button class="icon-button sidebar-toggle" id="toggle-sidebar" aria-label="Collapse sidebar" title="Collapse sidebar" data-icon="sidebar"></button>
+          <button class="icon-button sidebar-close" id="close-sidebar" aria-label="Close menu" data-icon="x"></button>
+        </div>
+
+        <div class="profile-card">
+          <div class="avatar">AN</div>
+          <div class="profile-copy">
+            <strong>Admin Nimda</strong>
+            <span>Personal space</span>
+          </div>
+          <button class="icon-button tiny" id="logout-button" aria-label="Log out" title="Log out" data-icon="logout"></button>
+        </div>
+
+        <!-- Scrollable middle: folders scroll; brand/profile, nav and footer stay pinned -->
+        <nav class="primary-nav" aria-label="Main navigation">
+          <a href="#" class="nav-item active" data-view="notes" title="All Notes">
+            <span class="nav-icon" data-icon="inbox"></span><span class="nav-label">All Notes</span><span class="nav-count" id="nav-all-count">12</span>
+          </a>
+          <a href="#" class="nav-item" data-view="favorites" title="Favorites">
+            <span class="nav-icon" data-icon="star"></span><span class="nav-label">Favorites</span>
+          </a>
+          <a href="#" class="nav-item" data-view="archive" title="Archive">
+            <span class="nav-icon" data-icon="archive"></span><span class="nav-label">Archive</span><span class="nav-count" id="nav-archive-count">0</span>
+          </a>
+          <a href="#" class="nav-item" data-view="bin" title="Bin">
+            <span class="nav-icon" data-icon="trash"></span><span class="nav-label">Bin</span><span class="nav-count" id="nav-bin-count">0</span>
+          </a>
+          <a href="#" class="nav-item" data-view="vault" title="Vault">
+            <span class="nav-icon" data-icon="lock"></span><span class="nav-label">Vault</span>
+          </a>
+        </nav>
+
+        <div class="sidebar-scroll">
+        <!-- Custom sections, rendered by renderCustomSections -->
+        <div id="custom-sections"></div>
+        <div class="sidebar-section add-section-wrap">
+          <button class="add-section-button" id="new-section" title="Add section"><span>+</span> Add section</button>
+        </div>
+        </div>
+
+        <div class="sidebar-footer">
+          <div class="sync-status"><span class="sync-dot"></span><span class="sync-text">Synced just now</span></div>
+          <a href="#" class="footer-link" id="open-settings" title="Settings"><span data-icon="settings"></span><span class="footer-label">Settings</span></a>
+          <a href="#" class="footer-link" title="Help center"><span data-icon="help"></span><span class="footer-label">Help center</span></a>
+        </div>
+      </aside>
+
+    <!-- Notes panel: search, All/Recent/Starred filter chips (counts mirror the selection), note tree -->
+      <section class="notes-panel">
+        <div class="notes-header">
+          <div class="mobile-header-row">
+            <button class="icon-button menu-toggle" id="open-sidebar" aria-label="Open menu" data-icon="menu"></button>
+            <span class="mobile-brand">Notely</span>
+            <button class="icon-button" aria-label="More options" data-icon="dots"></button>
+          </div>
+          <div class="notes-title-row">
+            <div>
+              <p class="eyebrow">Workspace</p>
+              <h1 id="list-heading">All Notes</h1>
+            </div>
+            <div class="notes-actions">
+              <button class="icon-button workspace-toggle" id="toggle-workspace" aria-label="Collapse workspace" title="Collapse workspace" data-icon="sidebar"></button>
+              <button class="icon-button strip-back" id="workspace-strip-back" aria-label="Back to parent folder" title="Back to parent folder" data-icon="chevron-right" hidden></button>
+              <span class="workspace-view-icon" id="workspace-view-icon" title="All Notes" aria-hidden="true">All Notes</span>
+              <div class="workspace-strip-items" id="workspace-strip-items" aria-label="Folder contents"></div>
+              <button class="new-note-button" id="new-note"><span>+</span> New note</button>
+              <button class="new-note-button danger" id="empty-bin" hidden>Empty Bin</button>
+              <button class="new-note-button" id="new-vault-note" hidden><span>+</span> New secret note</button>
+              <button class="new-note-button danger" id="lock-vault" hidden>Lock Vault</button>
+            </div>
+          </div>
+          <input type="file" id="import-input" accept=".md,.markdown,.txt,.text,.json,.yaml,.yml" multiple hidden />
+          <label class="search-box">
+            <span data-icon="search"></span>
+            <input id="search-input" type="search" placeholder="Search notes" autocomplete="off" maxlength="200" />
+            <kbd>/</kbd>
+          </label>
+          <div class="filter-row" aria-label="Note filters">
+            <button class="filter-chip active" data-filter="all">All <span id="all-count">12</span></button>
+            <button class="filter-chip" data-filter="recent">Recent <span id="recent-count"></span></button>
+            <button class="filter-chip" data-filter="favorites">Starred <span id="starred-count"></span></button>
+          </div>
+        </div>
+        <div class="note-list" id="note-list" aria-label="Notes"></div>
+        <div class="list-empty" id="list-empty" hidden>
+          <span class="empty-icon" data-icon="search"></span>
+          <strong>No notes found</strong>
+          <span>Try another search or create a new note.</span>
+        </div>
+        <div class="notes-panel-footer"><span id="total-count">12 notes</span><span>Local &amp; private</span></div>
+      </section>
+
+    <!-- Editor: title, meta/tags, Markdown toolbar, write/preview panes -->
+      <main class="editor-panel">
+        <header class="editor-topbar">
+          <div class="breadcrumbs" id="breadcrumbs" hidden><span id="breadcrumb-trail"></span><span class="crumb-separator">/</span><strong id="breadcrumb-title">Designing a calmer inbox</strong></div>
+          <div class="tab-bar" id="tab-bar" aria-label="Open notes"></div>
+          <div class="editor-actions">
+            <span class="save-state" hidden><span class="save-dot"></span><span id="save-label">Saved</span></span>
+            <button class="icon-button" id="favorite-button" aria-label="Favorite note" data-icon="star"></button>
+            <button class="icon-button" id="share-button" aria-label="Share note" data-icon="share"></button>
+            <button class="icon-button" id="more-button" aria-label="More note actions" data-icon="dots"></button>
+          </div>
+        </header>
+
+        <div class="editor-scroll">
+          <div class="cover-add-row">
+            <button type="button" class="cover-add" id="cover-add" title="Add cover picture" hidden>Add cover</button>
+          </div>
+          <div class="editor-heading">
+            <div class="cover-wrap" id="cover-wrap" hidden>
+              <img id="cover-img" alt="Note cover" draggable="false" />
+              <span class="cover-pos" id="cover-pos" hidden>50%</span>
+              <div class="cover-actions">
+                <button type="button" class="cover-btn" id="cover-repos">Reposition</button>
+                <button type="button" class="cover-btn" id="cover-done" hidden>Done</button>
+                <button type="button" class="cover-btn" id="cover-change">Change cover</button>
+                <button type="button" class="cover-btn danger" id="cover-remove">Remove</button>
+              </div>
+            </div>
+            <input type="file" id="cover-input" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,image/bmp,.png,.jpg,.jpeg,.jfif,.webp,.gif,.avif,.bmp" hidden />
+            <input class="title-input" id="title-input" value="Designing a calmer inbox" aria-label="Note title" maxlength="200" autocomplete="off" />
+            <div class="note-meta">
+              <span><span class="meta-icon" data-icon="clock"></span>Edited today</span>
+              <span class="meta-separator"></span>
+              <span id="word-count">146 words</span>
+              <span class="meta-separator"></span>
+              <button class="type-badge" id="type-badge" title="File type — click to switch between Markdown and plain text">MD</button>
+              <span class="tag-list" id="tag-list"><span class="tag">product</span><span class="tag">systems</span></span>
+            </div>
+          </div>
+
+          <!-- Fixed recipe hero (recipe-template notes only): meal photo on
+               the left, editable description on the right. Editor chrome, not
+               body text, so it cannot be deleted. -->
+          <div class="recipe-hero-fixed" id="recipe-hero" hidden>
+            <button type="button" class="recipe-hero-photo" id="recipe-photo-btn" title="Add meal photo" aria-label="Add meal photo">
+              <img id="recipe-photo-img" alt="Meal photo" hidden />
+              <span id="recipe-photo-empty">Add meal photo</span>
+            </button>
+            <textarea class="recipe-hero-desc" id="recipe-desc" rows="3" maxlength="2000" placeholder="Write the description here..." aria-label="Meal description"></textarea>
+          </div>
+
+          <div class="editor-toolbar" id="editor-toolbar" role="toolbar" aria-label="Markdown formatting">
+            <div class="toolbar-group">
+              <button class="toolbar-button" data-action="heading" aria-label="Heading" title="Heading"><span class="toolbar-heading">H</span></button>
+              <button class="toolbar-button" data-action="bold" aria-label="Bold" title="Bold (Ctrl+B)"><strong>B</strong></button>
+              <button class="toolbar-button italic" data-action="italic" aria-label="Italic" title="Italic (Ctrl+I)">I</button>
+              <button class="toolbar-button code" data-action="code" aria-label="Inline code" title="Inline code">&lt;/&gt;</button>
+              <span class="toolbar-divider"></span>
+              <button class="toolbar-button" data-action="bullet" aria-label="Bullet list" title="Bullet list"><span data-icon="list"></span></button>
+              <button class="toolbar-button" data-action="check" aria-label="Checklist" title="Checklist"><span data-icon="check-square"></span></button>
+              <button class="toolbar-button" data-action="quote" aria-label="Quote" title="Quote"><span class="quote-mark">&quot;</span></button>
+              <button class="toolbar-button" data-action="link" aria-label="Link" title="Link"><span data-icon="link"></span></button>
+            </div>
+            <div class="toolbar-right">
+              <span class="markdown-label"><span class="markdown-dot">M</span> Markdown</span>
+              <span class="toolbar-divider"></span>
+              <button class="toolbar-button" id="focus-editor" aria-label="Focus mode" title="Focus mode"><span data-icon="focus"></span></button>
+            </div>
+          </div>
+
+          <div class="writing-area" id="writing-area">
+            <div class="write-head">
+              <div class="write-head-label"><span id="mode-label">Write</span><span class="shortcut-hint" id="idle-hint">Markdown source · live preview after 10s idle</span></div>
+              <div class="write-head-right">
+                <span class="preview-live"><span class="live-dot"></span>Live</span>
+                <button class="mode-toggle" id="mode-toggle" title="Switch between writing and preview">Preview</button>
+              </div>
+            </div>
+            <textarea class="markdown-input" id="markdown-input" rows="18" spellcheck="true" aria-label="Markdown editor"></textarea>
+            <article class="markdown-preview unified-preview" id="markdown-preview" tabindex="0" aria-label="Rendered preview — click or focus to keep writing" hidden></article>
+          </div>
+          <div class="editor-bottom"><span>Markdown · auto-preview after 10s idle</span><span><kbd>Ctrl</kbd><span> + </span><kbd>Enter</kbd> to save</span></div>
+        </div>
+      </main>
+    </div>
+    <!-- Login gate: login + register tabs. Shown until the server session unlocks the E2EE vault -->
+    <div class="login-overlay" id="login-overlay" hidden>
+      <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="login-title">
+        <div class="login-brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
+          </span>
+          <span class="brand-name">Notely</span>
+        </div>
+        <p class="eyebrow">Welcome back</p>
+        <h2 id="login-title">Log in</h2>
+        <p class="modal-desc">Sign in to open your private notes.</p>
+        <form id="login-form" autocomplete="on">
+          <label class="login-field"><span>Username</span><input id="login-username" name="username" type="text" autocomplete="username" placeholder="your-name" maxlength="32" required /></label>
+          <label class="login-field"><span>Password</span><input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="•••••" maxlength="256" required /></label>
+          <p class="login-error" id="login-error" hidden>Incorrect username or password.</p>
+          <button class="btn btn-primary login-submit" type="submit">Log in</button>
+        </form>
+        <div id="login-helpers">
+        <button class="btn btn-secondary login-submit" id="passkey-login-btn" type="button">Sign in with passkey</button>
+        <p class="modal-desc" style="text-align:center" id="recover-link-wrap"><button class="link-button" id="recover-link" type="button">Forgot password?</button></p>
+        <div id="recover-block" hidden>
+          <p><button class="link-button" id="recover-back" type="button">← Back to log in</button></p>
+          <p class="modal-desc">Choose how to recover your password.</p>
+          <div class="template-options" id="recover-options" style="margin-bottom:12px">
+            <button class="template-option" id="recover-opt-email" type="button"><span class="theme-option-text"><strong>Email</strong><span>Reset link to your account email</span></span></button>
+            <button class="template-option" id="recover-opt-code" type="button"><span class="theme-option-text"><strong>Recovery Code</strong><span>Offline code generated in Settings</span></span></button>
+          </div>
+        </div>
+        </div>
+        <form id="register-form" autocomplete="on" hidden>
+          <label class="login-field"><span>Username</span><input id="register-username" name="username" type="text" autocomplete="username" placeholder="3-32 chars: letters, numbers, _ -" maxlength="32" required /></label>
+          <label class="login-field"><span>Email</span><input id="register-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" maxlength="254" required /></label>
+          <label class="login-field"><span>First name</span><input id="register-first" name="firstName" type="text" autocomplete="given-name" maxlength="40" required /></label>
+          <label class="login-field"><span>Last name</span><input id="register-last" name="lastName" type="text" autocomplete="family-name" maxlength="40" required /></label>
+          <label class="login-field"><span>Password</span><input id="register-password" name="new-password" type="password" autocomplete="new-password" maxlength="256" required aria-describedby="password-policy" /></label>
+          <label class="login-field"><span>Confirm password</span><input id="register-confirm" type="password" autocomplete="new-password" maxlength="256" required /></label>
+          <ul class="password-policy" id="password-policy">
+            <li>At least 12 characters</li>
+            <li>At least 1 capital letter (A-Z)</li>
+            <li>At least 1 small letter (a-z)</li>
+            <li>At least 1 number (0-9)</li>
+            <li>At least 1 special character (e.g. !@#$%)</li>
+          </ul>
+          <p class="login-error" id="register-error" hidden></p>
+          <button class="btn btn-primary login-submit" type="submit">Create account</button>
+        </form>
+        <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
+          <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
+        </div>
+        <p class="login-hint" id="build-tag">dev build dev20</p>
+      </div>
+      <div class="login-theme-float">
+        <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
+          <button type="button" class="login-theme-item" role="option" data-theme-value="light" aria-selected="true">
+            <span class="theme-swatches theme-swatches-light" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Light</span>
+            <span class="theme-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="login-theme-item" role="option" data-theme-value="dark" aria-selected="false">
+            <span class="theme-swatches theme-swatches-dark" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Dark</span>
+            <span class="theme-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="login-theme-item" role="option" data-theme-value="dracula" aria-selected="false">
+            <span class="theme-swatches theme-swatches-dracula" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Dracula</span>
+            <span class="theme-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="login-theme-item" role="option" data-theme-value="nord" aria-selected="false">
+            <span class="theme-swatches theme-swatches-nord" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Nord</span>
+            <span class="theme-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="login-theme-item" role="option" data-theme-value="tokyo" aria-selected="false">
+            <span class="theme-swatches theme-swatches-tokyo" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Tokyo Night</span>
+            <span class="theme-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="login-theme-item" role="option" data-theme-value="gruvbox" aria-selected="false">
+            <span class="theme-swatches theme-swatches-gruvbox" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>Gruvbox</span>
+            <span class="theme-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+        </div>
+        <button type="button" class="login-theme-fab" id="login-theme-toggle" aria-label="Choose a theme" aria-haspopup="listbox" aria-expanded="false">
+          <span data-icon="contrast" aria-hidden="true"></span>
+        </button>
+      </div>
+    </div>
+    <!-- Settings modal: left nav (Appearance / Change Password / Side Menu), options on the right -->
+    <div class="modal-overlay" id="settings-overlay" hidden>
+      <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Settings</p>
+            <h2 id="settings-dialog-title">Settings</h2>
+          </div>
+          <button class="icon-button" id="close-settings" aria-label="Close settings" data-icon="x"></button>
+        </div>
+        <div class="settings-layout">
+          <nav class="settings-nav" aria-label="Settings sections">
+            <div class="settings-nav-header">Account</div>
+            <button type="button" class="settings-nav-item" data-settings-tab="profile">Profile</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="security">Authentication</button>
+            <div class="settings-nav-header">Customization</div>
+            <button type="button" class="settings-nav-item active" data-settings-tab="appearance">Appearance</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="behaviour">Behaviour</button>
+          </nav>
+          <div class="settings-pane" data-settings-pane="appearance">
+            <h3 class="settings-pane-title" id="settings-title">Appearance</h3>
+            <p class="modal-desc">Pick a theme for Notely. Your choice is saved on this device.</p>
+            <label class="login-field"><span>Theme</span>
+              <select id="theme-select">
+                <option value="light">Light — warm paper, easy on the eyes</option>
+                <option value="dark">Dark — low light for late sessions</option>
+                <option value="dracula">Dracula — purple-tinted fan favorite</option>
+                <option value="nord">Nord — arctic blues, calm contrast</option>
+                <option value="tokyo">Tokyo Night — neon night in the city</option>
+                <option value="gruvbox">Gruvbox — warm retro dark</option>
+              </select>
+            </label>
+            <hr />
+            <h3 class="settings-pane-title">Font</h3>
+            <p class="modal-desc">Pick a reading font for Notely. Saved on this device only.</p>
+            <label class="login-field"><span>Font</span>
+              <select id="font-select" autocomplete="off">
+                <option value="default">Default — Notely's built-in look</option>
+                <option value="serif">Serif — bookish Georgia letterforms</option>
+                <option value="palatino">Palatino — elegant old-style serif</option>
+                <option value="sans">Sans — clean system grotesque</option>
+                <option value="verdana">Verdana — wide, highly legible sans</option>
+                <option value="mono">Mono — typewriter everywhere</option>
+              </select>
+            </label>
+          </div>
+          <div class="settings-pane" data-settings-pane="profile" hidden>
+            <h3 class="settings-pane-title">Profile</h3>
+            <p class="modal-desc">Your Notely account details.</p>
+            <label class="login-field"><span>Username</span><input id="account-username" type="text" readonly autocomplete="username" /></label>
+            <label class="login-field"><span>Email</span><input id="account-email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" /></label>
+            <p class="login-error" id="account-error" hidden></p>
+            <button class="btn btn-secondary" id="account-save-btn" type="button">Save email</button>
+            <hr />
+            <h3 class="settings-pane-title">Delete account</h3>
+            <p class="modal-desc">Permanently deletes your account, notes, vault, keys and sessions. This cannot be undone.</p>
+            <button class="btn btn-danger" id="account-delete-btn" type="button">Delete my account…</button>
+          </div>
+          <div class="settings-pane" data-settings-pane="security" hidden>
+            <h3 class="settings-pane-title">Change password</h3>
+            <p class="modal-desc">Min 12 chars with 1 capital, 1 small, 1 number, 1 special character.</p>
+            <label class="login-field"><span>Current password</span><input id="change-current" type="password" autocomplete="current-password" maxlength="256" /></label>
+            <label class="login-field"><span>New password</span><input id="change-new" type="password" autocomplete="new-password" maxlength="256" /></label>
+            <p class="login-error" id="change-error" hidden></p>
+            <button class="btn btn-secondary" id="change-password-btn" type="button">Update password</button>
+            <hr />
+            <h3 class="settings-pane-title">Two-factor authentication</h3>
+            <p class="modal-desc">Authenticator-app codes (TOTP). Optional — logins stay unchanged until enabled.</p>
+            <p class="modal-desc" id="mfa-status">Checking status…</p>
+            <div id="mfa-manage-block">
+              <button class="btn btn-secondary" id="mfa-setup-btn" type="button">Start setup</button>
+              <button class="btn btn-secondary" id="mfa-disable-btn" type="button" hidden>Disable MFA</button>
+            </div>
+            <hr />
+            <h3 class="settings-pane-title">Password recovery</h3>
+            <p class="modal-desc">Recovery codes unlock a lost password: each code unwraps your notes key. Generate while logged in, store offline. Each code works once.</p>
+            <p class="modal-desc" id="acct-rec-status">No recovery codes stored on this account.</p>
+            <p class="login-error" id="acct-rec-error" hidden></p>
+            <button class="btn btn-secondary" id="acct-rec-generate-btn" type="button">Generate recovery codes</button>
+            <button class="btn btn-secondary" id="acct-rec-view-btn" type="button" hidden>View recovery codes</button>
+            <hr />
+            <h3 class="settings-pane-title">Passkeys</h3>
+            <p class="modal-desc">Sign in with your device instead of typing a verifier. Your password is still needed once per device to unlock notes.</p>
+            <div id="passkey-list" class="modal-desc"></div>
+            <p class="login-error" id="passkey-error" hidden></p>
+            <button class="btn btn-secondary" id="passkey-add-btn" type="button">Add this device as passkey</button>
+          </div>
+          <div class="settings-pane" data-settings-pane="behaviour" hidden>
+            <h3 class="settings-pane-title">Behaviour</h3>
+            <p class="modal-desc">Choose how the sidebar looks when Notely opens.</p>
+            <label class="setting-row"><input type="checkbox" id="start-collapsed" /><span class="setting-row-text"><strong>Start collapsed</strong><span>Open with the icon-only sidebar. Uncheck to start expanded.</span></span></label>
+            <hr />
+            <h3 class="settings-pane-title">Notes on this device</h3>
+            <p class="modal-desc">Keep a copy of your notes on this desktop, or take them off the cloud entirely.</p>
+            <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Notely server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
+            <button class="btn btn-secondary" id="export-all-btn" type="button">Export all notes to this device</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- New-note template chooser: Standard / Recipe / To-Do -->
+    <div class="modal-overlay" id="template-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="template-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">New note</p>
+            <h2 id="template-title">Choose a template</h2>
+          </div>
+          <button class="icon-button" id="close-templates" aria-label="Close templates" data-icon="x"></button>
+        </div>
+        <p class="modal-desc">Start from a structure. You can edit everything afterwards.</p>
+        <div class="template-options">
+          <button class="template-option" data-template="standard">
+            <span class="template-icon" data-icon="file-text" aria-hidden="true"></span>
+            <span class="theme-option-text"><strong>Standard Note</strong><span>Blank note with a title and body</span></span>
+            <span class="theme-check" data-icon="check"></span>
+          </button>
+          <button class="template-option" data-template="recipe">
+            <span class="template-icon" data-icon="cooking" aria-hidden="true"></span>
+            <span class="theme-option-text"><strong>Recipe</strong><span>Ingredients, steps, time and servings</span></span>
+            <span class="theme-check" data-icon="check"></span>
+          </button>
+          <button class="template-option" data-template="todo">
+            <span class="template-icon" data-icon="check-square" aria-hidden="true"></span>
+            <span class="theme-option-text"><strong>To-Do</strong><span>Checklist with priorities</span></span>
+            <span class="theme-check" data-icon="check"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+    <!-- New-note folder chooser: shown when creating from a bare section view -->
+    <div class="modal-overlay" id="folder-pick-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="folder-pick-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">New note</p>
+            <h2 id="folder-pick-title">Choose a folder</h2>
+          </div>
+          <button class="icon-button" id="close-folder-pick" aria-label="Close folder picker" data-icon="x"></button>
+        </div>
+        <p class="modal-desc" id="folder-pick-desc">Where should this note land?</p>
+        <div class="template-options" id="folder-pick-options"></div>
+      </div>
+    </div>
+    <!-- Shared delete-confirm popup (note / folder / Bin variants, filled by setDeleteDialog) -->
+    <div class="modal-overlay" id="delete-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Delete note</p>
+            <h2 id="delete-title">Delete this note?</h2>
+          </div>
+          <button class="icon-button" id="close-delete" aria-label="Close delete confirmation" data-icon="x"></button>
+        </div>
+        <p class="modal-desc" id="delete-desc">“<span id="delete-note-name">This note</span>” is marked as important. Are you sure you want to delete it? This cannot be undone.</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="cancel-delete">Cancel</button>
+          <button class="btn btn-danger" id="confirm-delete">Delete</button>
+        </div>
+      </div>
+    </div>
+    <!-- Device-only mode resync: what happens to the local copy when cloud sync returns -->
+    <div class="modal-overlay" id="resync-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="resync-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Turn sync back on</p>
+            <h2 id="resync-title">Upload this device's notes?</h2>
+          </div>
+          <button class="icon-button" id="resync-close" aria-label="Close resync dialog" data-icon="x"></button>
+        </div>
+        <p class="modal-desc">This device has notes saved in local storage. Upload, and they replace the notes on the Notely server — or keep the server copy and clear the local one.</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="resync-cancel">Cancel</button>
+          <button class="btn btn-danger" id="resync-keep">Keep server notes</button>
+          <button class="btn btn-primary" id="resync-upload">Upload local notes</button>
+        </div>
+      </div>
+    </div>
+    <!-- Recover account popup: one recovery method per view -->
+    <div class="modal-overlay" id="recover-modal" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="recover-modal-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Recover account</p>
+            <h2 id="recover-modal-title">Recover with code</h2>
+          </div>
+          <button class="icon-button" id="close-recover-modal" aria-label="Close recovery" data-icon="x"></button>
+        </div>
+        <div id="recover-email-block" hidden>
+          <label class="login-field"><span>Email address</span><input id="recover-email-address" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" /></label>
+          <p class="modal-desc" id="recover-email-note">We’ll send a reset link to the email on your account, valid 15 minutes.</p>
+          <p class="login-error" id="recover-email-error" hidden></p>
+          <button class="btn btn-secondary login-submit" id="recover-email-btn" type="button">Send reset email</button>
+        </div>
+        <div id="recover-code-block" hidden>
+          <div id="recover-verify-view">
+          <label class="login-field"><span>Username</span><input id="recover-code-username" type="text" autocomplete="username" maxlength="32" placeholder="your-name" /></label>
+          <label class="login-field"><span>Recovery code</span><input id="recover-code" type="password" autocomplete="off" maxlength="64" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" /></label>
+          <p class="login-error" id="recover-error" hidden></p>
+          <button class="btn btn-secondary login-submit" id="recover-verify-btn" type="button">Verify</button>
+          </div>
+          <div id="recover-newpw-block" hidden>
+          <label class="login-field"><span>New password</span><input id="recover-new" type="password" autocomplete="new-password" maxlength="256" /></label>
+          <label class="login-field"><span>Confirm new password</span><input id="recover-confirm" type="password" autocomplete="new-password" maxlength="256" /></label>
+          <button class="btn btn-secondary login-submit" id="recover-btn" type="button">Recover account</button>
+          </div>
+        </div>
+        <div id="recover-token-block" hidden>
+          <p class="modal-desc">Set a new password for your account. Your existing notes stay encrypted under the same key.</p>
+          <label class="login-field"><span>New password</span><input id="recover-token-new" type="password" autocomplete="new-password" maxlength="256" /></label>
+          <label class="login-field"><span>Confirm new password</span><input id="recover-token-confirm" type="password" autocomplete="new-password" maxlength="256" /></label>
+          <p class="login-error" id="recover-token-error" hidden></p>
+          <button class="btn btn-secondary login-submit" id="recover-token-btn" type="button">Set new password</button>
+        </div>
+      </div>
+    </div>
+    <!-- Generic input prompt (replaces window.prompt: masked, styled, Esc-safe) -->
+    <div class="modal-overlay" id="prompt-modal" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow" id="prompt-eyebrow">Notely</p>
+            <h2 id="prompt-title">Input needed</h2>
+          </div>
+          <button class="icon-button" id="prompt-cancel-x" aria-label="Cancel" data-icon="x"></button>
+        </div>
+        <p class="modal-desc" id="prompt-desc"></p>
+        <label class="login-field"><span id="prompt-label">Value</span><input id="prompt-input" type="password" maxlength="256" autocomplete="off" /></label>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="prompt-cancel">Cancel</button>
+          <button class="btn btn-primary" id="prompt-ok">Confirm</button>
+        </div>
+      </div>
+    </div>
+    <!-- MFA QR setup popup: opened by Start setup, closed on verify -->
+    <div class="modal-overlay" id="mfa-qr-modal" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mfa-qr-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Two-factor authentication</p>
+            <h2 id="mfa-qr-title">Scan to set up</h2>
+          </div>
+          <button class="icon-button" id="close-mfa-qr-modal" aria-label="Close setup" data-icon="x"></button>
+        </div>
+        <p class="modal-desc">Scan into your authenticator app, or enter the secret manually:</p>
+        <div id="mfa-setup-block">
+          <div id="mfa-qr" style="display:flex;justify-content:center;padding:8px"></div>
+          <p class="modal-desc" style="text-align:center">Secret: <code id="mfa-secret" style="user-select:all"></code></p>
+          <p class="modal-desc" style="overflow-wrap:anywhere"><small id="mfa-otpauth"></small></p>
+          <label class="login-field"><span>6-digit code</span><input id="mfa-confirm-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" /></label>
+          <p class="login-error" id="mfa-error" hidden></p>
+          <button class="btn btn-secondary login-submit" id="mfa-confirm-btn" type="button">Verify &amp; enable</button>
+        </div>
+      </div>
+    </div>
+    <!-- Recovery codes popup: re-viewable on the generating device, with download -->
+    <div class="modal-overlay" id="acct-rec-modal" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="acct-rec-modal-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Password recovery</p>
+            <h2 id="acct-rec-modal-title">Save your recovery codes</h2>
+          </div>
+        </div>
+        <p class="modal-desc">Store them somewhere safe (password manager, printed paper). Each code works once.</p>
+        <ol id="acct-rec-codes" class="recovery-code-list"></ol>
+        <p class="login-error" id="acct-rec-modal-error" hidden></p>
+        <div class="modal-actions" style="justify-content:flex-start">
+          <button class="btn btn-secondary" id="acct-rec-download-btn" type="button">Download codes (.txt)</button>
+          <button class="btn btn-primary" id="acct-rec-done-btn" type="button">I have saved the codes</button>
+        </div>
+      </div>
+    </div>
+    <!-- Transient status toast -->
+    <div class="modal-overlay" id="vault-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="vault-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Private vault</p>
+            <h2 id="vault-title">Unlock Vault</h2>
+          </div>
+          <button class="icon-button" id="close-vault" aria-label="Close vault" data-icon="x"></button>
+        </div>
+        <p class="modal-desc" id="vault-desc">Enter your vault password to reveal your secret notes.</p>
+        <div id="vault-setup-block" hidden>
+          <label class="login-field"><span>Vault password</span><input id="vault-new-password" type="password" autocomplete="new-password" maxlength="256" /></label>
+          <label class="login-field"><span>Confirm vault password</span><input id="vault-confirm-password" type="password" autocomplete="new-password" maxlength="256" /></label>
+          <p class="login-hint">Min 12 characters with 1 capital, 1 small, 1 number and 1 special character. This password is separate from your login — lose it and the vault cannot be recovered.</p>
+        </div>
+        <div id="vault-unlock-block" hidden>
+          <label class="login-field"><span>Vault password</span><input id="vault-password" type="password" autocomplete="current-password" maxlength="256" /></label>
+          <p class="modal-desc"><button class="link-button" id="vault-reset-link" type="button">Forgot password? Reset the vault (deletes everything inside)</button></p>
+        </div>
+        <p class="login-error" id="vault-error" hidden></p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="vault-cancel">Cancel</button>
+          <button class="btn btn-danger" id="vault-confirm">Unlock</button>
+        </div>
+      </div>
+    </div>
+    <div class="toast" id="toast" role="status"></div>
+    <!-- Tab overflow dropdown (filled by the tab renderer) -->
+    <div class="context-menu" id="tab-overflow-menu" role="menu" aria-label="More tabs" hidden></div>
+    <!-- Right-click note menu: items are shown/hidden per note state (live/archived/binned) -->
+    <div class="context-menu" id="note-context-menu" role="menu" aria-label="Note actions" hidden>
+      <button type="button" class="context-item" data-menu-action="open" role="menuitem"><span data-icon="file-text"></span><span>Open</span></button>
+      <button type="button" class="context-item" data-menu-action="favorite" role="menuitem"><span data-icon="star"></span><span id="context-favorite-label">Favorite</span></button>
+      <button type="button" class="context-item" data-menu-action="important" role="menuitem"><span data-icon="flag"></span><span id="context-important-label">Mark as important</span></button>
+      <button type="button" class="context-item" data-menu-action="archive" role="menuitem"><span data-icon="archive"></span><span id="context-archive-label">Archive</span></button>
+      <button type="button" class="context-item" data-menu-action="unarchive" role="menuitem"><span data-icon="restore"></span><span>Unarchive</span></button>
+      <button type="button" class="context-item" data-menu-action="duplicate" role="menuitem"><span data-icon="copy"></span><span>Duplicate</span></button>
+      <button type="button" class="context-item" data-menu-action="download" role="menuitem"><span data-icon="download"></span><span>Download</span></button>
+      <button type="button" class="context-item" data-menu-action="restore" role="menuitem" id="context-restore-item" hidden><span data-icon="restore"></span><span>Restore</span></button>
+      <div class="context-separator" aria-hidden="true"></div>
+      <button type="button" class="context-item danger" data-menu-action="delete" role="menuitem"><span data-icon="trash"></span><span id="context-delete-label">Delete</span></button>
+    </div>
+    <!-- Right-click section menu: New folder / Rename / Delete -->
+    <div class="context-menu" id="section-context-menu" role="menu" aria-label="Section actions" hidden>
+      <button type="button" class="context-item" data-section-action="add" role="menuitem"><span data-icon="folder-plus"></span><span>New folder</span></button>
+      <button type="button" class="context-item" data-section-action="rename" role="menuitem"><span data-icon="pencil"></span><span>Rename section</span></button>
+      <div class="context-separator" aria-hidden="true"></div>
+      <button type="button" class="context-item danger" data-section-action="delete" role="menuitem"><span data-icon="trash"></span><span>Delete section</span></button>
+    </div>
+    <!-- Right-click folder menu: Open / Rename / New subfolder / Delete (Bin folders get Restore instead) -->
+    <div class="context-menu" id="folder-context-menu" role="menu" aria-label="Folder actions" hidden>
+      <button type="button" class="context-item" data-folder-action="open" role="menuitem"><span data-icon="folder"></span><span>Open</span></button>
+      <button type="button" class="context-item" data-folder-action="new-note" role="menuitem"><span data-icon="file-text"></span><span>New note</span></button>
+      <button type="button" class="context-item" data-folder-action="rename" role="menuitem"><span data-icon="pencil"></span><span>Rename</span></button>
+      <button type="button" class="context-item" data-folder-action="subfolder" role="menuitem"><span data-icon="folder-plus"></span><span>New subfolder</span></button>
+      <button type="button" class="context-item" data-folder-action="restore" role="menuitem" hidden><span data-icon="restore"></span><span>Restore</span></button>
+      <div class="context-separator" aria-hidden="true"></div>
+      <button type="button" class="context-item danger" data-folder-action="delete" role="menuitem"><span data-icon="trash"></span><span id="folder-delete-label">Delete</span></button>
+    </div>
+    <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
+    <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
+    <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
+    <script src="app.js?v=dev20"></script>
+  </body>
+</html>

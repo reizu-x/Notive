@@ -3,6 +3,12 @@ notely.key
 *.bak
 *.bak-*
 notely.db.bak*
-Dev/
 __pycache__/
 server-5000.log
+# Dev workspace: source is tracked; secrets, databases and logs stay out.
+Dev/notely.db
+Dev/notely.db.*
+Dev/notely.key
+Dev/notely.db.badwrap-*
+Dev/notely.db.corrupt-*
+Dev/server-*.log
