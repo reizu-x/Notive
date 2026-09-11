@@ -36,19 +36,14 @@ Security model (end-to-end encryption for note contents):
 """
 
 import base64
-import fcntl
 import hashlib
 import hmac
 import json
 import os
-import py_compile
 import re
 import secrets
 import sqlite3
 import struct
-import subprocess
-import sys
-import threading
 import time
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -79,29 +74,6 @@ ARGON2_DESCRIPTOR = {'kdf': 'argon2id', 't': ARGON2_TIME_COST, 'm': ARGON2_MEMOR
 # {t, m, p} plus a top-level 'kdf' field). Accepts the historical descriptor
 # shape too so clients written against either form keep working.
 ARGON2_CLIENT_PARAMS = {'t': ARGON2_TIME_COST, 'm': ARGON2_MEMORY_KIB, 'p': ARGON2_PARALLELISM}
-
-# --- Periodic pull-only auto-update -----------------------------------------
-# The server mirrors its GitHub remote: every NOTELY_UPDATE_INTERVAL seconds it
-# runs `git fetch`, and when local is strictly behind remote/<branch> with a
-# clean working tree it fast-forwards (ff-only, never merging unpublished local
-# work) and restarts in-place via os.execv so the new code is actually served.
-# It never pushes and never touches a dirty tree. Controls:
-#   NOTELY_AUTO_UPDATE        '0' disables the loop (default enabled)
-#   NOTELY_UPDATE_INTERVAL    seconds between checks (default 300)
-#   NOTELY_UPDATE_FIRST_DELAY seconds before the first check (default 15)
-#   NOTELY_UPDATE_REMOTE      git remote to fetch (default 'origin')
-#   NOTELY_UPDATE_BRANCH      branch to track (default 'main')
-#   NOTELY_UPDATE_FETCH_TIMEOUT  seconds for each git command (default 60)
-#   NOTELY_UPDATE_LOG         log file (default /tmp/notely-auto-update.log)
-#   NOTELY_UPDATE_LOCK        cross-process lock file (default /tmp/notely-auto-update.lock)
-AUTO_UPDATE_ENABLED = os.environ.get('NOTELY_AUTO_UPDATE', '1').lower() != '0'
-AUTO_UPDATE_INTERVAL = int(os.environ.get('NOTELY_UPDATE_INTERVAL', '300'))
-AUTO_UPDATE_FIRST_DELAY = int(os.environ.get('NOTELY_UPDATE_FIRST_DELAY', '15'))
-AUTO_UPDATE_REMOTE = os.environ.get('NOTELY_UPDATE_REMOTE', 'origin')
-AUTO_UPDATE_BRANCH = os.environ.get('NOTELY_UPDATE_BRANCH', 'main')
-AUTO_UPDATE_FETCH_TIMEOUT = int(os.environ.get('NOTELY_UPDATE_FETCH_TIMEOUT', '60'))
-AUTO_UPDATE_LOG = os.environ.get('NOTELY_UPDATE_LOG', '/tmp/notely-auto-update.log')
-AUTO_UPDATE_LOCK = os.environ.get('NOTELY_UPDATE_LOCK', '/tmp/notely-auto-update.lock')
 
 
 def valid_argon2_params(params):
@@ -3024,124 +2996,6 @@ def api_logout():
     return response
 
 
-def _update_log(msg):
-    line = '%s AUTO-UPDATE: %s' % (time.strftime('%F %T'), msg)
-    print(line, flush=True)
-    try:
-        with open(AUTO_UPDATE_LOG, 'a') as f:
-            f.write(line + '\n')
-    except Exception:
-        pass
-
-
-def _git(*args):
-    return subprocess.run(
-        ['git'] + list(args), capture_output=True, text=True,
-        timeout=AUTO_UPDATE_FETCH_TIMEOUT, cwd=BASE_DIR)
-
-
-# Set by __main__ once the listening socket exists; the updater thread calls
-# srv.shutdown() to unblock serve_forever, then __main__ closes the socket and
-# execv's this process with the freshly merged code. Never exec'ing from the
-# updater thread directly avoids both the interpreter-shutdown race and the
-# old socket surviving exec (which makes the new process die with EADDRINUSE).
-_UPDATE_SERVER = None
-_RESTART_HEAD = None
-
-
-def _restart_for_update(new_head):
-    global _RESTART_HEAD
-    _RESTART_HEAD = new_head
-    _update_log('merged %s/%s @ %s; shutting down socket and restarting in place'
-                % (AUTO_UPDATE_REMOTE, AUTO_UPDATE_BRANCH, new_head[:12]))
-    srv = _UPDATE_SERVER
-    if srv is None:
-        _update_log('WARN: server handle unavailable; execv directly')
-        try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-        except Exception as exc:
-            _update_log('execv failed: %r' % exc)
-        return
-    try:
-        srv.shutdown()
-    except Exception as exc:
-        _update_log('shutdown failed: %r' % exc)
-
-
-def _auto_update_once():
-    if not os.path.isdir(os.path.join(BASE_DIR, '.git')):
-        _update_log('not a git checkout; update loop disabled')
-        return
-    fetch = _git('fetch', AUTO_UPDATE_REMOTE)
-    if fetch.returncode != 0:
-        _update_log('fetch %s failed: %s' % (AUTO_UPDATE_REMOTE,
-                                             fetch.stderr.strip() or ('rc=%d' % fetch.returncode)))
-        return
-    ref = '%s/%s' % (AUTO_UPDATE_REMOTE, AUTO_UPDATE_BRANCH)
-    count = _git('rev-list', '--left-right', '--count', 'HEAD...%s' % ref)
-    if count.returncode != 0:
-        _update_log('cannot read %s: %s' % (ref, count.stderr.strip() or ('rc=%d' % count.returncode)))
-        return
-    left, right = count.stdout.split()
-    ahead, behind = int(left), int(right)
-    if behind == 0:
-        return
-    if ahead != 0:
-        _update_log('local is %d ahead and %d behind %s; skipping (pull-only: '
-                    'unpublished local work would be lost)' % (ahead, behind, ref))
-        return
-    dirty = _git('status', '--porcelain')
-    if dirty.returncode == 0 and dirty.stdout.strip():
-        _update_log('working tree is dirty; skipping update')
-        return
-    try:
-        py_compile.compile(os.path.join(BASE_DIR, 'server.py'), doraise=True)
-    except py_compile.PyCompileError as exc:
-        _update_log('new server.py fails to compile (%s); skipping update' % exc)
-        return
-    new_head = _git('rev-parse', ref)
-    if new_head.returncode != 0:
-        _update_log('cannot resolve %s; skipping update' % ref)
-        return
-    merge = _git('merge', '--ff-only', ref)
-    if merge.returncode != 0:
-        _update_log('ff-only merge failed: %s' % (merge.stderr.strip() or ('rc=%d' % merge.returncode)))
-        return
-    _restart_for_update(new_head.stdout.strip())
-
-
-def _auto_update_tick():
-    lock_fd = os.open(AUTO_UPDATE_LOCK, os.O_CREAT | os.O_WRONLY, 0o600)
-    try:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return
-        try:
-            _auto_update_once()
-        finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-    finally:
-        os.close(lock_fd)
-
-
-def _auto_update_loop():
-    time.sleep(AUTO_UPDATE_FIRST_DELAY)
-    while True:
-        try:
-            _auto_update_tick()
-        except Exception as exc:
-            _update_log('unexpected error: %r' % exc)
-        time.sleep(AUTO_UPDATE_INTERVAL)
-
-
-def _auto_update_start():
-    _update_log('enabled (interval %ds, first check %ds, tracking %s/%s, log %s)'
-                % (AUTO_UPDATE_INTERVAL, AUTO_UPDATE_FIRST_DELAY,
-                   AUTO_UPDATE_REMOTE, AUTO_UPDATE_BRANCH, AUTO_UPDATE_LOG))
-    threading.Thread(target=_auto_update_loop, name='notely-auto-update', daemon=True).start()
-
-
 if __name__ == '__main__':
     init_db()
     # Hide Werkzeug version banner (info-disclosure fix). Must run before app.run.
@@ -3151,30 +3005,7 @@ if __name__ == '__main__':
         werkzeug.serving.WSGIRequestHandler.sys_version = ''
     except Exception:
         pass
-    if AUTO_UPDATE_ENABLED:
-        _auto_update_start()
     port = int(os.environ.get('PORT', '5000'))
     print('NOTELY: production use requires HTTPS reverse proxy + NOTELY_COOKIE_SECURE=1 '
           '(default Secure ON) + gunicorn (Werkzeug dev server is single-process).', flush=True)
-    # make_server instead of app.run so the auto-update thread can shut the
-    # listeners down cleanly before this process execv's itself with new code.
-    from werkzeug.serving import make_server
-    server = make_server('127.0.0.1', port, app, threaded=True)
-    _UPDATE_SERVER = server
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    except Exception:
-        pass
-    try:
-        server.server_close()
-    except Exception:
-        pass
-    if _RESTART_HEAD:
-        _update_log('socket closed; re-executing with merged code')
-        try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-        except Exception as exc:
-            _update_log('execv failed: %r' % exc)
-            os._exit(1)
+    app.run(host='127.0.0.1', port=port, threaded=True)
