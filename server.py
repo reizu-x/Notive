@@ -364,6 +364,30 @@ def is_weak_verifier(auth_hash_bytes, salt_auth_bytes):
     return False
 
 
+# Tiny weak-password screen for VAULT verifiers. The vault password never
+# reaches the server (E2EE), so the full length/complexity policy is enforced
+# only client-side. This mirrors is_weak_verifier for the vault's verifier to
+# catch trivially weak but policy-compliant vault passwords (e.g. "Vault123!")
+# that a scripted registration could otherwise smuggle past the client check.
+# Same ~8 Argon2id candidates, constant-time, ~0.3-1s — imperceptible one-time
+# cost on vault setup.
+def is_weak_vault_verifier(verifier_bytes, salt_auth_bytes):
+    """True if the vault verifier matches a trivial password under its salt."""
+    try:
+        matched = False
+        for candidate in _WEAK_PASSWORD_CANDIDATES:
+            try:
+                cand = argon2id_raw(candidate, bytes(salt_auth_bytes))
+            except Exception:
+                continue
+            if hmac.compare_digest(cand, bytes(verifier_bytes)):
+                matched = True
+        return matched
+    except Exception:
+        return False
+    return False
+
+
 # --- MFA TOTP (RFC 6238, 6-digit, SHA1, 30s) + pepper (OPAQUE interim) ---
 # All stdlib, no new deps. Secrets encrypted with DB_KEY via existing
 # encrypt_blob/decrypt_blob so a DB dump alone does not yield MFA secrets.
@@ -915,7 +939,8 @@ def issue_session_token(conn, username, now):
 # Whether the session cookie carries the Secure flag: explicit
 # NOTELY_COOKIE_SECURE=1/0 always wins (default Secure ON, even for
 # loopback — modern browsers accept Secure on http://localhost as a secure
-# context; plain-HTTP LAN deployments must set up TLS).
+# context; plain-HTTP LAN test uses NOTELY_COOKIE_SECURE=0 with the
+# non-prefixed cookie, isolated network only).
 def session_cookie_secure():
     env = os.environ.get('NOTELY_COOKIE_SECURE')
     if env is not None:
@@ -923,13 +948,20 @@ def session_cookie_secure():
     return True
 
 
-# Set the HttpOnly __Host- SameSite=Lax session cookie (Secure always unless
-# NOTELY_COOKIE_SECURE=0). __Host- requires Secure + Path=/ + no Domain.
+# Set the session cookie. HTTPS prod: HttpOnly __Host- SameSite=Lax Secure.
+# Plain-HTTP LAN test (NOTELY_COOKIE_SECURE=0): __Host- without Secure is
+# rejected by browsers, so fall back to the legacy non-prefixed name.
 def set_session_cookie(response, token):
-    response.set_cookie(
-        SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS,
-        httponly=True, samesite='Lax', secure=session_cookie_secure(), path='/',
-    )
+    if session_cookie_secure():
+        response.set_cookie(
+            SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS,
+            httponly=True, samesite='Lax', secure=True, path='/',
+        )
+    else:
+        response.set_cookie(
+            LEGACY_SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS,
+            httponly=True, samesite='Lax', secure=False, path='/',
+        )
     return response
 
 
@@ -1782,11 +1814,21 @@ def api_put_notes():
 def api_vault_meta_get():
     """Return the vault verifier material (salts + wrapped key) for unlocking.
     Verification itself happens client-side, so unlocking costs the server
-    nothing and reveals nothing beyond what the session already proves."""
+    nothing and reveals nothing beyond what the session already proves.
+    Rate-limited to slow offline brute-force against the vault password."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
+    # Throttle vault-meta fetches to limit offline brute-force attempts
+    # against the vault verifier (unlock is client-side, unthrottled by design,
+    # but repeated server fetches can be gated to raise the bar).
+    if rate_exceeded(conn, [ip_bucket('vault'), 'vault:' + user['username'].lower()],
+                     CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
+        conn.close()
+        return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
+    rate_hit(conn, ip_bucket('vault'))
+    rate_hit(conn, 'vault:' + user['username'].lower())
     row = conn.execute('SELECT salt_auth, verifier, salt_enc, enc_dek FROM vault_meta WHERE username = ?',
                        (user['username'],)).fetchone()
     conn.close()
@@ -1829,6 +1871,14 @@ def api_vault_meta_set():
     except (ValueError, AttributeError):
         conn.close()
         return jsonify({'error': 'Invalid vault payload.'}), 400
+    # Server-side weak-password screen for the vault verifier. The vault
+    # password never reaches the server, but a trivially weak one can be
+    # rejected here (same tiny-dictionary check as account registration).
+    if is_weak_vault_verifier(verifier, salt_auth):
+        rate_hit(conn, ip_bucket('vault'))
+        rate_hit(conn, 'vault:' + user['username'].lower())
+        conn.close()
+        return jsonify({'error': 'Vault password too weak: choose a longer, less common password.'}), 400
     existing = conn.execute('SELECT verifier FROM vault_meta WHERE username = ?',
                             (user['username'],)).fetchone()
     if existing:
@@ -2892,6 +2942,8 @@ if __name__ == '__main__':
     except Exception:
         pass
     port = int(os.environ.get('PORT', '5000'))
+    host = os.environ.get('HOST', os.environ.get('NOTELY_HOST', '127.0.0.1'))
     print('NOTELY: production use requires HTTPS reverse proxy + NOTELY_COOKIE_SECURE=1 '
           '(default Secure ON) + gunicorn (Werkzeug dev server is single-process).', flush=True)
-    app.run(host='127.0.0.1', port=port, threaded=True)
+    print(f'NOTELY: listening on {host}:{port} (LAN test: HOST=0.0.0.0 NOTELY_COOKIE_SECURE=0).', flush=True)
+    app.run(host=host, port=port, threaded=True)
