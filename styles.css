@@ -909,6 +909,8 @@ at the bottom, only the nav + folder lists scroll. */
   .sidebar.collapsed .add-section-wrap { display: none; }
   .sidebar.collapsed .collection-item { justify-content: center; padding-right: 0; padding-left: 0; }
   .sidebar.collapsed .collection-label, .sidebar.collapsed .collection-actions, .sidebar.collapsed .collection-rename-input { display: none; }
+  .sidebar.collapsed .collection-item[data-depth="1"] .collection-dot { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; opacity: .65; }
+  .sidebar.collapsed .collection-item[data-depth="2"] .collection-dot { width: 4px; height: 4px; flex: 0 0 4px; border-radius: 50%; opacity: .5; }
   .sidebar.collapsed .sidebar-footer { padding-right: 0; padding-left: 0; }
   .sidebar.collapsed .sync-status { justify-content: center; padding-right: 0; padding-left: 0; }
   .sidebar.collapsed .sync-text { display: none; }
