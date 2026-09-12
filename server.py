@@ -51,6 +51,7 @@ import time
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from flask import Flask, jsonify, request, send_from_directory
+from flask_sock import Sock
 from argon2.low_level import Type as Argon2Type, hash_secret_raw
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -112,6 +113,8 @@ NOTES_PUT_MAX = 60
 NOTES_MAX_COUNT = 2000
 NOTES_MAX_BODY_CHARS = 500000
 NOTES_MAX_TOTAL_BYTES = 6 * 1024 * 1024
+# Collaborative note shares/updates reuse the notes size cap (opaque blobs).
+SHARE_MAX_BYTES = NOTES_MAX_TOTAL_BYTES
 NOTES_MAX_REQUEST_BYTES = 7 * 1024 * 1024
 
 # Password policy: min 12 chars, at least 1 upper, 1 lower, 1 digit, 1 special.
@@ -208,6 +211,8 @@ PUBLIC_FILES = {'app.js', 'styles.css', 'favicon.ico',
 app = Flask(__name__)
 # Hard cap on request bodies (chunked bodies without Content-Length included).
 app.config['MAX_CONTENT_LENGTH'] = NOTES_MAX_REQUEST_BYTES + 1024
+# WebSocket support for live collaborative-note sync (yjs updates relayed).
+sock = Sock(app)
 
 
 # Load the 32-byte database key: NOTELY_DB_KEY env wins, else the 0600 notely.key file (created once). Validates exact length.
@@ -892,23 +897,36 @@ def init_db():
                 'log in and change it immediately.',
                 flush=True,
             )
-    # E2EE note sharing: each account publishes an ECDH P-256 public key and
-    # its private key encrypted under the account master key (opaque). Shares
-    # are opaque ciphertext + a content key wrapped for the recipient's public
-    # key; the server can never read either.
+    # E2EE collaborative notes: each account publishes an ECDH P-256 public key
+    # and its private key encrypted under the account master key (opaque). A
+    # collaborative note has a random content key wrapped to each member's
+    # public key; live Yjs CRDT updates are encrypted with that key. The server
+    # stores/relays only ciphertext and can never read a note.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS user_keys ('
         'username TEXT PRIMARY KEY, pubkey BLOB NOT NULL, enc_priv BLOB NOT NULL, '
         'algo TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
     )
     conn.execute(
-        'CREATE TABLE IF NOT EXISTS shared_notes ('
-        'id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, recipient TEXT NOT NULL, '
-        'enc_note BLOB NOT NULL, eph_pub BLOB NOT NULL, wrap_iv BLOB NOT NULL, '
-        'wrapped_ck BLOB NOT NULL, created_at INTEGER NOT NULL)'
+        'CREATE TABLE IF NOT EXISTS collab_notes ('
+        'id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, '
+        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_state BLOB)'
     )
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_shared_recipient ON shared_notes (recipient, id)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_shared_owner ON shared_notes (owner, id)')
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS collab_members ('
+        'note_id INTEGER NOT NULL, username TEXT NOT NULL, wrapped_key BLOB NOT NULL, '
+        'eph_pub BLOB NOT NULL, wrap_iv BLOB NOT NULL, added_at INTEGER NOT NULL, '
+        'PRIMARY KEY (note_id, username))'
+    )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS collab_updates ('
+        'id INTEGER PRIMARY KEY AUTOINCREMENT, note_id INTEGER NOT NULL, '
+        'payload BLOB NOT NULL, created_at INTEGER NOT NULL)'
+    )
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_updates ON collab_updates (note_id, id)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_members_user ON collab_members (username)')
+    # Retired: the async one-way snapshot shares table (replaced by collab_*).
+    conn.execute('DROP TABLE IF EXISTS shared_notes')
     conn.commit()
     conn.close()
     # Harden file perms: DB holds verifier material + opaque blobs. 0600 even
@@ -1235,7 +1253,8 @@ def root():
 
 @app.route('/<path:filename>')
 def public_files(filename):
-    if filename in PUBLIC_FILES:
+    # Vendored modules (argon2, qrcode, yjs + lib0) are served from vendor/.
+    if filename in PUBLIC_FILES or filename.startswith('vendor/'):
         response = send_from_directory(BASE_DIR, filename)
         response.cache_control.no_store = True
         return response
@@ -2810,187 +2829,273 @@ def api_account_delete():
     return resp
 
 
-# --- E2EE note sharing (public-key shim; server never sees plaintext) ---
+# --- E2EE collaborative notes (live, server-blind) ------------------------
+# A collaborative note has a random 256-bit key generated on a client. The key
+# is wrapped to each member's ECDH public key and stored here (opaque). Live
+# edits are Yjs CRDT updates, AES-GCM encrypted with that key, relayed over a
+# WebSocket and stored as an append-only log. The server can never read them.
 
-SHARE_MAX_BYTES = NOTES_MAX_TOTAL_BYTES
+import base64 as _b64
+
+collab_rooms = {}  # note_id -> set of live websocket connections
 
 
-# Publish (or refresh) this account's ECDH public key + wrapped private key.
-@app.route('/api/keys', methods=['POST'])
-def api_keys_publish():
+def _is_collab_member(conn, note_id, username):
+    return conn.execute('SELECT 1 FROM collab_members WHERE note_id = ? AND username = ?',
+                        (note_id, username)).fetchone() is not None
+
+
+@app.route('/api/collab', methods=['POST'])
+def api_collab_create():
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     data = json_object()
-    algo = str(data.get('algo') or 'ECDH-P256')[:32]
     try:
-        pubkey = base64.b64decode(str(data.get('pubkey', '')).encode('ascii'), validate=True)
-        enc_priv = base64.b64decode(str(data.get('encPriv', '')).encode('ascii'), validate=True)
-    except (base64.binascii.Error, ValueError, AttributeError):
+        wrapped_key = _b64.b64decode(str(data.get('wrappedKey', '')).encode('ascii'), validate=True)
+        eph_pub = _b64.b64decode(str(data.get('ephPub', '')).encode('ascii'), validate=True)
+        wrap_iv = _b64.b64decode(str(data.get('wrapIv', '')).encode('ascii'), validate=True)
+    except (ValueError, AttributeError, _b64.binascii.Error):
         return jsonify({'error': 'Invalid key payload.'}), 400
-    # Raw P-256 point is 65 bytes; wrapped private key is nonce(12)+ct(>=48).
-    if len(pubkey) != 65 or not (60 <= len(enc_priv) <= 4096):
+    if len(eph_pub) != 65 or len(wrap_iv) != 12 or not (48 <= len(wrapped_key) <= 80):
         return jsonify({'error': 'Invalid key payload.'}), 400
     now = int(time.time())
     conn = get_db()
-    conn.execute(
-        'INSERT INTO user_keys (username, pubkey, enc_priv, algo, created_at, updated_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?)'
-        ' ON CONFLICT(username) DO UPDATE SET pubkey = excluded.pubkey,'
-        ' enc_priv = excluded.enc_priv, algo = excluded.algo, updated_at = excluded.updated_at',
-        (user['username'], pubkey, enc_priv, algo, now, now),
-    )
+    cur = conn.execute('INSERT INTO collab_notes (owner, created_at, updated_at, enc_state) VALUES (?, ?, ?, NULL)',
+                       (user['username'], now, now))
+    note_id = cur.lastrowid
+    conn.execute('INSERT OR REPLACE INTO collab_members (note_id, username, wrapped_key, eph_pub, wrap_iv, added_at)'
+                 ' VALUES (?, ?, ?, ?, ?, ?)',
+                 (note_id, user['username'], wrapped_key, eph_pub, wrap_iv, now))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'id': note_id})
+
+
+@app.route('/api/collab', methods=['GET'])
+def api_collab_list():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    rows = conn.execute(
+        'SELECT n.id, n.owner, n.updated_at,'
+        ' (SELECT COUNT(*) FROM collab_members m2 WHERE m2.note_id = n.id) AS members'
+        ' FROM collab_notes n JOIN collab_members m ON m.note_id = n.id'
+        ' WHERE m.username = ? ORDER BY n.updated_at DESC LIMIT 200',
+        (user['username'],),
+    ).fetchall()
+    conn.close()
+    return jsonify({'notes': [{'id': r['id'], 'owner': r['owner'], 'updatedAt': r['updated_at'], 'members': r['members']} for r in rows]})
+
+
+@app.route('/api/collab/<int:note_id>', methods=['GET'])
+def api_collab_get(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    if not _is_collab_member(conn, note_id, user['username']):
+        conn.close()
+        return jsonify({'error': 'Not a member of this note.'}), 403
+    row = conn.execute('SELECT id, owner, updated_at, enc_state FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
+    mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv FROM collab_members WHERE note_id = ? AND username = ?',
+                        (note_id, user['username'])).fetchone()
+    members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE note_id = ? ORDER BY added_at', (note_id,))]
+    conn.close()
+    if not row or not mine:
+        return jsonify({'error': 'Not found.'}), 404
+    return jsonify({
+        'id': row['id'],
+        'owner': row['owner'],
+        'updatedAt': row['updated_at'],
+        'members': members,
+        'myKey': {
+            'wrappedKey': _b64.b64encode(bytes(mine['wrapped_key'])).decode('ascii'),
+            'ephPub': _b64.b64encode(bytes(mine['eph_pub'])).decode('ascii'),
+            'wrapIv': _b64.b64encode(bytes(mine['wrap_iv'])).decode('ascii'),
+        },
+        'hasState': bool(row['enc_state']),
+    })
+
+
+@app.route('/api/collab/<int:note_id>/members', methods=['POST'])
+def api_collab_add_member(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    target = str(data.get('username', '')).strip()
+    if not validate_username(target):
+        return jsonify({'error': 'Invalid username.'}), 400
+    try:
+        wrapped_key = _b64.b64decode(str(data.get('wrappedKey', '')).encode('ascii'), validate=True)
+        eph_pub = _b64.b64decode(str(data.get('ephPub', '')).encode('ascii'), validate=True)
+        wrap_iv = _b64.b64decode(str(data.get('wrapIv', '')).encode('ascii'), validate=True)
+    except (ValueError, AttributeError, _b64.binascii.Error):
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    conn = get_db()
+    if not _is_collab_member(conn, note_id, user['username']):
+        conn.close()
+        return jsonify({'error': 'Not a member of this note.'}), 403
+    if not conn.execute('SELECT 1 FROM users WHERE username = ?', (target,)).fetchone():
+        conn.close()
+        return jsonify({'error': 'No such account.'}), 404
+    if len(eph_pub) != 65 or len(wrap_iv) != 12 or not (48 <= len(wrapped_key) <= 80):
+        conn.close()
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    conn.execute('INSERT OR REPLACE INTO collab_members (note_id, username, wrapped_key, eph_pub, wrap_iv, added_at)'
+                 ' VALUES (?, ?, ?, ?, ?, ?)',
+                 (note_id, target, wrapped_key, eph_pub, wrap_iv, int(time.time())))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
 
 
-# This account's own key material: public key + wrapped private key.
-@app.route('/api/keys/me', methods=['GET'])
-def api_keys_me():
+@app.route('/api/collab/<int:note_id>/members/<username>', methods=['DELETE'])
+def api_collab_remove_member(note_id, username):
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    row = conn.execute('SELECT pubkey, enc_priv, algo, updated_at FROM user_keys WHERE username = ?',
-                       (user['username'],)).fetchone()
-    conn.close()
-    if not row:
-        return jsonify({'exists': False})
-    return jsonify({
-        'exists': True,
-        'algo': row['algo'],
-        'pubkey': base64.b64encode(bytes(row['pubkey'])).decode('ascii'),
-        'encPriv': base64.b64encode(bytes(row['enc_priv'])).decode('ascii'),
-        'updated_at': row['updated_at'],
-    })
-
-
-# Look up another account's public key so a note can be wrapped for them.
-# Exact-match only, rate limited: no account discovery beyond a known name.
-@app.route('/api/keys/lookup', methods=['GET'])
-def api_keys_lookup():
-    user = current_session_user()
-    if not user:
-        return jsonify({'error': 'Not signed in.'}), 401
-    target = str(request.args.get('username', '')).strip()
-    if not validate_username(target):
-        return jsonify({'error': 'Invalid username.'}), 400
-    conn = get_db()
-    if rate_exceeded(conn, [ip_user_bucket('keylookup', user['username'])], 60, 3600):
-        conn.close()
-        return jsonify({'error': 'Too many lookups — slow down.'}), 429
-    rate_hit(conn, ip_user_bucket('keylookup', user['username']))
-    row = conn.execute('SELECT pubkey, algo FROM user_keys WHERE username = ?', (target,)).fetchone()
-    conn.commit()
-    conn.close()
-    if not row:
-        return jsonify({'error': 'That account has not set up sharing yet. Ask them to log in to Notely once, then try again.'}), 404
-    return jsonify({
-        'username': target,
-        'algo': row['algo'],
-        'pubkey': base64.b64encode(bytes(row['pubkey'])).decode('ascii'),
-    })
-
-
-# Create a share: recipient + opaque encrypted note + wrapped content key.
-@app.route('/api/shares', methods=['POST'])
-def api_shares_create():
-    user = current_session_user()
-    if not user:
-        return jsonify({'error': 'Not signed in.'}), 401
-    data = json_object()
-    recipient = str(data.get('recipient', '')).strip()
-    if not validate_username(recipient) or recipient == user['username']:
-        return jsonify({'error': 'Invalid recipient.'}), 400
-    conn = get_db()
-    if rate_exceeded(conn, [ip_bucket('share'), ip_user_bucket('share', user['username'])], 30, 3600):
-        conn.close()
-        return jsonify({'error': 'Too many shares — slow down.'}), 429
-    if not conn.execute('SELECT 1 FROM users WHERE username = ?', (recipient,)).fetchone():
-        conn.close()
-        return jsonify({'error': 'No such account.'}), 404
-    try:
-        enc_note = base64.b64decode(str(data.get('encNote', '')).encode('ascii'), validate=True)
-        eph_pub = base64.b64decode(str(data.get('ephPub', '')).encode('ascii'), validate=True)
-        wrap_iv = base64.b64decode(str(data.get('wrapIv', '')).encode('ascii'), validate=True)
-        wrapped_ck = base64.b64decode(str(data.get('wrappedCk', '')).encode('ascii'), validate=True)
-    except (base64.binascii.Error, ValueError, AttributeError):
-        conn.close()
-        return jsonify({'error': 'Invalid share payload.'}), 400
-    if not (1 <= len(enc_note) <= SHARE_MAX_BYTES) or len(eph_pub) != 65 \
-            or len(wrap_iv) != 12 or not (48 <= len(wrapped_ck) <= 80):
-        conn.close()
-        return jsonify({'error': 'Invalid share payload.'}), 400
-    rate_hit(conn, ip_bucket('share'))
-    rate_hit(conn, ip_user_bucket('share', user['username']))
-    now = int(time.time())
-    cur = conn.execute(
-        'INSERT INTO shared_notes (owner, recipient, enc_note, eph_pub, wrap_iv, wrapped_ck, created_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?, ?)',
-        (user['username'], recipient, enc_note, eph_pub, wrap_iv, wrapped_ck, now),
-    )
-    conn.commit()
-    share_id = cur.lastrowid
-    conn.close()
-    return jsonify({'ok': True, 'id': share_id})
-
-
-@app.route('/api/shares/received', methods=['GET'])
-def api_shares_received():
-    user = current_session_user()
-    if not user:
-        return jsonify({'error': 'Not signed in.'}), 401
-    conn = get_db()
-    rows = conn.execute(
-        'SELECT id, owner, enc_note, eph_pub, wrap_iv, wrapped_ck, created_at'
-        ' FROM shared_notes WHERE recipient = ? ORDER BY id DESC LIMIT 500',
-        (user['username'],),
-    ).fetchall()
-    conn.close()
-    return jsonify({'shares': [{
-        'id': row['id'],
-        'owner': row['owner'],
-        'encNote': base64.b64encode(bytes(row['enc_note'])).decode('ascii'),
-        'ephPub': base64.b64encode(bytes(row['eph_pub'])).decode('ascii'),
-        'wrapIv': base64.b64encode(bytes(row['wrap_iv'])).decode('ascii'),
-        'wrappedCk': base64.b64encode(bytes(row['wrapped_ck'])).decode('ascii'),
-        'createdAt': row['created_at'],
-    } for row in rows]})
-
-
-@app.route('/api/shares/sent', methods=['GET'])
-def api_shares_sent():
-    user = current_session_user()
-    if not user:
-        return jsonify({'error': 'Not signed in.'}), 401
-    conn = get_db()
-    rows = conn.execute(
-        'SELECT id, recipient, created_at FROM shared_notes WHERE owner = ? ORDER BY id DESC LIMIT 500',
-        (user['username'],),
-    ).fetchall()
-    conn.close()
-    return jsonify({'shares': [{'id': row['id'], 'recipient': row['recipient'], 'createdAt': row['created_at']} for row in rows]})
-
-
-# Remove a share: the owner revokes it; the recipient can drop it from their box.
-@app.route('/api/shares/<int:share_id>', methods=['DELETE'])
-def api_shares_delete(share_id):
-    user = current_session_user()
-    if not user:
-        return jsonify({'error': 'Not signed in.'}), 401
-    conn = get_db()
-    row = conn.execute('SELECT owner, recipient FROM shared_notes WHERE id = ?', (share_id,)).fetchone()
+    row = conn.execute('SELECT owner FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
     if not row:
         conn.close()
         return jsonify({'ok': True})
-    if user['username'] not in (row['owner'], row['recipient']):
+    if row['owner'] != user['username'] and username != user['username']:
         conn.close()
-        return jsonify({'error': 'Not allowed.'}), 403
-    conn.execute('DELETE FROM shared_notes WHERE id = ?', (share_id,))
+        return jsonify({'error': 'Only the owner can remove members.'}), 403
+    conn.execute('DELETE FROM collab_members WHERE note_id = ? AND username = ?', (note_id, username))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
+
+
+@app.route('/api/collab/<int:note_id>', methods=['DELETE'])
+def api_collab_delete(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    row = conn.execute('SELECT owner FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'ok': True})
+    if row['owner'] != user['username']:
+        conn.close()
+        return jsonify({'error': 'Only the owner can delete this note.'}), 403
+    conn.execute('DELETE FROM collab_notes WHERE id = ?', (note_id,))
+    conn.execute('DELETE FROM collab_members WHERE note_id = ?', (note_id,))
+    conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (note_id,))
+    conn.commit()
+    conn.close()
+    # Drop any live connections.
+    for ws in list(collab_rooms.get(note_id, ())):
+        try: ws.close()
+        except Exception: pass
+    collab_rooms.pop(note_id, None)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/collab/<int:note_id>/compact', methods=['POST'])
+def api_collab_compact(note_id):
+    # A member uploads the full encrypted CRDT state; the update log resets.
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        payload = _b64.b64decode(str(data.get('state', '')).encode('ascii'), validate=True)
+    except (ValueError, AttributeError, _b64.binascii.Error):
+        return jsonify({'error': 'Invalid state.'}), 400
+    if not (1 <= len(payload) <= SHARE_MAX_BYTES):
+        return jsonify({'error': 'State too large.'}), 413
+    conn = get_db()
+    if not _is_collab_member(conn, note_id, user['username']):
+        conn.close()
+        return jsonify({'error': 'Not a member of this note.'}), 403
+    conn.execute('UPDATE collab_notes SET enc_state = ?, updated_at = ? WHERE id = ?', (payload, int(time.time()), note_id))
+    conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (note_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@sock.route('/ws/collab/<int:note_id>')
+def ws_collab(ws, note_id):
+    # Authenticate + authorise from the session cookie; block cross-site opens.
+    origin = request.headers.get('Origin')
+    if origin:
+        from urllib.parse import urlparse
+        try:
+            if (urlparse(origin).hostname or '').lower() != (request.host.split(':')[0] or '').lower():
+                ws.close()
+                return
+        except Exception:
+            ws.close()
+            return
+    user = current_session_user()
+    if not user:
+        ws.close()
+        return
+    conn = get_db()
+    if not _is_collab_member(conn, note_id, user['username']):
+        conn.close()
+        ws.close()
+        return
+    state_row = conn.execute('SELECT enc_state FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
+    backlog = [bytes(r['payload']) for r in conn.execute('SELECT payload FROM collab_updates WHERE note_id = ? ORDER BY id', (note_id,))]
+    conn.close()
+    # Late joiner: send the last compacted state, then every update since.
+    if state_row and state_row['enc_state']:
+        try:
+            ws.send(json.dumps({'type': 'state', 'payload': _b64.b64encode(bytes(state_row['enc_state'])).decode('ascii')}))
+        except Exception:
+            return
+    for u in backlog:
+        try:
+            ws.send(json.dumps({'type': 'update', 'payload': _b64.b64encode(u).decode('ascii')}))
+        except Exception:
+            return
+    room = collab_rooms.setdefault(note_id, set())
+    room.add(ws)
+    try:
+        while True:
+            message = ws.receive()
+            if message is None:
+                break
+            try:
+                data = json.loads(message)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(data, dict) or data.get('type') != 'update':
+                continue
+            try:
+                payload = _b64.b64decode(str(data.get('payload', '')).encode('ascii'), validate=True)
+            except (ValueError, AttributeError, _b64.binascii.Error):
+                continue
+            if not (1 <= len(payload) <= SHARE_MAX_BYTES):
+                continue
+            conn = get_db()
+            conn.execute('INSERT INTO collab_updates (note_id, payload, created_at) VALUES (?, ?, ?)',
+                         (note_id, payload, int(time.time())))
+            conn.execute('UPDATE collab_notes SET updated_at = ? WHERE id = ?', (int(time.time()), note_id))
+            # Cap the log; clients re-compact opportunistically.
+            conn.execute('DELETE FROM collab_updates WHERE note_id = ? AND id NOT IN '
+                         '(SELECT id FROM collab_updates WHERE note_id = ? ORDER BY id DESC LIMIT 5000)',
+                         (note_id, note_id))
+            conn.commit()
+            conn.close()
+            outgoing = json.dumps({'type': 'update', 'payload': data['payload']})
+            for peer in list(collab_rooms.get(note_id, ())):
+                if peer is ws:
+                    continue
+                try:
+                    peer.send(outgoing)
+                except Exception:
+                    pass
+    finally:
+        collab_rooms.get(note_id, set()).discard(ws)
 
 
 @app.route('/api/recovery/email/start', methods=['POST'])

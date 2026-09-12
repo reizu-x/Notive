@@ -4476,7 +4476,7 @@ function openNoteContextMenu(noteId, x, y) {
   menu.querySelectorAll('[data-menu-action]').forEach((btn) => {
     const actionName = btn.dataset.menuAction;
     if (isDeleted) btn.hidden = !(actionName === 'restore' || actionName === 'delete');
-    else if (isArchived) btn.hidden = !(actionName === 'open' || actionName === 'unarchive' || actionName === 'download' || actionName === 'tags' || actionName === 'share' || actionName === 'delete');
+    else if (isArchived) btn.hidden = !(actionName === 'open' || actionName === 'unarchive' || actionName === 'download' || actionName === 'tags' || actionName === 'delete');
     else btn.hidden = (actionName === 'restore' || actionName === 'unarchive');
   });
   const archiveLabel = document.getElementById('context-archive-label');
@@ -4690,12 +4690,11 @@ function emptyBin() {
 // Dispatch a validated context-menu action; unknown ids/actions are ignored.
 function handleNoteMenuAction(action, id) {
   if (!id || typeof id !== 'string' || !isValidNoteId(id)) return;
-  if (typeof action !== 'string' || !/^(open|favorite|important|tags|share|restore|duplicate|download|archive|unarchive|delete)$/.test(action)) return;
+  if (typeof action !== 'string' || !/^(open|favorite|important|tags|restore|duplicate|download|archive|unarchive|delete)$/.test(action)) return;
   if (action === 'open') selectNote(id);
   else if (action === 'favorite') toggleFavoriteById(id);
   else if (action === 'important') toggleImportantById(id);
   else if (action === 'tags') openTagEditor(id);
-  else if (action === 'share') openShareDialog(id);
   else if (action === 'restore') restoreNoteById(id);
   else if (action === 'archive') archiveNoteById(id);
   else if (action === 'unarchive') unarchiveNoteById(id);
@@ -4872,7 +4871,6 @@ function renderSettingsTags() {
 // content key encrypts the note and is wrapped for the recipient's public key
 // (ECIES). The server relays only ciphertext and can never read a note.
 const sharing = { privateKey: null, ready: false };
-const sharedReceivedCache = new Map();
 
 async function sharingEnsureKeys() {
   if (sharing.ready && sharing.privateKey) return true;
@@ -4925,223 +4923,246 @@ async function sharingRecipientPublicKey(username) {
     { name: 'ECDH', namedCurve: 'P-256' }, false, []);
 }
 
-// The shareable payload: everything that makes sense across accounts (never
-// the note id, sections, cover or favourite state).
-function sharingNotePayload(note) {
-  const payload = {
-    title: typeof note.title === 'string' ? note.title.slice(0, 200) : 'Untitled note',
-    body: typeof note.body === 'string' ? note.body.slice(0, 500000) : '',
-    tags: Array.isArray(note.tags) ? note.tags.filter((t) => typeof t === 'string').slice(0, 20) : [],
-    ext: ['md', 'txt', 'json', 'yaml'].includes(note.ext) ? note.ext : 'md',
-  };
-  if (note.template === 'recipe' || note.template === 'todo') {
-    payload.template = note.template;
-    if (note.template === 'recipe' && typeof note.description === 'string') {
-      payload.description = note.description.slice(0, 2000);
-    }
-  }
-  return payload;
+// ---- Live collaborative notes (E2EE via Yjs) ------------------------------
+// A collaborative note carries a random content key; each member's copy is
+// wrapped to their ECDH public key. Edits are Yjs CRDT updates encrypted with
+// that key and relayed over a WebSocket. The server only relays ciphertext.
+let yjsPromise = null;
+function loadYjs() {
+  if (!yjsPromise) yjsPromise = import('/vendor/yjs/yjs.mjs');
+  return yjsPromise;
 }
 
-async function sharingEncryptFor(recipientKey, note) {
-  const ckRaw = e2eeRandomBytes(32);
-  const ck = await window.crypto.subtle.importKey('raw', ckRaw, { name: 'AES-GCM' }, false, ['encrypt']);
-  const noteIv = e2eeRandomBytes(12);
-  const noteCt = new Uint8Array(await window.crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: noteIv }, ck, new TextEncoder().encode(JSON.stringify(sharingNotePayload(note)))));
-  const encNote = new Uint8Array(noteIv.length + noteCt.length);
-  encNote.set(noteIv); encNote.set(noteCt, noteIv.length);
+async function wrapRawKeyFor(recipientPub, rawKey) {
   const eph = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
-  const sharedKey = await window.crypto.subtle.deriveKey(
-    { name: 'ECDH', public: recipientKey }, eph.privateKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const shared = await window.crypto.subtle.deriveKey(
+    { name: 'ECDH', public: recipientPub }, eph.privateKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
   const wrapIv = e2eeRandomBytes(12);
-  const wrapped = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv: wrapIv }, sharedKey, ckRaw));
+  const wrapped = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv: wrapIv }, shared, rawKey));
   const ephPub = new Uint8Array(await window.crypto.subtle.exportKey('raw', eph.publicKey));
-  return {
-    encNote: e2eeBytesToB64(encNote),
-    ephPub: e2eeBytesToB64(ephPub),
-    wrapIv: e2eeBytesToB64(wrapIv),
-    wrappedCk: e2eeBytesToB64(wrapped),
-  };
+  return { wrappedKey: e2eeBytesToB64(wrapped), ephPub: e2eeBytesToB64(ephPub), wrapIv: e2eeBytesToB64(wrapIv) };
 }
-
-async function sharingDecryptShare(share) {
+async function unwrapRawKey(wrappedB64, ephPubB64, wrapIvB64) {
   if (!sharing.privateKey) throw new Error('locked');
-  const ephPub = await window.crypto.subtle.importKey('raw', e2eeB64ToBytes(share.ephPub),
+  const ephPub = await window.crypto.subtle.importKey('raw', e2eeB64ToBytes(ephPubB64),
     { name: 'ECDH', namedCurve: 'P-256' }, false, []);
-  const sharedKey = await window.crypto.subtle.deriveKey(
+  const shared = await window.crypto.subtle.deriveKey(
     { name: 'ECDH', public: ephPub }, sharing.privateKey, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-  const ckRaw = new Uint8Array(await window.crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: e2eeB64ToBytes(share.wrapIv) }, sharedKey, e2eeB64ToBytes(share.wrappedCk)));
-  const ck = await window.crypto.subtle.importKey('raw', ckRaw, { name: 'AES-GCM' }, false, ['decrypt']);
-  const packed = e2eeB64ToBytes(share.encNote);
-  const plain = new Uint8Array(await window.crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: packed.slice(0, 12) }, ck, packed.slice(12)));
-  return JSON.parse(new TextDecoder().decode(plain));
+  return new Uint8Array(await window.crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: e2eeB64ToBytes(wrapIvB64) }, shared, e2eeB64ToBytes(wrappedB64)));
+}
+async function collabEncrypt(keyRaw, bytes) {
+  const key = await window.crypto.subtle.importKey('raw', keyRaw, { name: 'AES-GCM' }, false, ['encrypt']);
+  const iv = e2eeRandomBytes(12);
+  const ct = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes));
+  const packed = new Uint8Array(iv.length + ct.length);
+  packed.set(iv); packed.set(ct, iv.length);
+  return e2eeBytesToB64(packed);
+}
+async function collabDecrypt(keyRaw, packedB64) {
+  const key = await window.crypto.subtle.importKey('raw', keyRaw, { name: 'AES-GCM' }, false, ['decrypt']);
+  const packed = e2eeB64ToBytes(packedB64);
+  return new Uint8Array(await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: packed.slice(0, 12) }, key, packed.slice(12)));
 }
 
-// ---- Share dialog ---------------------------------------------------------
-let shareDialogNoteId = null;
+const collab = { id: null, doc: null, title: null, body: null, ws: null, key: null, members: [], owner: null, updates: 0, reconnect: null };
 
-function openShareDialog(id) {
-  const note = notes.find((item) => item.id === id);
-  const overlay = document.getElementById('share-overlay');
-  if (!note || !overlay) return;
-  shareDialogNoteId = id;
-  const desc = document.getElementById('share-desc');
-  if (desc) desc.textContent = `Send an encrypted copy of “${note.title || 'Untitled note'}” to another account.`;
-  const status = document.getElementById('share-status');
-  if (status) { status.hidden = true; status.textContent = ''; }
-  const input = document.getElementById('share-recipient');
-  if (input) input.value = '';
-  overlay.hidden = false;
-  if (input) { try { input.focus(); } catch (error) {} }
-  try { sharingEnsureKeys(); } catch (error) {}
+function setCollabStatus(text, offline) {
+  const el = document.getElementById('collab-status');
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = offline ? '#c0453e' : '';
 }
-function closeShareDialog() {
-  const overlay = document.getElementById('share-overlay');
-  if (overlay) overlay.hidden = true;
-  shareDialogNoteId = null;
+function commonPrefixLen(a, b) { const n = Math.min(a.length, b.length); let i = 0; while (i < n && a[i] === b[i]) i += 1; return i; }
+function commonSuffixLen(a, b, max) { let i = 0; while (i < max && a[a.length - 1 - i] === b[b.length - 1 - i]) i += 1; return i; }
+// Apply a plain-text edit to a Y.Text as a minimal delete+insert.
+function applyTextDiff(ytext, oldStr, newStr) {
+  if (oldStr === newStr) return;
+  const p = commonPrefixLen(oldStr, newStr);
+  const suffix = commonSuffixLen(oldStr, newStr, Math.min(oldStr.length - p, newStr.length - p));
+  const delCount = oldStr.length - p - suffix;
+  const insert = newStr.slice(p, newStr.length - suffix);
+  if (delCount > 0) ytext.delete(p, delCount);
+  if (insert) ytext.insert(p, insert);
 }
-function setShareStatus(message, isError) {
-  const status = document.getElementById('share-status');
-  if (!status) return;
-  status.textContent = message;
-  status.hidden = false;
-  status.style.color = isError ? '#c0453e' : '';
-}
-async function confirmShare() {
-  const note = notes.find((item) => item.id === shareDialogNoteId);
-  const input = document.getElementById('share-recipient');
-  const username = input ? String(input.value || '').trim() : '';
-  if (!note) return;
-  if (!/^[A-Za-z0-9_-]{3,32}$/.test(username)) { setShareStatus('Enter a valid username.', true); return; }
-  if (!e2ee.masterKey) { setShareStatus('Unlock your notes first.', true); return; }
-  const btn = document.getElementById('share-confirm');
-  if (btn) btn.disabled = true;
-  setShareStatus('Encrypting…', false);
-  try {
-    const recipientKey = await sharingRecipientPublicKey(username);
-    const payload = await sharingEncryptFor(recipientKey, note);
-    const res = await apiFetch('/api/shares', {
-      method: 'POST',
-      body: JSON.stringify({ recipient: username, ...payload }),
-    });
-    if (!res.ok) {
-      let message = 'Could not share the note.';
-      try { const data = await res.json(); if (data && data.error) message = data.error; } catch (error) {}
-      setShareStatus(message, true);
-      return;
-    }
-    showToast(`Shared to ${username}`);
-    closeShareDialog();
-  } catch (error) {
-    setShareStatus(error && error.message ? error.message : 'Could not share the note.', true);
-  } finally {
-    if (btn) btn.disabled = false;
+function collabSyncDom() {
+  if (!collab.doc) return;
+  const bodyEl = document.getElementById('collab-body');
+  const bodyStr = collab.body ? collab.body.toString() : '';
+  if (bodyEl && bodyEl.value !== bodyStr) {
+    const start = bodyEl.selectionStart;
+    bodyEl.value = bodyStr;
+    try { bodyEl.setSelectionRange(Math.min(start, bodyStr.length), Math.min(start, bodyStr.length)); } catch (error) {}
   }
+  const titleEl = document.getElementById('collab-title');
+  const titleStr = collab.title ? collab.title.toString() : '';
+  if (titleEl && titleEl.value !== titleStr && document.activeElement !== titleEl) titleEl.value = titleStr;
 }
-
-// ---- Shared notes (received / sent) ---------------------------------------
-let sharedTab = 'received';
-
-function openSharedNotes() {
+function renderCollabMembers() {
+  const box = document.getElementById('collab-members');
+  if (!box) return;
+  const me = cachedProfile && cachedProfile.username;
+  box.innerHTML = (collab.members || []).map((name) => {
+    const canRemove = collab.owner === me || name === me;
+    return `<span class="collab-member">${escapeHtml(name)}${name === me ? ' (you)' : ''}${canRemove && name !== me ? `<button type="button" class="collab-member-remove" data-collab-remove="${escapeHtml(name)}" title="Remove ${escapeHtml(name)}" aria-label="Remove ${escapeHtml(name)}">×</button>` : ''}</span>`;
+  }).join('');
+}
+async function collabBroadcast(update) {
+  if (!collab.key) return;
+  try {
+    const payload = await collabEncrypt(collab.key, update);
+    if (collab.ws && collab.ws.readyState === 1) collab.ws.send(JSON.stringify({ type: 'update', payload }));
+  } catch (error) {}
+}
+async function collabCompact() {
+  if (!collab.doc || !collab.key) return;
+  try {
+    const Y = await loadYjs();
+    const state = Y.encodeStateAsUpdate(collab.doc);
+    const payload = await collabEncrypt(collab.key, state);
+    await apiFetch(`/api/collab/${collab.id}/compact`, { method: 'POST', body: JSON.stringify({ state: payload }) });
+  } catch (error) {}
+}
+function collabConnect(id, keyRaw, Y, doc) {
+  if (collab.reconnect) { clearTimeout(collab.reconnect); collab.reconnect = null; }
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  let ws;
+  try { ws = new WebSocket(`${proto}//${location.host}/ws/collab/${id}`); }
+  catch (error) { setCollabStatus('Could not connect', true); return; }
+  collab.ws = ws;
+  ws.onopen = () => setCollabStatus('Live · connected', false);
+  ws.onmessage = async (event) => {
+    let msg; try { msg = JSON.parse(event.data); } catch (error) { return; }
+    if (!msg || (msg.type !== 'state' && msg.type !== 'update')) return;
+    try {
+      const plain = await collabDecrypt(keyRaw, msg.payload);
+      Y.applyUpdate(doc, plain, 'remote');
+    } catch (error) { /* wrong key or corrupt update */ }
+  };
+  ws.onclose = () => {
+    if (collab.id !== id) return;
+    setCollabStatus('Offline — retrying…', true);
+    collab.reconnect = setTimeout(() => { if (collab.id === id) collabConnect(id, keyRaw, Y, doc); }, 2000);
+  };
+  ws.onerror = () => setCollabStatus('Connection error', true);
+}
+async function openCollabNote(id) {
+  closeSharedNotes();
+  if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
+  if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
+  let res;
+  try { res = await apiFetch(`/api/collab/${id}`); } catch (error) { res = null; }
+  if (!res || !res.ok) { showToast('Cannot open that shared note'); return; }
+  const meta = await res.json();
+  let keyRaw;
+  try { keyRaw = await unwrapRawKey(meta.myKey.wrappedKey, meta.myKey.ephPub, meta.myKey.wrapIv); }
+  catch (error) { showToast('You no longer have access to this note'); return; }
+  const Y = await loadYjs();
+  closeCollabNote();
+  const doc = new Y.Doc();
+  Object.assign(collab, {
+    id, doc,
+    title: doc.getText('title'), body: doc.getText('body'),
+    ws: null, key: keyRaw, members: meta.members || [], owner: meta.owner, updates: 0,
+  });
+  doc.on('update', (update, origin) => {
+    if (origin === 'remote') return;
+    collab.updates += 1;
+    collabBroadcast(update);
+    if (collab.updates % 40 === 0) collabCompact();
+  });
+  collab.title.observe(collabSyncDom);
+  collab.body.observe(collabSyncDom);
+  const overlay = document.getElementById('collab-overlay');
+  const bodyEl = document.getElementById('collab-body');
+  const titleEl = document.getElementById('collab-title');
+  if (bodyEl) bodyEl.value = '';
+  if (titleEl) titleEl.value = '';
+  renderCollabMembers();
+  setCollabStatus('Connecting…', false);
+  if (overlay) overlay.hidden = false;
+  collabConnect(id, keyRaw, Y, doc);
+}
+async function collabCreate() {
+  if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
+  if (!(await sharingEnsureKeys())) { showToast('Could not set up sharing keys'); return; }
+  const keyRaw = e2eeRandomBytes(32);
+  let selfPub;
+  try { selfPub = await sharingRecipientPublicKey(cachedProfile.username); }
+  catch (error) { showToast('Could not load your public key'); return; }
+  const wrap = await wrapRawKeyFor(selfPub, keyRaw);
+  const res = await apiFetch('/api/collab', { method: 'POST', body: JSON.stringify(wrap) });
+  if (!res.ok) { showToast('Could not create the shared note'); return; }
+  const data = await res.json();
+  await openCollabNote(data.id);
+}
+function closeCollabNote() {
+  if (collab.reconnect) { clearTimeout(collab.reconnect); collab.reconnect = null; }
+  const overlay = document.getElementById('collab-overlay');
+  if (overlay) overlay.hidden = true;
+  if (collab.ws) { try { collab.ws.close(); } catch (error) {} }
+  if (collab.doc) { try { collab.doc.destroy(); } catch (error) {} }
+  collab.id = null; collab.doc = null; collab.title = null; collab.body = null;
+  collab.ws = null; collab.key = null; collab.members = []; collab.owner = null;
+}
+async function collabInvite() {
+  if (!collab.id || !collab.key) return;
+  const value = await askInput({ eyebrow: 'Invite', title: 'Add a member', desc: 'They need a Notely account and must have logged in once.', label: 'Username', password: false, placeholder: 'their-username', okText: 'Invite' });
+  if (value == null) return;
+  const target = String(value).trim();
+  if (!/^[A-Za-z0-9_-]{3,32}$/.test(target)) { showToast('Invalid username'); return; }
+  try {
+    const pub = await sharingRecipientPublicKey(target);
+    const wrap = await wrapRawKeyFor(pub, collab.key);
+    const res = await apiFetch(`/api/collab/${collab.id}/members`, { method: 'POST', body: JSON.stringify({ username: target, ...wrap }) });
+    if (!res.ok) { let message = 'Could not add member'; try { const d = await res.json(); if (d && d.error) message = d.error; } catch (error) {} showToast(message); return; }
+    if (!collab.members.includes(target)) collab.members.push(target);
+    renderCollabMembers();
+    showToast(`Added ${target}`);
+  } catch (error) { showToast(error && error.message ? error.message : 'Could not add member'); }
+}
+async function collabRemoveMember(name) {
+  if (!collab.id) return;
+  const res = await apiFetch(`/api/collab/${collab.id}/members/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  if (res.ok) { collab.members = collab.members.filter((m) => m !== name); renderCollabMembers(); showToast(`Removed ${name}`); }
+  else showToast('Could not remove member');
+}
+async function openSharedNotes() {
   const overlay = document.getElementById('shared-overlay');
   if (!overlay) return;
   overlay.hidden = false;
-  setSharedTab('received');
+  refreshSharedList();
 }
 function closeSharedNotes() {
   const overlay = document.getElementById('shared-overlay');
   if (overlay) overlay.hidden = true;
 }
-function setSharedTab(tab) {
-  sharedTab = tab === 'sent' ? 'sent' : 'received';
-  const rec = document.getElementById('shared-tab-received');
-  const sent = document.getElementById('shared-tab-sent');
-  if (rec) rec.classList.toggle('active', sharedTab === 'received');
-  if (sent) sent.classList.toggle('active', sharedTab === 'sent');
-  refreshSharedNotes();
-}
-function renderSharedList(html) {
+async function refreshSharedList() {
   const list = document.getElementById('shared-list');
-  if (list) list.innerHTML = html;
-}
-async function refreshSharedNotes() {
-  renderSharedList('<p class="modal-desc">Loading…</p>');
-  const ok = await sharingEnsureKeys();
-  if (!ok) { renderSharedList('<p class="modal-desc">Sharing keys are not ready. Log in and unlock your notes first.</p>'); return; }
-  if (sharedTab === 'received') return refreshReceivedShares();
-  return refreshSentShares();
-}
-async function refreshReceivedShares() {
-  const res = await apiFetch('/api/shares/received');
-  if (!res.ok) { renderSharedList('<p class="modal-desc">Could not load shares.</p>'); return; }
+  if (!list) return;
+  if (!e2ee.masterKey) { list.innerHTML = '<p class="modal-desc">Log in and unlock your notes first.</p>'; return; }
+  list.innerHTML = '<p class="modal-desc">Loading…</p>';
+  let res;
+  try { res = await apiFetch('/api/collab'); } catch (error) { res = null; }
+  if (!res || !res.ok) { list.innerHTML = '<p class="modal-desc">Could not load shared notes.</p>'; return; }
   const data = await res.json();
-  const shares = Array.isArray(data.shares) ? data.shares : [];
-  if (!shares.length) { renderSharedList('<p class="modal-desc">No notes have been shared with you.</p>'); return; }
-  sharedReceivedCache.clear();
-  const rows = [];
-  for (const share of shares) {
-    let content = null;
-    let failed = false;
-    try { content = await sharingDecryptShare(share); sharedReceivedCache.set(share.id, content); }
-    catch (error) { failed = true; }
-    const when = share.createdAt ? new Date(share.createdAt * 1000).toLocaleDateString() : '';
-    if (failed) {
-      rows.push(`<div class="shared-row"><div class="shared-row-main"><strong>Encrypted note</strong><span>from ${escapeHtml(share.owner)} · ${escapeHtml(when)}</span></div><span class="shared-fail">Can't decrypt</span></div>`);
-      continue;
-    }
-    rows.push(`<div class="shared-row">
-      <div class="shared-row-main"><strong>${escapeHtml(content.title || 'Untitled note')}</strong><span>from ${escapeHtml(share.owner)} · ${escapeHtml(when)}</span></div>
-      <button type="button" class="btn btn-secondary shared-action" data-share-save="${share.id}">Save to my notes</button>
-      <button type="button" class="shared-icon danger" data-share-drop="${share.id}" title="Remove" aria-label="Remove">${icon('trash')}</button>
-    </div>`);
-  }
-  renderSharedList(rows.join(''));
-}
-async function refreshSentShares() {
-  const res = await apiFetch('/api/shares/sent');
-  if (!res.ok) { renderSharedList('<p class="modal-desc">Could not load shares.</p>'); return; }
-  const data = await res.json();
-  const shares = Array.isArray(data.shares) ? data.shares : [];
-  if (!shares.length) { renderSharedList('<p class="modal-desc">You have not shared any notes yet.</p>'); return; }
-  renderSharedList(shares.map((share) => {
-    const when = share.createdAt ? new Date(share.createdAt * 1000).toLocaleDateString() : '';
+  const items = Array.isArray(data.notes) ? data.notes : [];
+  if (!items.length) { list.innerHTML = '<p class="modal-desc">No shared notes yet. Create one to start collaborating.</p>'; return; }
+  const me = cachedProfile && cachedProfile.username;
+  list.innerHTML = items.map((n) => {
+    const when = n.updatedAt ? new Date(n.updatedAt * 1000).toLocaleDateString() : '';
+    const isOwner = n.owner === me;
     return `<div class="shared-row">
-      <div class="shared-row-main"><strong>to ${escapeHtml(share.recipient)}</strong><span>${escapeHtml(when)}</span></div>
-      <button type="button" class="btn btn-secondary shared-action" data-share-revoke="${share.id}">Revoke</button>
+      <div class="shared-row-main"><strong>Shared note #${n.id}</strong><span>${escapeHtml(isOwner ? 'you' : n.owner)} · ${n.members} member${n.members === 1 ? '' : 's'}${when ? ' · ' + escapeHtml(when) : ''}</span></div>
+      <button type="button" class="btn btn-secondary shared-action" data-collab-open="${n.id}">Open</button>
+      ${isOwner ? `<button type="button" class="shared-icon danger" data-collab-delete="${n.id}" title="Delete" aria-label="Delete">${icon('trash')}</button>` : ''}
     </div>`;
-  }).join(''));
+  }).join('');
 }
-async function saveSharedNote(id) {
-  const content = sharedReceivedCache.get(Number(id)) || sharedReceivedCache.get(id);
-  if (!content) { showToast('That share is no longer loaded'); return; }
-  const note = {
-    id: newNoteId(),
-    title: typeof content.title === 'string' && content.title.trim() ? content.title.trim().slice(0, 200) : 'Shared note',
-    body: typeof content.body === 'string' ? content.body.slice(0, 500000) : '',
-    tags: Array.isArray(content.tags) ? content.tags.filter((t) => typeof t === 'string').slice(0, 20) : [],
-    ext: ['md', 'txt', 'json', 'yaml'].includes(content.ext) ? content.ext : 'md',
-    date: 'Now', favorite: false, archived: false, deleted: false, sections: {},
-  };
-  if (content.template === 'recipe' || content.template === 'todo') {
-    note.template = content.template;
-    if (note.template === 'recipe' && typeof content.description === 'string') note.description = content.description.slice(0, 2000);
-  }
-  ensureNoteFiled(note);
-  notes.unshift(note);
-  persistNotes();
-  renderCustomSections();
-  renderNoteList();
-  selectNote(note.id);
-  closeSharedNotes();
-  showToast('Shared note saved to your notes');
-}
-async function deleteShare(id, message) {
-  const res = await apiFetch(`/api/shares/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (res.ok) { showToast(message); refreshSharedNotes(); }
-  else showToast('Could not update the share');
+async function collabDelete(id) {
+  const res = await apiFetch(`/api/collab/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (res.ok) { showToast('Shared note deleted'); refreshSharedList(); }
+  else showToast('Could not delete the shared note');
 }
 
 // Keyboard-accessible delete: mirrors the context-menu rules exactly —
@@ -6400,30 +6421,33 @@ document.getElementById('tag-editor-input').addEventListener('keydown', (event) 
     event.target.value = '';
   }
 });
-// Share dialog + shared notes wiring.
+// Collaborative notes wiring.
 document.getElementById('nav-shared').addEventListener('click', (event) => { event.preventDefault(); openSharedNotes(); });
-document.getElementById('close-share').addEventListener('click', closeShareDialog);
-document.getElementById('share-cancel').addEventListener('click', closeShareDialog);
-document.getElementById('share-confirm').addEventListener('click', confirmShare);
-document.getElementById('share-recipient').addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') { event.preventDefault(); confirmShare(); }
-});
-document.getElementById('share-overlay').addEventListener('click', (event) => {
-  if (event.target.id === 'share-overlay') closeShareDialog();
-});
 document.getElementById('close-shared').addEventListener('click', closeSharedNotes);
 document.getElementById('shared-overlay').addEventListener('click', (event) => {
   if (event.target.id === 'shared-overlay') closeSharedNotes();
 });
-document.getElementById('shared-tab-received').addEventListener('click', () => setSharedTab('received'));
-document.getElementById('shared-tab-sent').addEventListener('click', () => setSharedTab('sent'));
+document.getElementById('collab-new').addEventListener('click', collabCreate);
 document.getElementById('shared-list').addEventListener('click', (event) => {
-  const save = event.target.closest('[data-share-save]');
-  if (save) { saveSharedNote(save.dataset.shareSave); return; }
-  const drop = event.target.closest('[data-share-drop]');
-  if (drop) { deleteShare(drop.dataset.shareDrop, 'Removed from your shared notes'); return; }
-  const revoke = event.target.closest('[data-share-revoke]');
-  if (revoke) { deleteShare(revoke.dataset.shareRevoke, 'Share revoked'); return; }
+  const open = event.target.closest('[data-collab-open]');
+  if (open) { openCollabNote(open.dataset.collabOpen); return; }
+  const del = event.target.closest('[data-collab-delete]');
+  if (del) collabDelete(del.dataset.collabDelete);
+});
+document.getElementById('close-collab').addEventListener('click', closeCollabNote);
+document.getElementById('collab-done').addEventListener('click', closeCollabNote);
+document.getElementById('collab-invite').addEventListener('click', collabInvite);
+document.getElementById('collab-members').addEventListener('click', (event) => {
+  const remove = event.target.closest('[data-collab-remove]');
+  if (remove) collabRemoveMember(remove.dataset.collabRemove);
+});
+document.getElementById('collab-title').addEventListener('input', (event) => {
+  if (!collab.title) return;
+  applyTextDiff(collab.title, collab.title.toString(), String(event.target.value || '').slice(0, 200));
+});
+document.getElementById('collab-body').addEventListener('input', (event) => {
+  if (!collab.body) return;
+  applyTextDiff(collab.body, collab.body.toString(), String(event.target.value || ''));
 });
 // Settings → Tags: rename / delete across all notes.
 document.getElementById('settings-tag-list').addEventListener('click', (event) => {
@@ -8684,8 +8708,8 @@ document.addEventListener('keydown', (event) => {
     if (sectionIconOverlay && !sectionIconOverlay.hidden) { closeSectionIconPicker(); return; }
     const tagEditorOverlay = document.getElementById('tag-editor-overlay');
     if (tagEditorOverlay && !tagEditorOverlay.hidden) { closeTagEditor(); return; }
-    const shareOverlay = document.getElementById('share-overlay');
-    if (shareOverlay && !shareOverlay.hidden) { closeShareDialog(); return; }
+    const collabOverlay = document.getElementById('collab-overlay');
+    if (collabOverlay && !collabOverlay.hidden) { closeCollabNote(); return; }
     const sharedOverlay = document.getElementById('shared-overlay');
     if (sharedOverlay && !sharedOverlay.hidden) { closeSharedNotes(); return; }
     if (settingsOverlay && !settingsOverlay.hidden) { closeSettings(); return; }
