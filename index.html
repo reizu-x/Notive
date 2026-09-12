@@ -64,6 +64,7 @@
         <div class="sidebar-footer">
           <div class="sync-status"><span class="sync-dot"></span><span class="sync-text">Synced just now</span></div>
           <a href="#" class="footer-link" id="open-settings" title="Settings"><span data-icon="settings"></span><span class="footer-label">Settings</span></a>
+          <a href="#" class="footer-link" id="open-shared" title="Shared notes"><span data-icon="share"></span><span class="footer-label">Shared notes</span></a>
           <a href="#" class="footer-link" title="Help center"><span data-icon="help"></span><span class="footer-label">Help center</span></a>
         </div>
       </aside>
@@ -473,6 +474,42 @@
         <div class="modal-actions"><button class="btn btn-primary" id="tag-editor-done" type="button">Done</button></div>
       </div>
     </div>
+    <!-- Share a note to another account (E2EE: wrapped content key) -->
+    <div class="modal-overlay" id="share-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="share-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Share</p>
+            <h2 id="share-title">Share this note</h2>
+          </div>
+          <button class="icon-button" id="close-share" aria-label="Close share" data-icon="x"></button>
+        </div>
+        <p class="modal-desc" id="share-desc">Send an encrypted copy to another Notely account.</p>
+        <label class="login-field"><span>Recipient username</span><input id="share-recipient" type="text" maxlength="32" placeholder="their-username" autocomplete="off" /></label>
+        <p class="login-error" id="share-status" hidden></p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="share-cancel" type="button">Cancel</button>
+          <button class="btn btn-primary" id="share-confirm" type="button">Share</button>
+        </div>
+      </div>
+    </div>
+    <!-- Shared notes: received and sent (E2EE) -->
+    <div class="modal-overlay" id="shared-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="shared-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Sharing</p>
+            <h2 id="shared-title">Shared notes</h2>
+          </div>
+          <button class="icon-button" id="close-shared" aria-label="Close shared notes" data-icon="x"></button>
+        </div>
+        <div class="shared-tabs">
+          <button type="button" class="shared-tab active" id="shared-tab-received">Shared with me</button>
+          <button type="button" class="shared-tab" id="shared-tab-sent">Shared by me</button>
+        </div>
+        <div class="shared-list" id="shared-list"></div>
+      </div>
+    </div>
     <!-- Shared delete-confirm popup (note / folder / Bin variants, filled by setDeleteDialog) -->
     <div class="modal-overlay" id="delete-overlay" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title">
@@ -639,6 +676,7 @@
       <button type="button" class="context-item" data-menu-action="favorite" role="menuitem"><span data-icon="star"></span><span id="context-favorite-label">Favorite</span></button>
       <button type="button" class="context-item" data-menu-action="important" role="menuitem"><span data-icon="flag"></span><span id="context-important-label">Mark as important</span></button>
       <button type="button" class="context-item" data-menu-action="tags" role="menuitem"><span data-icon="tag"></span><span>Tags…</span></button>
+      <button type="button" class="context-item" data-menu-action="share" role="menuitem"><span data-icon="share"></span><span>Share to account…</span></button>
       <button type="button" class="context-item" data-menu-action="archive" role="menuitem"><span data-icon="archive"></span><span id="context-archive-label">Archive</span></button>
       <button type="button" class="context-item" data-menu-action="unarchive" role="menuitem"><span data-icon="restore"></span><span>Unarchive</span></button>
       <button type="button" class="context-item" data-menu-action="duplicate" role="menuitem"><span data-icon="copy"></span><span>Duplicate</span></button>

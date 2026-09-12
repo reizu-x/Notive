@@ -892,6 +892,23 @@ def init_db():
                 'log in and change it immediately.',
                 flush=True,
             )
+    # E2EE note sharing: each account publishes an ECDH P-256 public key and
+    # its private key encrypted under the account master key (opaque). Shares
+    # are opaque ciphertext + a content key wrapped for the recipient's public
+    # key; the server can never read either.
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS user_keys ('
+        'username TEXT PRIMARY KEY, pubkey BLOB NOT NULL, enc_priv BLOB NOT NULL, '
+        'algo TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
+    )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS shared_notes ('
+        'id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, recipient TEXT NOT NULL, '
+        'enc_note BLOB NOT NULL, eph_pub BLOB NOT NULL, wrap_iv BLOB NOT NULL, '
+        'wrapped_ck BLOB NOT NULL, created_at INTEGER NOT NULL)'
+    )
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_shared_recipient ON shared_notes (recipient, id)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_shared_owner ON shared_notes (owner, id)')
     conn.commit()
     conn.close()
     # Harden file perms: DB holds verifier material + opaque blobs. 0600 even
@@ -2791,6 +2808,189 @@ def api_account_delete():
     resp.delete_cookie(SESSION_COOKIE, path='/', httponly=True, samesite='Lax', secure=session_cookie_secure())
     resp.delete_cookie(LEGACY_SESSION_COOKIE, path='/', httponly=True, samesite='Lax', secure=session_cookie_secure())
     return resp
+
+
+# --- E2EE note sharing (public-key shim; server never sees plaintext) ---
+
+SHARE_MAX_BYTES = NOTES_MAX_TOTAL_BYTES
+
+
+# Publish (or refresh) this account's ECDH public key + wrapped private key.
+@app.route('/api/keys', methods=['POST'])
+def api_keys_publish():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    algo = str(data.get('algo') or 'ECDH-P256')[:32]
+    try:
+        pubkey = base64.b64decode(str(data.get('pubkey', '')).encode('ascii'), validate=True)
+        enc_priv = base64.b64decode(str(data.get('encPriv', '')).encode('ascii'), validate=True)
+    except (base64.binascii.Error, ValueError, AttributeError):
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    # Raw P-256 point is 65 bytes; wrapped private key is nonce(12)+ct(>=48).
+    if len(pubkey) != 65 or not (60 <= len(enc_priv) <= 4096):
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    now = int(time.time())
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO user_keys (username, pubkey, enc_priv, algo, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?)'
+        ' ON CONFLICT(username) DO UPDATE SET pubkey = excluded.pubkey,'
+        ' enc_priv = excluded.enc_priv, algo = excluded.algo, updated_at = excluded.updated_at',
+        (user['username'], pubkey, enc_priv, algo, now, now),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+# This account's own key material: public key + wrapped private key.
+@app.route('/api/keys/me', methods=['GET'])
+def api_keys_me():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    row = conn.execute('SELECT pubkey, enc_priv, algo, updated_at FROM user_keys WHERE username = ?',
+                       (user['username'],)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'exists': False})
+    return jsonify({
+        'exists': True,
+        'algo': row['algo'],
+        'pubkey': base64.b64encode(bytes(row['pubkey'])).decode('ascii'),
+        'encPriv': base64.b64encode(bytes(row['enc_priv'])).decode('ascii'),
+        'updated_at': row['updated_at'],
+    })
+
+
+# Look up another account's public key so a note can be wrapped for them.
+# Exact-match only, rate limited: no account discovery beyond a known name.
+@app.route('/api/keys/lookup', methods=['GET'])
+def api_keys_lookup():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    target = str(request.args.get('username', '')).strip()
+    if not validate_username(target):
+        return jsonify({'error': 'Invalid username.'}), 400
+    conn = get_db()
+    if rate_exceeded(conn, [ip_user_bucket('keylookup', user['username'])], 60, 3600):
+        conn.close()
+        return jsonify({'error': 'Too many lookups — slow down.'}), 429
+    rate_hit(conn, ip_user_bucket('keylookup', user['username']))
+    row = conn.execute('SELECT pubkey, algo FROM user_keys WHERE username = ?', (target,)).fetchone()
+    conn.commit()
+    conn.close()
+    if not row:
+        return jsonify({'error': 'That account has no sharing key yet.'}), 404
+    return jsonify({
+        'username': target,
+        'algo': row['algo'],
+        'pubkey': base64.b64encode(bytes(row['pubkey'])).decode('ascii'),
+    })
+
+
+# Create a share: recipient + opaque encrypted note + wrapped content key.
+@app.route('/api/shares', methods=['POST'])
+def api_shares_create():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    recipient = str(data.get('recipient', '')).strip()
+    if not validate_username(recipient) or recipient == user['username']:
+        return jsonify({'error': 'Invalid recipient.'}), 400
+    conn = get_db()
+    if rate_exceeded(conn, [ip_bucket('share'), ip_user_bucket('share', user['username'])], 30, 3600):
+        conn.close()
+        return jsonify({'error': 'Too many shares — slow down.'}), 429
+    if not conn.execute('SELECT 1 FROM users WHERE username = ?', (recipient,)).fetchone():
+        conn.close()
+        return jsonify({'error': 'No such account.'}), 404
+    try:
+        enc_note = base64.b64decode(str(data.get('encNote', '')).encode('ascii'), validate=True)
+        eph_pub = base64.b64decode(str(data.get('ephPub', '')).encode('ascii'), validate=True)
+        wrap_iv = base64.b64decode(str(data.get('wrapIv', '')).encode('ascii'), validate=True)
+        wrapped_ck = base64.b64decode(str(data.get('wrappedCk', '')).encode('ascii'), validate=True)
+    except (base64.binascii.Error, ValueError, AttributeError):
+        conn.close()
+        return jsonify({'error': 'Invalid share payload.'}), 400
+    if not (1 <= len(enc_note) <= SHARE_MAX_BYTES) or len(eph_pub) != 65 \
+            or len(wrap_iv) != 12 or not (48 <= len(wrapped_ck) <= 80):
+        conn.close()
+        return jsonify({'error': 'Invalid share payload.'}), 400
+    rate_hit(conn, ip_bucket('share'))
+    rate_hit(conn, ip_user_bucket('share', user['username']))
+    now = int(time.time())
+    cur = conn.execute(
+        'INSERT INTO shared_notes (owner, recipient, enc_note, eph_pub, wrap_iv, wrapped_ck, created_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?)',
+        (user['username'], recipient, enc_note, eph_pub, wrap_iv, wrapped_ck, now),
+    )
+    conn.commit()
+    share_id = cur.lastrowid
+    conn.close()
+    return jsonify({'ok': True, 'id': share_id})
+
+
+@app.route('/api/shares/received', methods=['GET'])
+def api_shares_received():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    rows = conn.execute(
+        'SELECT id, owner, enc_note, eph_pub, wrap_iv, wrapped_ck, created_at'
+        ' FROM shared_notes WHERE recipient = ? ORDER BY id DESC LIMIT 500',
+        (user['username'],),
+    ).fetchall()
+    conn.close()
+    return jsonify({'shares': [{
+        'id': row['id'],
+        'owner': row['owner'],
+        'encNote': base64.b64encode(bytes(row['enc_note'])).decode('ascii'),
+        'ephPub': base64.b64encode(bytes(row['eph_pub'])).decode('ascii'),
+        'wrapIv': base64.b64encode(bytes(row['wrap_iv'])).decode('ascii'),
+        'wrappedCk': base64.b64encode(bytes(row['wrapped_ck'])).decode('ascii'),
+        'createdAt': row['created_at'],
+    } for row in rows]})
+
+
+@app.route('/api/shares/sent', methods=['GET'])
+def api_shares_sent():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    rows = conn.execute(
+        'SELECT id, recipient, created_at FROM shared_notes WHERE owner = ? ORDER BY id DESC LIMIT 500',
+        (user['username'],),
+    ).fetchall()
+    conn.close()
+    return jsonify({'shares': [{'id': row['id'], 'recipient': row['recipient'], 'createdAt': row['created_at']} for row in rows]})
+
+
+# Remove a share: the owner revokes it; the recipient can drop it from their box.
+@app.route('/api/shares/<int:share_id>', methods=['DELETE'])
+def api_shares_delete(share_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    row = conn.execute('SELECT owner, recipient FROM shared_notes WHERE id = ?', (share_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'ok': True})
+    if user['username'] not in (row['owner'], row['recipient']):
+        conn.close()
+        return jsonify({'error': 'Not allowed.'}), 403
+    conn.execute('DELETE FROM shared_notes WHERE id = ?', (share_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route('/api/recovery/email/start', methods=['POST'])

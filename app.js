@@ -4476,7 +4476,7 @@ function openNoteContextMenu(noteId, x, y) {
   menu.querySelectorAll('[data-menu-action]').forEach((btn) => {
     const actionName = btn.dataset.menuAction;
     if (isDeleted) btn.hidden = !(actionName === 'restore' || actionName === 'delete');
-    else if (isArchived) btn.hidden = !(actionName === 'open' || actionName === 'unarchive' || actionName === 'download' || actionName === 'tags' || actionName === 'delete');
+    else if (isArchived) btn.hidden = !(actionName === 'open' || actionName === 'unarchive' || actionName === 'download' || actionName === 'tags' || actionName === 'share' || actionName === 'delete');
     else btn.hidden = (actionName === 'restore' || actionName === 'unarchive');
   });
   const archiveLabel = document.getElementById('context-archive-label');
@@ -4690,11 +4690,12 @@ function emptyBin() {
 // Dispatch a validated context-menu action; unknown ids/actions are ignored.
 function handleNoteMenuAction(action, id) {
   if (!id || typeof id !== 'string' || !isValidNoteId(id)) return;
-  if (typeof action !== 'string' || !/^(open|favorite|important|tags|restore|duplicate|download|archive|unarchive|delete)$/.test(action)) return;
+  if (typeof action !== 'string' || !/^(open|favorite|important|tags|share|restore|duplicate|download|archive|unarchive|delete)$/.test(action)) return;
   if (action === 'open') selectNote(id);
   else if (action === 'favorite') toggleFavoriteById(id);
   else if (action === 'important') toggleImportantById(id);
   else if (action === 'tags') openTagEditor(id);
+  else if (action === 'share') openShareDialog(id);
   else if (action === 'restore') restoreNoteById(id);
   else if (action === 'archive') archiveNoteById(id);
   else if (action === 'unarchive') unarchiveNoteById(id);
@@ -4863,6 +4864,283 @@ function renderSettingsTags() {
       <button type="button" class="settings-tag-action" data-tag-rename="${escapeHtml(entry.label)}" title="Rename tag" aria-label="Rename ${escapeHtml(entry.label)}">${icon('pencil')}</button>
       <button type="button" class="settings-tag-action danger" data-tag-delete="${escapeHtml(entry.label)}" title="Delete tag" aria-label="Delete ${escapeHtml(entry.label)}">${icon('trash')}</button>
     </div>`).join('');
+}
+
+// ---- E2EE note sharing ----------------------------------------------------
+// Each account publishes an ECDH P-256 keypair: the public key in the clear,
+// the private key wrapped under the account master key. To share, a random
+// content key encrypts the note and is wrapped for the recipient's public key
+// (ECIES). The server relays only ciphertext and can never read a note.
+const sharing = { privateKey: null, ready: false };
+const sharedReceivedCache = new Map();
+
+async function sharingEnsureKeys() {
+  if (sharing.ready && sharing.privateKey) return true;
+  if (!e2ee.masterKey) return false;
+  try {
+    const res = await apiFetch('/api/keys/me');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.exists && data.encPriv && data.pubkey) {
+        const wrapped = e2eeB64ToBytes(data.encPriv);
+        const priv = await window.crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: wrapped.slice(0, 12) }, e2ee.masterKey, wrapped.slice(12));
+        sharing.privateKey = await window.crypto.subtle.importKey(
+          'pkcs8', priv, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
+        sharing.ready = true;
+        return true;
+      }
+    }
+  } catch (error) { /* fall through and (re)generate */ }
+  try {
+    const kp = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
+    const pub = new Uint8Array(await window.crypto.subtle.exportKey('raw', kp.publicKey));
+    const pkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', kp.privateKey));
+    const iv = e2eeRandomBytes(12);
+    const ct = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, e2ee.masterKey, pkcs8));
+    const wrapped = new Uint8Array(iv.length + ct.length);
+    wrapped.set(iv); wrapped.set(ct, iv.length);
+    const pubRes = await apiFetch('/api/keys', {
+      method: 'POST',
+      body: JSON.stringify({ algo: 'ECDH-P256', pubkey: e2eeBytesToB64(pub), encPriv: e2eeBytesToB64(wrapped) }),
+    });
+    if (!pubRes.ok) return false;
+    sharing.privateKey = kp.privateKey;
+    sharing.ready = true;
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function sharingRecipientPublicKey(username) {
+  const res = await apiFetch(`/api/keys/lookup?username=${encodeURIComponent(username)}`);
+  if (!res.ok) {
+    let message = 'Could not find a sharing key for that account.';
+    try { const data = await res.json(); if (data && data.error) message = data.error; } catch (error) {}
+    throw new Error(message);
+  }
+  const data = await res.json();
+  return window.crypto.subtle.importKey('raw', e2eeB64ToBytes(data.pubkey),
+    { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+}
+
+// The shareable payload: everything that makes sense across accounts (never
+// the note id, sections, cover or favourite state).
+function sharingNotePayload(note) {
+  const payload = {
+    title: typeof note.title === 'string' ? note.title.slice(0, 200) : 'Untitled note',
+    body: typeof note.body === 'string' ? note.body.slice(0, 500000) : '',
+    tags: Array.isArray(note.tags) ? note.tags.filter((t) => typeof t === 'string').slice(0, 20) : [],
+    ext: ['md', 'txt', 'json', 'yaml'].includes(note.ext) ? note.ext : 'md',
+  };
+  if (note.template === 'recipe' || note.template === 'todo') {
+    payload.template = note.template;
+    if (note.template === 'recipe' && typeof note.description === 'string') {
+      payload.description = note.description.slice(0, 2000);
+    }
+  }
+  return payload;
+}
+
+async function sharingEncryptFor(recipientKey, note) {
+  const ckRaw = e2eeRandomBytes(32);
+  const ck = await window.crypto.subtle.importKey('raw', ckRaw, { name: 'AES-GCM' }, false, ['encrypt']);
+  const noteIv = e2eeRandomBytes(12);
+  const noteCt = new Uint8Array(await window.crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: noteIv }, ck, new TextEncoder().encode(JSON.stringify(sharingNotePayload(note)))));
+  const encNote = new Uint8Array(noteIv.length + noteCt.length);
+  encNote.set(noteIv); encNote.set(noteCt, noteIv.length);
+  const eph = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
+  const sharedKey = await window.crypto.subtle.deriveKey(
+    { name: 'ECDH', public: recipientKey }, eph.privateKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+  const wrapIv = e2eeRandomBytes(12);
+  const wrapped = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv: wrapIv }, sharedKey, ckRaw));
+  const ephPub = new Uint8Array(await window.crypto.subtle.exportKey('raw', eph.publicKey));
+  return {
+    encNote: e2eeBytesToB64(encNote),
+    ephPub: e2eeBytesToB64(ephPub),
+    wrapIv: e2eeBytesToB64(wrapIv),
+    wrappedCk: e2eeBytesToB64(wrapped),
+  };
+}
+
+async function sharingDecryptShare(share) {
+  if (!sharing.privateKey) throw new Error('locked');
+  const ephPub = await window.crypto.subtle.importKey('raw', e2eeB64ToBytes(share.ephPub),
+    { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const sharedKey = await window.crypto.subtle.deriveKey(
+    { name: 'ECDH', public: ephPub }, sharing.privateKey, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  const ckRaw = new Uint8Array(await window.crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: e2eeB64ToBytes(share.wrapIv) }, sharedKey, e2eeB64ToBytes(share.wrappedCk)));
+  const ck = await window.crypto.subtle.importKey('raw', ckRaw, { name: 'AES-GCM' }, false, ['decrypt']);
+  const packed = e2eeB64ToBytes(share.encNote);
+  const plain = new Uint8Array(await window.crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: packed.slice(0, 12) }, ck, packed.slice(12)));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+
+// ---- Share dialog ---------------------------------------------------------
+let shareDialogNoteId = null;
+
+function openShareDialog(id) {
+  const note = notes.find((item) => item.id === id);
+  const overlay = document.getElementById('share-overlay');
+  if (!note || !overlay) return;
+  shareDialogNoteId = id;
+  const desc = document.getElementById('share-desc');
+  if (desc) desc.textContent = `Send an encrypted copy of “${note.title || 'Untitled note'}” to another account.`;
+  const status = document.getElementById('share-status');
+  if (status) { status.hidden = true; status.textContent = ''; }
+  const input = document.getElementById('share-recipient');
+  if (input) input.value = '';
+  overlay.hidden = false;
+  if (input) { try { input.focus(); } catch (error) {} }
+}
+function closeShareDialog() {
+  const overlay = document.getElementById('share-overlay');
+  if (overlay) overlay.hidden = true;
+  shareDialogNoteId = null;
+}
+function setShareStatus(message, isError) {
+  const status = document.getElementById('share-status');
+  if (!status) return;
+  status.textContent = message;
+  status.hidden = false;
+  status.style.color = isError ? '#c0453e' : '';
+}
+async function confirmShare() {
+  const note = notes.find((item) => item.id === shareDialogNoteId);
+  const input = document.getElementById('share-recipient');
+  const username = input ? String(input.value || '').trim() : '';
+  if (!note) return;
+  if (!/^[A-Za-z0-9_-]{3,32}$/.test(username)) { setShareStatus('Enter a valid username.', true); return; }
+  if (!e2ee.masterKey) { setShareStatus('Unlock your notes first.', true); return; }
+  const btn = document.getElementById('share-confirm');
+  if (btn) btn.disabled = true;
+  setShareStatus('Encrypting…', false);
+  try {
+    const recipientKey = await sharingRecipientPublicKey(username);
+    const payload = await sharingEncryptFor(recipientKey, note);
+    const res = await apiFetch('/api/shares', {
+      method: 'POST',
+      body: JSON.stringify({ recipient: username, ...payload }),
+    });
+    if (!res.ok) {
+      let message = 'Could not share the note.';
+      try { const data = await res.json(); if (data && data.error) message = data.error; } catch (error) {}
+      setShareStatus(message, true);
+      return;
+    }
+    showToast(`Shared to ${username}`);
+    closeShareDialog();
+  } catch (error) {
+    setShareStatus(error && error.message ? error.message : 'Could not share the note.', true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ---- Shared notes (received / sent) ---------------------------------------
+let sharedTab = 'received';
+
+function openSharedNotes() {
+  const overlay = document.getElementById('shared-overlay');
+  if (!overlay) return;
+  overlay.hidden = false;
+  setSharedTab('received');
+}
+function closeSharedNotes() {
+  const overlay = document.getElementById('shared-overlay');
+  if (overlay) overlay.hidden = true;
+}
+function setSharedTab(tab) {
+  sharedTab = tab === 'sent' ? 'sent' : 'received';
+  const rec = document.getElementById('shared-tab-received');
+  const sent = document.getElementById('shared-tab-sent');
+  if (rec) rec.classList.toggle('active', sharedTab === 'received');
+  if (sent) sent.classList.toggle('active', sharedTab === 'sent');
+  refreshSharedNotes();
+}
+function renderSharedList(html) {
+  const list = document.getElementById('shared-list');
+  if (list) list.innerHTML = html;
+}
+async function refreshSharedNotes() {
+  renderSharedList('<p class="modal-desc">Loading…</p>');
+  const ok = await sharingEnsureKeys();
+  if (!ok) { renderSharedList('<p class="modal-desc">Sharing keys are not ready. Log in and unlock your notes first.</p>'); return; }
+  if (sharedTab === 'received') return refreshReceivedShares();
+  return refreshSentShares();
+}
+async function refreshReceivedShares() {
+  const res = await apiFetch('/api/shares/received');
+  if (!res.ok) { renderSharedList('<p class="modal-desc">Could not load shares.</p>'); return; }
+  const data = await res.json();
+  const shares = Array.isArray(data.shares) ? data.shares : [];
+  if (!shares.length) { renderSharedList('<p class="modal-desc">No notes have been shared with you.</p>'); return; }
+  sharedReceivedCache.clear();
+  const rows = [];
+  for (const share of shares) {
+    let content = null;
+    let failed = false;
+    try { content = await sharingDecryptShare(share); sharedReceivedCache.set(share.id, content); }
+    catch (error) { failed = true; }
+    const when = share.createdAt ? new Date(share.createdAt * 1000).toLocaleDateString() : '';
+    if (failed) {
+      rows.push(`<div class="shared-row"><div class="shared-row-main"><strong>Encrypted note</strong><span>from ${escapeHtml(share.owner)} · ${escapeHtml(when)}</span></div><span class="shared-fail">Can't decrypt</span></div>`);
+      continue;
+    }
+    rows.push(`<div class="shared-row">
+      <div class="shared-row-main"><strong>${escapeHtml(content.title || 'Untitled note')}</strong><span>from ${escapeHtml(share.owner)} · ${escapeHtml(when)}</span></div>
+      <button type="button" class="btn btn-secondary shared-action" data-share-save="${share.id}">Save to my notes</button>
+      <button type="button" class="shared-icon danger" data-share-drop="${share.id}" title="Remove" aria-label="Remove">${icon('trash')}</button>
+    </div>`);
+  }
+  renderSharedList(rows.join(''));
+}
+async function refreshSentShares() {
+  const res = await apiFetch('/api/shares/sent');
+  if (!res.ok) { renderSharedList('<p class="modal-desc">Could not load shares.</p>'); return; }
+  const data = await res.json();
+  const shares = Array.isArray(data.shares) ? data.shares : [];
+  if (!shares.length) { renderSharedList('<p class="modal-desc">You have not shared any notes yet.</p>'); return; }
+  renderSharedList(shares.map((share) => {
+    const when = share.createdAt ? new Date(share.createdAt * 1000).toLocaleDateString() : '';
+    return `<div class="shared-row">
+      <div class="shared-row-main"><strong>to ${escapeHtml(share.recipient)}</strong><span>${escapeHtml(when)}</span></div>
+      <button type="button" class="btn btn-secondary shared-action" data-share-revoke="${share.id}">Revoke</button>
+    </div>`;
+  }).join(''));
+}
+async function saveSharedNote(id) {
+  const content = sharedReceivedCache.get(Number(id)) || sharedReceivedCache.get(id);
+  if (!content) { showToast('That share is no longer loaded'); return; }
+  const note = {
+    id: newNoteId(),
+    title: typeof content.title === 'string' && content.title.trim() ? content.title.trim().slice(0, 200) : 'Shared note',
+    body: typeof content.body === 'string' ? content.body.slice(0, 500000) : '',
+    tags: Array.isArray(content.tags) ? content.tags.filter((t) => typeof t === 'string').slice(0, 20) : [],
+    ext: ['md', 'txt', 'json', 'yaml'].includes(content.ext) ? content.ext : 'md',
+    date: 'Now', favorite: false, archived: false, deleted: false, sections: {},
+  };
+  if (content.template === 'recipe' || content.template === 'todo') {
+    note.template = content.template;
+    if (note.template === 'recipe' && typeof content.description === 'string') note.description = content.description.slice(0, 2000);
+  }
+  ensureNoteFiled(note);
+  notes.unshift(note);
+  persistNotes();
+  renderCustomSections();
+  renderNoteList();
+  selectNote(note.id);
+  closeSharedNotes();
+  showToast('Shared note saved to your notes');
+}
+async function deleteShare(id, message) {
+  const res = await apiFetch(`/api/shares/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (res.ok) { showToast(message); refreshSharedNotes(); }
+  else showToast('Could not update the share');
 }
 
 // Keyboard-accessible delete: mirrors the context-menu rules exactly —
@@ -6121,6 +6399,31 @@ document.getElementById('tag-editor-input').addEventListener('keydown', (event) 
     event.target.value = '';
   }
 });
+// Share dialog + shared notes wiring.
+document.getElementById('open-shared').addEventListener('click', (event) => { event.preventDefault(); openSharedNotes(); });
+document.getElementById('close-share').addEventListener('click', closeShareDialog);
+document.getElementById('share-cancel').addEventListener('click', closeShareDialog);
+document.getElementById('share-confirm').addEventListener('click', confirmShare);
+document.getElementById('share-recipient').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') { event.preventDefault(); confirmShare(); }
+});
+document.getElementById('share-overlay').addEventListener('click', (event) => {
+  if (event.target.id === 'share-overlay') closeShareDialog();
+});
+document.getElementById('close-shared').addEventListener('click', closeSharedNotes);
+document.getElementById('shared-overlay').addEventListener('click', (event) => {
+  if (event.target.id === 'shared-overlay') closeSharedNotes();
+});
+document.getElementById('shared-tab-received').addEventListener('click', () => setSharedTab('received'));
+document.getElementById('shared-tab-sent').addEventListener('click', () => setSharedTab('sent'));
+document.getElementById('shared-list').addEventListener('click', (event) => {
+  const save = event.target.closest('[data-share-save]');
+  if (save) { saveSharedNote(save.dataset.shareSave); return; }
+  const drop = event.target.closest('[data-share-drop]');
+  if (drop) { deleteShare(drop.dataset.shareDrop, 'Removed from your shared notes'); return; }
+  const revoke = event.target.closest('[data-share-revoke]');
+  if (revoke) { deleteShare(revoke.dataset.shareRevoke, 'Share revoked'); return; }
+});
 // Settings → Tags: rename / delete across all notes.
 document.getElementById('settings-tag-list').addEventListener('click', (event) => {
   const rename = event.target.closest('[data-tag-rename]');
@@ -7102,6 +7405,7 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
     refreshEditorLock();
     restoreWorkspaceCollapsed();
     showToast(`Welcome back, ${fullNameOf(cachedProfile)}`);
+    try { sharingEnsureKeys(); } catch (error) {}
   } catch (error) {
     e2eeLock();
     const message = error && error.message;
@@ -7379,6 +7683,7 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
     refreshEditorLock();
     restoreWorkspaceCollapsed();
     showToast(`Welcome back, ${fullNameOf(cachedProfile)}`);
+    try { sharingEnsureKeys(); } catch (error) {}
   } catch (error) {
     e2eeLock();
     loginFail(error && error.message === 'mfa required' ? 'MFA code required.'
@@ -8378,6 +8683,10 @@ document.addEventListener('keydown', (event) => {
     if (sectionIconOverlay && !sectionIconOverlay.hidden) { closeSectionIconPicker(); return; }
     const tagEditorOverlay = document.getElementById('tag-editor-overlay');
     if (tagEditorOverlay && !tagEditorOverlay.hidden) { closeTagEditor(); return; }
+    const shareOverlay = document.getElementById('share-overlay');
+    if (shareOverlay && !shareOverlay.hidden) { closeShareDialog(); return; }
+    const sharedOverlay = document.getElementById('shared-overlay');
+    if (sharedOverlay && !sharedOverlay.hidden) { closeSharedNotes(); return; }
     if (settingsOverlay && !settingsOverlay.hidden) { closeSettings(); return; }
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
