@@ -2885,7 +2885,7 @@ def api_keys_lookup():
     conn.commit()
     conn.close()
     if not row:
-        return jsonify({'error': 'That account has no sharing key yet.'}), 404
+        return jsonify({'error': 'That account has not set up sharing yet. Ask them to log in to Notely once, then try again.'}), 404
     return jsonify({
         'username': target,
         'algo': row['algo'],

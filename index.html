@@ -312,6 +312,7 @@
             <button type="button" class="settings-nav-item active" data-settings-tab="appearance">Appearance</button>
             <button type="button" class="settings-nav-item" data-settings-tab="behaviour">Behaviour</button>
             <button type="button" class="settings-nav-item" data-settings-tab="tags">Tags</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="sharing">Sharing</button>
           </nav>
           <div class="settings-pane" data-settings-pane="appearance">
             <h3 class="settings-pane-title" id="settings-title">Appearance</h3>
@@ -395,6 +396,12 @@
             <h3 class="settings-pane-title">Tags</h3>
             <p class="modal-desc">Rename or delete tags across all your notes. To tag a note, right-click it and choose “Tags…”.</p>
             <div class="settings-tag-list" id="settings-tag-list"></div>
+          </div>
+          <div class="settings-pane" data-settings-pane="sharing" hidden>
+            <h3 class="settings-pane-title">Sharing</h3>
+            <p class="modal-desc">Let other accounts share notes with you. Your public key is published to the server; your private key stays encrypted under your master key and is never readable by the server.</p>
+            <p class="modal-desc" id="sharing-status">Checking…</p>
+            <button class="btn btn-secondary" id="sharing-setup-btn" type="button">Set up / refresh my sharing key</button>
           </div>
         </div>
       </div>
