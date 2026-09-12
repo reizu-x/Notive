@@ -5144,37 +5144,6 @@ async function deleteShare(id, message) {
   else showToast('Could not update the share');
 }
 
-// Settings → Sharing: status + one-click setup (publishes the keypair if the
-// account has none; otherwise loads the existing one).
-async function renderSharingStatus() {
-  const el = document.getElementById('sharing-status');
-  if (!el) return;
-  if (!cachedProfile) { el.textContent = 'Log in to manage sharing.'; return; }
-  if (!e2ee.masterKey) { el.textContent = 'Unlock your notes first (log in).'; return; }
-  el.textContent = 'Checking…';
-  try {
-    const ok = await sharingEnsureKeys();
-    const res = await apiFetch('/api/keys/me');
-    const data = res.ok ? await res.json() : null;
-    if (ok && data && data.exists) {
-      el.textContent = `Sharing is set up for @${cachedProfile.username}. Others can now share notes with you.`;
-    } else {
-      el.textContent = 'Sharing is not set up yet — click the button below.';
-    }
-  } catch (error) {
-    el.textContent = 'Could not check sharing status.';
-  }
-}
-async function setupSharingKey() {
-  const el = document.getElementById('sharing-status');
-  if (!e2ee.masterKey) { if (el) el.textContent = 'Unlock your notes first (log in).'; return; }
-  if (el) el.textContent = 'Setting up…';
-  sharing.ready = false;
-  sharing.privateKey = null;
-  const ok = await sharingEnsureKeys();
-  if (el) el.textContent = ok ? `Sharing is set up for @${cachedProfile.username}.` : 'Could not set up sharing.';
-}
-
 // Keyboard-accessible delete: mirrors the context-menu rules exactly —
 // binned notes ask for permanent-confirm, important-tagged notes ask for
 // confirm, everything else soft-deletes straight into Bin.
@@ -6432,8 +6401,7 @@ document.getElementById('tag-editor-input').addEventListener('keydown', (event) 
   }
 });
 // Share dialog + shared notes wiring.
-document.getElementById('open-shared').addEventListener('click', (event) => { event.preventDefault(); openSharedNotes(); });
-document.getElementById('sharing-setup-btn').addEventListener('click', setupSharingKey);
+document.getElementById('nav-shared').addEventListener('click', (event) => { event.preventDefault(); openSharedNotes(); });
 document.getElementById('close-share').addEventListener('click', closeShareDialog);
 document.getElementById('share-cancel').addEventListener('click', closeShareDialog);
 document.getElementById('share-confirm').addEventListener('click', confirmShare);
@@ -8532,7 +8500,6 @@ function setSettingsTab(name) {
     pane.hidden = pane.dataset.settingsPane !== name;
   });
   if (name === 'tags') { try { renderSettingsTags(); } catch (error) {} }
-  if (name === 'sharing') { try { renderSharingStatus(); } catch (error) {} }
 }
 document.querySelectorAll('.settings-nav-item').forEach((item) => item.addEventListener('click', () => setSettingsTab(item.dataset.settingsTab)));
 document.getElementById('start-collapsed').addEventListener('change', (event) => {
