@@ -95,13 +95,14 @@
           <input type="file" id="import-input" accept=".md,.markdown,.txt,.text,.json,.yaml,.yml" multiple hidden />
           <label class="search-box">
             <span data-icon="search"></span>
-            <input id="search-input" type="search" placeholder="Search notes" autocomplete="off" maxlength="200" />
+            <input id="search-input" type="search" placeholder="Search notes or #tags" autocomplete="off" maxlength="200" title="Tip: use #tag or tag:tag to search by tag" />
             <kbd>/</kbd>
           </label>
           <div class="filter-row" aria-label="Note filters">
             <button class="filter-chip active" data-filter="all">All <span id="all-count">12</span></button>
             <button class="filter-chip" data-filter="recent">Recent <span id="recent-count"></span></button>
             <button class="filter-chip" data-filter="favorites">Starred <span id="starred-count"></span></button>
+            <button class="icon-button fold-toggle" id="toggle-folders" aria-label="Collapse all folders" title="Collapse all folders" data-icon="chevron-down"></button>
           </div>
         </div>
         <div class="note-list" id="note-list" aria-label="Notes"></div>
@@ -113,6 +114,9 @@
         <div class="notes-panel-footer"><span id="total-count">12 notes</span><span>Local &amp; private</span></div>
       </section>
 
+      <!-- Drag handle: resize the expanded notes panel (strip stays fixed) -->
+      <div class="panel-resizer" id="panel-resizer" title="Drag to resize" aria-hidden="true"></div>
+
     <!-- Editor: title, meta/tags, Markdown toolbar, write/preview panes -->
       <main class="editor-panel">
         <header class="editor-topbar">
@@ -121,8 +125,6 @@
           <div class="editor-actions">
             <span class="save-state" hidden><span class="save-dot"></span><span id="save-label">Saved</span></span>
             <button class="icon-button" id="favorite-button" aria-label="Favorite note" data-icon="star"></button>
-            <button class="icon-button" id="share-button" aria-label="Share note" data-icon="share"></button>
-            <button class="icon-button" id="more-button" aria-label="More note actions" data-icon="dots"></button>
           </div>
         </header>
 
@@ -145,10 +147,9 @@
             <input class="title-input" id="title-input" value="Designing a calmer inbox" aria-label="Note title" maxlength="200" autocomplete="off" />
             <div class="note-meta">
               <span><span class="meta-icon" data-icon="clock"></span>Edited today</span>
+              <span class="meta-separator" hidden></span>
+              <span id="word-count" hidden>146 words</span>
               <span class="meta-separator"></span>
-              <span id="word-count">146 words</span>
-              <span class="meta-separator"></span>
-              <button class="type-badge" id="type-badge" title="File type — click to switch between Markdown and plain text">MD</button>
               <span class="tag-list" id="tag-list"><span class="tag">product</span><span class="tag">systems</span></span>
             </div>
           </div>
@@ -164,38 +165,41 @@
             <textarea class="recipe-hero-desc" id="recipe-desc" rows="3" maxlength="2000" placeholder="Write the description here..." aria-label="Meal description"></textarea>
           </div>
 
-          <div class="editor-toolbar" id="editor-toolbar" role="toolbar" aria-label="Markdown formatting">
+          <div class="editor-toolbar" id="editor-toolbar" role="toolbar" aria-label="Markdown formatting" hidden>
             <div class="toolbar-group">
-              <button class="toolbar-button" data-action="heading" aria-label="Heading" title="Heading"><span class="toolbar-heading">H</span></button>
-              <button class="toolbar-button" data-action="bold" aria-label="Bold" title="Bold (Ctrl+B)"><strong>B</strong></button>
-              <button class="toolbar-button italic" data-action="italic" aria-label="Italic" title="Italic (Ctrl+I)">I</button>
-              <button class="toolbar-button code" data-action="code" aria-label="Inline code" title="Inline code">&lt;/&gt;</button>
+              <button class="toolbar-button" data-action="heading" aria-label="Heading"><span class="toolbar-heading">H</span></button>
+              <button class="toolbar-button" data-action="bold" aria-label="Bold"><strong>B</strong></button>
+              <button class="toolbar-button italic" data-action="italic" aria-label="Italic">I</button>
+              <button class="toolbar-button code" data-action="code" aria-label="Inline code">&lt;/&gt;</button>
               <span class="toolbar-divider"></span>
-              <button class="toolbar-button" data-action="bullet" aria-label="Bullet list" title="Bullet list"><span data-icon="list"></span></button>
-              <button class="toolbar-button" data-action="check" aria-label="Checklist" title="Checklist"><span data-icon="check-square"></span></button>
-              <button class="toolbar-button" data-action="quote" aria-label="Quote" title="Quote"><span class="quote-mark">&quot;</span></button>
-              <button class="toolbar-button" data-action="link" aria-label="Link" title="Link"><span data-icon="link"></span></button>
+              <button class="toolbar-button" data-action="bullet" aria-label="Bullet list"><span data-icon="list"></span></button>
+              <button class="toolbar-button" data-action="check" aria-label="Checklist"><span data-icon="check-square"></span></button>
+              <button class="toolbar-button" data-action="quote" aria-label="Quote"><span class="quote-mark">&quot;</span></button>
+              <button class="toolbar-button" data-action="link" aria-label="Link"><span data-icon="link"></span></button>
             </div>
             <div class="toolbar-right">
               <span class="markdown-label"><span class="markdown-dot">M</span> Markdown</span>
               <span class="toolbar-divider"></span>
-              <button class="toolbar-button" id="focus-editor" aria-label="Focus mode" title="Focus mode"><span data-icon="focus"></span></button>
+              <button class="toolbar-button" id="focus-editor" aria-label="Focus mode"><span data-icon="focus"></span></button>
             </div>
           </div>
 
           <div class="writing-area" id="writing-area">
             <div class="write-head">
-              <div class="write-head-label"><span id="mode-label">Write</span><span class="shortcut-hint" id="idle-hint">Markdown source · live preview after 10s idle</span></div>
+              <div class="write-head-label"><span id="mode-label">Write</span></div>
               <div class="write-head-right">
-                <span class="preview-live"><span class="live-dot"></span>Live</span>
                 <button class="mode-toggle" id="mode-toggle" title="Switch between writing and preview">Preview</button>
               </div>
             </div>
-            <textarea class="markdown-input" id="markdown-input" rows="18" spellcheck="true" aria-label="Markdown editor"></textarea>
+            <div class="code-wrap" id="code-wrap">
+              <pre class="syntax-layer" id="syntax-layer" aria-hidden="true" hidden></pre>
+              <textarea class="markdown-input" id="markdown-input" rows="18" spellcheck="true" aria-label="Markdown editor"></textarea>
+            </div>
             <article class="markdown-preview unified-preview" id="markdown-preview" tabindex="0" aria-label="Rendered preview — click or focus to keep writing" hidden></article>
           </div>
-          <div class="editor-bottom"><span>Markdown · auto-preview after 10s idle</span><span><kbd>Ctrl</kbd><span> + </span><kbd>Enter</kbd> to save</span></div>
+          <div class="editor-bottom"><span>Markdown</span><span><kbd>Ctrl</kbd><span> + </span><kbd>Enter</kbd> to save</span></div>
         </div>
+        <div class="editor-bottom-fixed"><span>Markdown</span><button class="beautify-btn" id="beautify-btn" hidden>Beautify</button><button class="type-badge" id="type-badge" title="File type — click to switch between Markdown and plain text">MD</button></div>
       </main>
     </div>
     <!-- Login gate: login + register tabs. Shown until the server session unlocks the E2EE vault -->
@@ -212,7 +216,7 @@
         <p class="modal-desc">Sign in to open your private notes.</p>
         <form id="login-form" autocomplete="on">
           <label class="login-field"><span>Username</span><input id="login-username" name="username" type="text" autocomplete="username" placeholder="your-name" maxlength="32" required /></label>
-          <label class="login-field"><span>Password</span><input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="•••••" maxlength="256" required /></label>
+          <label class="login-field"><span>Password</span><span class="password-wrap"><input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="•••••" maxlength="256" required /><button type="button" class="password-eye" data-eye="login-password" aria-label="Show password" aria-pressed="false" data-icon="eye"></button></span></label>
           <p class="login-error" id="login-error" hidden>Incorrect username or password.</p>
           <button class="btn btn-primary login-submit" type="submit">Log in</button>
         </form>
@@ -306,6 +310,7 @@
             <div class="settings-nav-header">Customization</div>
             <button type="button" class="settings-nav-item active" data-settings-tab="appearance">Appearance</button>
             <button type="button" class="settings-nav-item" data-settings-tab="behaviour">Behaviour</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="tags">Tags</button>
           </nav>
           <div class="settings-pane" data-settings-pane="appearance">
             <h3 class="settings-pane-title" id="settings-title">Appearance</h3>
@@ -385,6 +390,11 @@
             <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Notely server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
             <button class="btn btn-secondary" id="export-all-btn" type="button">Export all notes to this device</button>
           </div>
+          <div class="settings-pane" data-settings-pane="tags" hidden>
+            <h3 class="settings-pane-title">Tags</h3>
+            <p class="modal-desc">Rename or delete tags across all your notes. To tag a note, right-click it and choose “Tags…”.</p>
+            <div class="settings-tag-list" id="settings-tag-list"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -399,21 +409,18 @@
           <button class="icon-button" id="close-templates" aria-label="Close templates" data-icon="x"></button>
         </div>
         <p class="modal-desc">Start from a structure. You can edit everything afterwards.</p>
-        <div class="template-options">
-          <button class="template-option" data-template="standard">
+        <div class="template-options template-square-grid">
+          <button class="template-option template-square" data-template="standard" title="Standard Note" aria-label="Standard Note">
             <span class="template-icon" data-icon="file-text" aria-hidden="true"></span>
-            <span class="theme-option-text"><strong>Standard Note</strong><span>Blank note with a title and body</span></span>
-            <span class="theme-check" data-icon="check"></span>
+            <span class="template-caption">Standard</span>
           </button>
-          <button class="template-option" data-template="recipe">
+          <button class="template-option template-square" data-template="recipe" title="Recipe" aria-label="Recipe">
             <span class="template-icon" data-icon="cooking" aria-hidden="true"></span>
-            <span class="theme-option-text"><strong>Recipe</strong><span>Ingredients, steps, time and servings</span></span>
-            <span class="theme-check" data-icon="check"></span>
+            <span class="template-caption">Recipe</span>
           </button>
-          <button class="template-option" data-template="todo">
+          <button class="template-option template-square" data-template="todo" title="To-Do" aria-label="To-Do">
             <span class="template-icon" data-icon="check-square" aria-hidden="true"></span>
-            <span class="theme-option-text"><strong>To-Do</strong><span>Checklist with priorities</span></span>
-            <span class="theme-check" data-icon="check"></span>
+            <span class="template-caption">To-do</span>
           </button>
         </div>
       </div>
@@ -430,6 +437,40 @@
         </div>
         <p class="modal-desc" id="folder-pick-desc">Where should this note land?</p>
         <div class="template-options" id="folder-pick-options"></div>
+      </div>
+    </div>
+    <!-- Section icon picker: choose the icon shown beside a sidebar section -->
+    <div class="modal-overlay" id="section-icon-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="section-icon-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Section</p>
+            <h2 id="section-icon-title">Choose an icon</h2>
+          </div>
+          <button class="icon-button" id="close-section-icon" aria-label="Close icon picker" data-icon="x"></button>
+        </div>
+        <p class="modal-desc" id="section-icon-desc">Pick the icon shown beside this section.</p>
+        <div class="section-icon-grid" id="section-icon-grid"></div>
+      </div>
+    </div>
+    <!-- Note tag editor: add/remove tags for one note (opened from the note menu) -->
+    <div class="modal-overlay" id="tag-editor-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tag-editor-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Note</p>
+            <h2 id="tag-editor-title">Tags</h2>
+          </div>
+          <button class="icon-button" id="close-tag-editor" aria-label="Close tags" data-icon="x"></button>
+        </div>
+        <p class="modal-desc" id="tag-editor-desc">Add or remove tags for this note.</p>
+        <div class="tag-editor-current" id="tag-editor-current"></div>
+        <div class="tag-editor-add">
+          <input id="tag-editor-input" type="text" maxlength="40" placeholder="Add a tag…" autocomplete="off" />
+          <button class="btn btn-secondary" id="tag-editor-add-btn" type="button">Add</button>
+        </div>
+        <div class="tag-editor-suggest" id="tag-editor-suggest"></div>
+        <div class="modal-actions"><button class="btn btn-primary" id="tag-editor-done" type="button">Done</button></div>
       </div>
     </div>
     <!-- Shared delete-confirm popup (note / folder / Bin variants, filled by setDeleteDialog) -->
@@ -597,6 +638,7 @@
       <button type="button" class="context-item" data-menu-action="open" role="menuitem"><span data-icon="file-text"></span><span>Open</span></button>
       <button type="button" class="context-item" data-menu-action="favorite" role="menuitem"><span data-icon="star"></span><span id="context-favorite-label">Favorite</span></button>
       <button type="button" class="context-item" data-menu-action="important" role="menuitem"><span data-icon="flag"></span><span id="context-important-label">Mark as important</span></button>
+      <button type="button" class="context-item" data-menu-action="tags" role="menuitem"><span data-icon="tag"></span><span>Tags…</span></button>
       <button type="button" class="context-item" data-menu-action="archive" role="menuitem"><span data-icon="archive"></span><span id="context-archive-label">Archive</span></button>
       <button type="button" class="context-item" data-menu-action="unarchive" role="menuitem"><span data-icon="restore"></span><span>Unarchive</span></button>
       <button type="button" class="context-item" data-menu-action="duplicate" role="menuitem"><span data-icon="copy"></span><span>Duplicate</span></button>
@@ -608,6 +650,7 @@
     <!-- Right-click section menu: New folder / Rename / Delete -->
     <div class="context-menu" id="section-context-menu" role="menu" aria-label="Section actions" hidden>
       <button type="button" class="context-item" data-section-action="add" role="menuitem"><span data-icon="folder-plus"></span><span>New folder</span></button>
+      <button type="button" class="context-item" data-section-action="icon" role="menuitem"><span data-icon="palette"></span><span>Change icon</span></button>
       <button type="button" class="context-item" data-section-action="rename" role="menuitem"><span data-icon="pencil"></span><span>Rename section</span></button>
       <div class="context-separator" aria-hidden="true"></div>
       <button type="button" class="context-item danger" data-section-action="delete" role="menuitem"><span data-icon="trash"></span><span>Delete section</span></button>

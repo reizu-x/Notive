@@ -7,3 +7,10 @@ notely.key
 notely.db.bak*
 server-*.log
 __pycache__/
+
+# TLS material (private CA + server keys) and DB snapshots — never commit.
+certs/
+dbbackup/
+
+# Local safety snapshots (revert points).
+.revert/

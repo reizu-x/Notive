@@ -50,6 +50,7 @@ const iconPaths = {
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   dots: '<circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/>',
   'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+  'chevron-up': '<path d="m6 15 6-6 6 6"/>',
   inbox: '<path d="M4 5.5h16v13H4z"/><path d="M4 14h4l1.5 2h5L16 14h4"/>',
   star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
   file: '<path d="M6 3.8h7l4 4v14.4H6z"/><path d="M13 3.8v4h4M9 12h5M9 16h5"/>',
@@ -66,12 +67,44 @@ const iconPaths = {
   focus: '<path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>',
   sidebar: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9.5 4v16"/>',
   folder: '<path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
+  // Section icon picker set (line style, tinted by the section/theme color).
+  layers: '<path d="m12 3.5 9 4.8-9 4.8-9-4.8Z"/><path d="m3 12.5 9 4.8 9-4.8"/><path d="m3 16.5 9 4.8 9-4.8"/>',
+  bookmark: '<path d="M6 3.5h12v17l-6-4-6 4z"/>',
+  tag: '<path d="M4 4h7.2l8.6 8.6-7.2 7.2L4 11.2z"/><circle cx="8.3" cy="8.3" r="1.3"/>',
+  briefcase: '<path d="M3.5 8h17v11.5h-17z"/><path d="M9 8V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M3.5 12.8h17"/>',
+  book: '<path d="M5 4h6a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H5z"/><path d="M19 4h-6a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h6z"/>',
+  heart: '<path d="M12 20s-7-4.4-7-9a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 4.6-7 9-7 9z"/>',
+  flask: '<path d="M9 3.5h6M10 3.5v6L5.7 18a2 2 0 0 0 1.8 3h9a2 2 0 0 0 1.8-3L14 9.5v-6"/><path d="M7.6 15h8.8"/>',
+  leaf: '<path d="M5 19c0-8 6-13 14-13 0 8-5 14-13 14z"/><path d="M5 19c3-3 6-5 10-6"/>',
+  code: '<path d="m9 8-5 4 5 4M15 8l5 4-5 4"/>',
+  globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.2 2.4 3.3 5.3 3.3 8.5S14.2 18.1 12 20.5c-2.2-2.4-3.3-5.3-3.3-8.5S9.8 5.9 12 3.5Z"/>',
+  bulb: '<path d="M9.5 18h5M10.5 21h3"/><path d="M12 3a6 6 0 0 1 3.6 10.8c-.7.5-1.1 1.2-1.1 2H9.5c0-.8-.4-1.5-1.1-2A6 6 0 0 1 12 3Z"/>',
+  flag: '<path d="M6 21V4M6 4h11l-2 4 2 4H6"/>',
+  calendar: '<rect x="4" y="5.5" width="16" height="15" rx="2"/><path d="M4 10h16M8 3.5v4M16 3.5v4"/>',
+  palette: '<path d="M12 3.5a8.5 8.5 0 0 0 0 17c1.4 0 2-1 2-2 0-1.4 1-2 2-2h1a3 3 0 0 0 3-3c0-5-4-10-8-10Z"/><circle cx="8" cy="12" r="1"/><circle cx="10" cy="8.5" r="1"/><circle cx="15" cy="9" r="1"/>',
+  rocket: '<path d="M12 3c3 1 5 4 5 8 0 2-.7 3.7-1.6 5H8.6C7.7 14.7 7 13 7 11c0-4 2-7 5-8Z"/><path d="M9 16c-1 1-1.5 3-1.5 5 2 0 3.5-.6 4.5-1.5M15 16c1 1 1.5 3 1.5 5-2 0-3.5-.6-4.5-1.5"/><circle cx="12" cy="9.5" r="1.4"/>',
+  home: '<path d="m4 11 8-7 8 7"/><path d="M6 10v10h12V10"/>',
+  hash: '<path d="M9.5 4 7.5 20M16.5 4l-2 16M4.5 9h15.5M4 15h15.5"/>',
+  eye: '<path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+  'eye-off': '<path d="m3 3 18 18"/><path d="M10.6 6.2A11 11 0 0 1 12 5.5c6.5 0 10 6.5 10 6.5a17.6 17.6 0 0 1-3.4 4.2"/><path d="M6.7 6.8A17.7 17.7 0 0 0 2 12s3.5 6.5 10 6.5a10.9 10.9 0 0 0 4.3-.9"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
+  'folder-nested': '<path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M9 12v4M9 12h6a1.5 1.5 0 0 1 1.5 1.5V16"/>',
+  // Depth-styled folders: parent = solid, subfolder = plain outline,
+  // sub-subfolder = nested outline with a bolder stroke (reads when small).
+  'folder-solid': '<path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="currentColor" stroke-width="1.2"/>',
+  'folder-deep': '<path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" stroke-width="2.4"/><path d="M9 12.2v3.8M9 12.2h5.6a1.5 1.5 0 0 1 1.5 1.5V16" stroke-width="2.4"/>',
+  // File-type glyphs: rounded page outline (recipe-icon line style) with the
+  // extension written on the paper. Tinted per theme via currentColor.
+  'type-md': '<path d="M6.5 3.6h6.6l5.3 5.3V20a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 20V5.1a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M13.1 3.6 18.4 8.9h-3.8a1.5 1.5 0 0 1-1.5-1.5Z"/><text x="11.7" y="17.4" text-anchor="middle" font-family="ui-monospace, monospace" font-size="4.9" font-weight="700" fill="currentColor" stroke="none">MD</text>',
+  'type-txt': '<path d="M6.5 3.6h6.6l5.3 5.3V20a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 20V5.1a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M13.1 3.6 18.4 8.9h-3.8a1.5 1.5 0 0 1-1.5-1.5Z"/><text x="11.7" y="17.4" text-anchor="middle" font-family="ui-monospace, monospace" font-size="4" font-weight="700" fill="currentColor" stroke="none">TXT</text>',
+  'type-json': '<path d="M6.5 3.6h6.6l5.3 5.3V20a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 20V5.1a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M13.1 3.6 18.4 8.9h-3.8a1.5 1.5 0 0 1-1.5-1.5Z"/><text x="11.7" y="17.4" text-anchor="middle" font-family="ui-monospace, monospace" font-size="3.2" font-weight="700" fill="currentColor" stroke="none">JSON</text>',
+  'type-yaml': '<path d="M6.5 3.6h6.6l5.3 5.3V20a1.5 1.5 0 0 1-1.5 1.5H6.5A1.5 1.5 0 0 1 5 20V5.1a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M13.1 3.6 18.4 8.9h-3.8a1.5 1.5 0 0 1-1.5-1.5Z"/><text x="11.7" y="17.4" text-anchor="middle" font-family="ui-monospace, monospace" font-size="3.2" font-weight="700" fill="currentColor" stroke="none">YAML</text>',
   'file-text': '<path d="M6 3.5h7l4 4v13H6z"/><path d="M13 3.5v4h4M9 12h5M9 16h5"/>',
   'chevron-right': '<path d="m9 6 6 6-6 6"/>',
   check: '<path d="m5 12 5 5 9-11"/>',
   pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   trash: '<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6.5 7l.8 12a1 1 0 0 0 1 .7h7.4a1 1 0 0 0 1-.7l.8-12"/><path d="M10 11v6M14 11v6"/>',
   cooking: '<path d="M4 12h16v6a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z"/><path d="M2 12h20M9 8c0-2 2-2 2-4M13 8c0-2 2-2 2-4M9 12v6M15 12v6"/>',
+  todo: '<path d="M7 5.5h10A1.5 1.5 0 0 1 18.5 7v12a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19V7A1.5 1.5 0 0 1 7 5.5Z"/><path d="M9.4 4.2h5.2a1 1 0 0 1 1 1v1.1H8.4V5.2a1 1 0 0 1 1-1Z"/><path d="M8.4 11.1l1 1 1.7-1.9M8.4 15.1l1 1 1.7-1.9"/><path d="M13.2 11.6h2.8M13.2 15.6h2.8"/>',
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   'folder-plus': '<path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M12 11v6M9 14h6"/>',
   download: '<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 17v2.5A1.5 1.5 0 0 0 5.5 21h13a1.5 1.5 0 0 0 1.5-1.5V17"/>',
@@ -91,87 +124,6 @@ function icon(name) {
 document.querySelectorAll('[data-icon]').forEach((element) => {
   element.innerHTML = icon(element.dataset.icon);
 });
-
-const starterNotes = [
-  {
-    id: 'inbox', title: 'Designing a calmer inbox', date: 'Today', tags: ['product', 'systems'], favorite: true, ext: 'md', sections: {},
-    body: `# Designing a calmer inbox
-
-The best inbox is not the one that holds everything. It is the one that makes the next right thing feel obvious.
-
-## A few principles
-
-- Give every message a clear home
-- Keep the surface quiet
-- Make decisions, not just lists
-
-> Attention is a finite resource. Design around it.
-
-### A small experiment
-
-For one week, I am trying a simple rhythm: check twice a day, process to zero, and leave the rest for tomorrow.
-
-- [x] Turn off non-essential notifications
-- [x] Create a “read later” space
-- [ ] Review the rhythm next Friday
-
-The goal is not perfect productivity. It is making room for better work.`
-  },
-  {
-    id: 'reading', title: 'A reading list for 2026', date: 'Yesterday', tags: ['reading'], favorite: false, ext: 'md', sections: { 'section-collections': 'Reading list' },
-    body: `# A reading list for 2026
-
-Books, essays, and field notes I want to spend time with this year.
-
-## Start here
-
-- The Art of Gathering
-- The Dawn of Everything
-- Ways of Seeing
-
-I want to read fewer things, more slowly, and keep a small note for each one.`
-  },
-  {
-    id: 'north-star', title: 'Project north star', date: 'Mar 18', tags: ['product', 'work'], favorite: false, ext: 'md', sections: { 'section-collections': 'Work' },
-    body: `# Project north star
-
-Build the smallest useful version, then learn from the people using it.
-
-## What matters
-
-1. Clear feedback loops
-2. Fewer, better defaults
-3. A product that feels good on a quiet Tuesday
-
-> Make the important thing easy to find.`
-  },
-  {
-    id: 'weekend', title: 'Weekend field notes', date: 'Mar 15', tags: ['personal'], favorite: false, ext: 'txt', sections: { 'section-collections': 'Personal' },
-    body: `# Weekend field notes
-
-The farmers market was quieter than usual. Picked up citrus, sourdough, and a new plant for the studio.
-
-The good kind of unplanned day.`
-  },
-  {
-    id: 'meeting', title: 'Team check-in notes', date: 'Mar 12', tags: ['work'], favorite: false, ext: 'md', sections: { 'section-collections': 'Work' },
-    body: `# Team check-in notes
-
-## Open threads
-
-- Confirm the launch sequence
-- Share the latest prototype
-- Ask for feedback on onboarding
-
-Next check-in: Thursday afternoon.`
-  },
-  {
-    id: 'morning', title: 'A better morning ritual', date: 'Mar 09', tags: ['personal'], favorite: true, ext: 'txt', sections: { 'section-collections': 'Personal' },
-    body: `# A better morning ritual
-
-No phone for the first thirty minutes. Water, a short walk, then a page of notes before the day starts asking for things.`
-  }
-];
 
 // Create a collision-proof note id: crypto.randomUUID when available, else 16 random bytes, else timestamp+random fallback.
 function newNoteId() {
@@ -324,6 +276,12 @@ function migrateNote(note) {
       if (typeof migrated.description === 'string') migrated.description = migrated.description.slice(0, 2000);
       else if ('description' in migrated) delete migrated.description;
     } else if ('description' in migrated) delete migrated.description;
+    // Template marker carries its tag so recipes/to-dos are findable and
+    // filterable by tag: backfill it for notes created before it existed.
+    const templateTag = migrated.template;
+    if (!migrated.tags.some((tag) => String(tag).toLowerCase() === templateTag)) {
+      migrated.tags = [templateTag, ...migrated.tags].slice(0, 20);
+    }
   } else {
     if ('template' in migrated) delete migrated.template;
     if ('description' in migrated) delete migrated.description;
@@ -376,6 +334,99 @@ function wipeLegacyLocalNotes() {
     localStorage.removeItem('notely-notes');
     localStorage.removeItem('quietly-notes');
   } catch (error) {}
+}
+
+// Onboarding workspace for brand-new accounts: a "Notes" section with
+// General/Personal folders plus welcome notes that explain the app. Ids are
+// stable (`welcome-*`) so this runs at most once per account — any saved
+// envelope (even an empty one) means the server row exists and this never fires.
+const WELCOME_SECTION_ID = 'section-notes';
+const WELCOME_FOLDERS = ['General', 'Personal'];
+
+function welcomeSeedNotes() {
+  const generalWelcome = `# Welcome to Notely
+
+This is your private, end-to-end encrypted notebook. Everything you write is
+encrypted on this device before it ever reaches the server — nobody else can
+read it, not even the server itself.
+
+## The basics
+
+- **New note** — the button at the top of the list creates a note.
+- **Write** — the left pane is your editor, the right pane previews as you type.
+- **Organise** — every note can live in a folder. This workspace starts with
+  two: **General** and **Personal**, inside the **Notes** section.
+- **Search** — the search bar at the top finds titles and text instantly.
+
+## Sections and folders
+
+The sidebar holds **sections** (think of them as shelves). Each section contains
+**folders**, and folders can nest — type \`Work / Projects\` to create a folder
+inside a folder. Create new sections with **+ Add section**, and add folders
+with the **+** next to a section.
+
+## Note types
+
+When creating a note you can pick a template:
+
+- **Note** — free-form markdown, the default.
+- **Recipe** — ingredients and steps with a tidy layout.
+- **To-do** — checkboxes that track progress as you go.
+
+## Safety net
+
+- **Favorite** notes (right-click) to pin them for quick access.
+- **Archive** notes you want out of the way but not gone.
+- **Delete** moves a note to the **Bin**, where it waits for a grace period
+  before being removed for good — mistakes are recoverable.
+
+> Everything here is yours alone. Change these notes, rename the folders, or
+> delete them — this workspace is yours to shape.`;
+
+  const personalWelcome = `# Your personal space
+
+This folder is for the everyday things: journal entries, ideas, lists, plans,
+drafts, anything that is yours.
+
+## Ideas to get you started
+
+- A **daily journal** — one note per day, or one running note.
+- **Lists** — books to read, films to watch, places to go.
+- **Projects** — plan something you care about, one step at a time.
+- **Recipes** — switch the template to *Recipe* for ingredients and steps.
+
+## Tips
+
+1. **Tags** — add tags like \`ideas\` or \`todo\` to find notes across folders.
+2. **Markdown** — \`#\` makes headings, \`-\` makes lists, \`>\` makes quotes.
+3. **Drag notes** onto a folder in the sidebar to file them.
+
+> There is no wrong way to take notes. Start messy, organise later.`;
+
+  return [
+    {
+      id: 'welcome-general', title: 'Welcome to Notely', date: 'Today',
+      tags: ['welcome'], favorite: true, ext: 'md',
+      sections: { [WELCOME_SECTION_ID]: 'General' },
+      body: generalWelcome,
+    },
+    {
+      id: 'welcome-personal', title: 'Your personal space', date: 'Today',
+      tags: ['welcome'], favorite: false, ext: 'md',
+      sections: { [WELCOME_SECTION_ID]: 'Personal' },
+      body: personalWelcome,
+    },
+  ];
+}
+
+// The sidebar section that ships with new accounts. Only applied when the
+// account has no sidebar state of its own (server or device cache).
+function welcomeSeedUi() {
+  return {
+    collapsed: [],
+    customSections: [{ id: WELCOME_SECTION_ID, name: 'Notes', folders: [...WELCOME_FOLDERS], icon: 'book' }],
+    deletedCustomSections: [],
+  };
 }
 
 let syncTimer;
@@ -687,10 +738,12 @@ async function adoptNotesEnvelope(envelope) {
       }
     }
   } catch (error) {}
+  // Folder-required invariant: nothing loads (or stays) unfiled.
+  try { enforceFilingInvariant(); } catch (error) {}
 }
 
-// Device-only boot: load from the encrypted local slot (starters when the
-// device copy is missing) without touching the server either way.
+// Device-only boot: load from the encrypted local slot (onboarding workspace
+// when the device copy is missing) without touching the server either way.
 async function loadNotesFromDevice() {
   try {
     const raw = localStorage.getItem(localNotesKey());
@@ -702,7 +755,8 @@ async function loadNotesFromDevice() {
       return;
     }
   } catch (error) {}
-  notes = starterNotes.map(migrateNote).slice(0, 2000);
+  notes = welcomeSeedNotes();
+  applyUiSnapshot(welcomeSeedUi());
   vault.blobs = [];
   vault.folders = [];
   notesLoaded = true;
@@ -752,7 +806,7 @@ async function flushNotesToServer() {
   await syncNotesToServer();
 }
 
-// Boot/load path: decrypts the server E2EE blob; adopts a legacy plaintext-shape row once; seeds starters only for brand-new accounts (updated_at distinguishes); offline falls back to the legacy local copy.
+// Boot/load path: decrypts the server E2EE blob; adopts a legacy plaintext-shape row once; brand-new accounts start empty (updated_at distinguishes); offline falls back to the legacy local copy.
 // The envelope is a bare array (very old), {v:1, notes, vault} (E2EE notes
 // only) or {v:2, notes, vault, ui} (notes + per-account sidebar state). When
 // the server carries UI state it wins over any device-local copy.
@@ -782,10 +836,14 @@ async function loadNotesFromServer() {
       vault.folders = [];
       await syncNotesToServer();
     } else {
+      // Brand-new account: no server blob, no notes row. Seed the onboarding
+      // workspace (Notes section, General/Personal folders, welcome notes).
+      // Only genuine legacy local data (pre-server version) is migrated on top.
       const legacy = readLegacyLocalNotes();
-      notes = (legacy && legacy.length ? legacy : starterNotes.map(migrateNote)).slice(0, 2000);
+      notes = (legacy && legacy.length ? legacy : welcomeSeedNotes()).slice(0, 2000);
       vault.blobs = [];
       vault.folders = [];
+      if (!legacy || !legacy.length) applyUiSnapshot(welcomeSeedUi());
       await syncNotesToServer();
       wipeLegacyLocalNotes();
     }
@@ -847,7 +905,7 @@ function uiSnapshot() {
   } catch (error) {}
   return {
     collapsed: [...collapsedFolders],
-    customSections: customSections.map((section) => ({ id: section.id, name: section.name, folders: [...section.folders] })),
+    customSections: customSections.map((section) => ({ id: section.id, name: section.name, folders: [...section.folders], icon: sectionIconName(section) })),
     deletedCustomSections: (deletedCustomSections || []).map((entry) => ({
       id: entry.id, name: entry.name,
       folders: [...(entry.folders || [])], deletedAt: entry.deletedAt,
@@ -976,6 +1034,18 @@ async function flushUiVault() {
   await writeUiVaultLocal();
 }
 
+// Section icon picker set (order shown in the picker). First entry is the
+// default for sections without a chosen icon.
+const SECTION_ICONS = ['layers', 'folder', 'book', 'briefcase', 'tag', 'bookmark',
+  'star', 'flag', 'bulb', 'flask', 'leaf', 'code', 'globe', 'calendar', 'palette',
+  'rocket', 'home', 'heart', 'hash', 'archive'];
+
+// Resolve a section's icon, falling back to the default when unset/invalid.
+function sectionIconName(section) {
+  const name = section && typeof section.icon === 'string' ? section.icon : '';
+  return SECTION_ICONS.includes(name) ? name : SECTION_ICONS[0];
+}
+
 function cleanCustomSections(value) {
   if (!Array.isArray(value)) return null;
   const out = [];
@@ -986,7 +1056,8 @@ function cleanCustomSections(value) {
     const folders = Array.isArray(entry.folders)
       ? entry.folders.filter((name) => typeof name === 'string' && name.trim()).map((name) => name.trim().slice(0, 180)).slice(0, 200)
       : [];
-    if (id && name) out.push({ id, name, folders });
+    const icon = typeof entry.icon === 'string' && SECTION_ICONS.includes(entry.icon) ? entry.icon : undefined;
+    if (id && name) out.push(icon ? { id, name, folders, icon } : { id, name, folders });
   });
   return out;
 }
@@ -1121,6 +1192,12 @@ async function loadUiVault() {
   if (legacy.cols || legacy.colsName) {
     try { ensureMigratedCollectionsSection(legacy.cols || [], legacy.colsName || null); adopted = true; } catch (error) {}
   }
+  if (!adopted && customSections.length === 0) {
+    // Fresh device + fresh account: adopt the onboarding sidebar (Notes
+    // section with General/Personal). Any real sidebar state wins over it.
+    applyUiSnapshot(welcomeSeedUi());
+    adopted = true;
+  }
   if (adopted) {
     persistUiVault();
     try { persistNotes(); } catch (error) {}
@@ -1244,7 +1321,8 @@ function bindSectionHeaderEvents() {
   if (!sidebar) return;
   sidebar.addEventListener('click', (event) => {
     if (event.target.closest('button') || event.target.closest('input')) return;
-    const label = event.target.closest('.section-label-text');
+    // The section name and its icon both select (mark) the section.
+    const label = event.target.closest('.section-label-text, .section-icon');
     if (!label) return;
     const section = label.closest('.sidebar-section');
     if (!section) return;
@@ -1281,7 +1359,8 @@ function renderCustomSections() {
   container.innerHTML = customSections.map((section) => `
     <div class="sidebar-section" data-custom-section="${escapeHtml(section.id)}" data-section="custom">
       <div class="section-label">
-        <span class="section-initial" title="${escapeHtml(section.name)}" aria-hidden="true">${escapeHtml(section.name.charAt(0).toUpperCase() || '?')}</span>
+        <span class="section-initial" title="${escapeHtml(section.name)}" aria-hidden="true">${icon(sectionIconName(section))}</span>
+        <span class="section-icon" title="${escapeHtml(section.name)}" aria-hidden="true">${icon(sectionIconName(section))}</span>
         <span class="section-label-text" data-section-name="${escapeHtml(section.id)}">${escapeHtml(section.name)}</span>
       </div>
       <div class="collection-list">
@@ -1352,7 +1431,7 @@ function uniqueSectionId() {
 
 function addCustomSection() {
   if (!e2ee.masterKey) { showToast('Log in to manage sections'); return; }
-  const section = { id: uniqueSectionId(), name: uniqueSectionName(), folders: [] };
+  const section = { id: uniqueSectionId(), name: uniqueSectionName(), folders: [], icon: SECTION_ICONS[0] };
   customSections.push(section);
   persistCustomSections();
   activeView = 'notes';
@@ -1921,6 +2000,8 @@ function handleSectionMenuAction(action, sectionId) {
   if (!section) return;
   if (action === 'add') {
     addCustomFolder(sectionId);
+  } else if (action === 'icon') {
+    openSectionIconPicker(sectionId);
   } else if (action === 'rename') {
     if (slideMenuCollapsed()) {
       askInput({ eyebrow: 'Rename section', title: section.name, desc: '', label: 'Section name', password: false, placeholder: section.name, okText: 'Rename' }).then((value) => {
@@ -1933,6 +2014,44 @@ function handleSectionMenuAction(action, sectionId) {
   } else if (action === 'delete') {
     openCustomSectionDeleteConfirm(sectionId);
   }
+}
+
+// ---- Section icon picker -------------------------------------------------
+// Opens a grid of line icons; picking one stores it on the section (persisted
+// in the E2EE UI envelope) and repaints the sidebar.
+let sectionIconTarget = null;
+
+function openSectionIconPicker(sectionId) {
+  const overlay = document.getElementById('section-icon-overlay');
+  const grid = document.getElementById('section-icon-grid');
+  const section = customSections.find((entry) => entry.id === sectionId);
+  if (!overlay || !grid || !section) return;
+  sectionIconTarget = sectionId;
+  const current = sectionIconName(section);
+  grid.innerHTML = SECTION_ICONS.map((name) =>
+    `<button type="button" class="section-icon-option${name === current ? ' is-selected' : ''}" data-icon-choice="${name}" title="${name}" aria-label="${name}">${icon(name)}</button>`).join('');
+  const desc = document.getElementById('section-icon-desc');
+  if (desc) desc.textContent = `Pick the icon shown beside “${section.name}”.`;
+  overlay.hidden = false;
+  const first = grid.querySelector('.section-icon-option');
+  if (first) first.focus();
+}
+
+function closeSectionIconPicker() {
+  const overlay = document.getElementById('section-icon-overlay');
+  if (overlay) overlay.hidden = true;
+  sectionIconTarget = null;
+}
+
+function chooseSectionIcon(name) {
+  const section = customSections.find((entry) => entry.id === sectionIconTarget);
+  if (!section || !SECTION_ICONS.includes(name)) { closeSectionIconPicker(); return; }
+  section.icon = name;
+  closeSectionIconPicker();
+  persistCustomSections();
+  renderCustomSections();
+  renderNoteList();
+  showToast(`Icon set to “${name}”`);
 }
 
 function bindSectionContextMenu() {
@@ -1972,9 +2091,14 @@ function openFolderContextMenu(ns, path, x, y, sectionId) {
   const menu = getFolderContextMenu();
   if (!menu || !path || !sectionId) return;
   folderMenuTarget = { ns: 'custom', path, section: sectionId };
+  // Subfolders nest up to two levels: "New subfolder" is offered on top-level
+  // folders and on first-level subfolders, but not on the deepest ones.
+  const atMaxDepth = folderDepth(path) >= MAX_SUBFOLDER_PARENT_DEPTH;
   menu.querySelectorAll('[data-folder-action]').forEach((btn) => {
     const actionName = btn.dataset.folderAction;
-    btn.hidden = actionName === 'restore' || (actionName === 'new-note' && activeView === 'bin');
+    btn.hidden = actionName === 'restore'
+      || (actionName === 'new-note' && activeView === 'bin')
+      || (actionName === 'subfolder' && atMaxDepth);
   });
   const deleteLabel = document.getElementById('folder-delete-label');
   if (deleteLabel) deleteLabel.textContent = 'Delete';
@@ -2001,6 +2125,7 @@ function handleFolderMenuAction(action, target) {
   } else if (action === 'rename') {
     startCustomFolderRename(sectionId, path);
   } else if (action === 'subfolder') {
+    if (folderDepth(path) >= MAX_SUBFOLDER_PARENT_DEPTH) return; // depth limit
     createSubfolder('custom', path, sectionId);
   } else if (action === 'restore') {
     return;
@@ -2032,6 +2157,11 @@ function insertFolderAfterParent(list, parentPath, newPath) {
 // it. Without a parent, a top-level folder is created.
 function createSubfolder(ns, parentPath, sectionId) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
+  // Depth limit: top-level -> sub -> sub-sub, but no deeper.
+  if (folderDepth(parentPath) >= MAX_SUBFOLDER_PARENT_DEPTH) {
+    showToast('Subfolders can only nest two levels deep');
+    return;
+  }
   let slideCollapsed = false;
   try { slideCollapsed = document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) {}
   if (slideCollapsed) {
@@ -2342,8 +2472,8 @@ const starredCountEl = document.getElementById('starred-count');
 const totalCount = document.getElementById('total-count');
 const importInput = document.getElementById('import-input');
 const modeLabel = document.getElementById('mode-label');
-const idleHint = document.getElementById('idle-hint');
 const modeToggle = document.getElementById('mode-toggle');
+const beautifyBtn = document.getElementById('beautify-btn');
 const IDLE_PREVIEW_MS = 10000;
 let writeMode = 'edit';
 let idleTimer;
@@ -2508,10 +2638,55 @@ function isUnfiled(note) {
   return !Object.values(note.sections).some((value) => typeof value === 'string' && value);
 }
 
+// ---- Folder-required invariant: a note never lives outside the sections ----
+// Every entry path funnels through here. A note with no valid filing is
+// placed into the first folder of the first section (creating the default
+// "Notes" section when the workspace has none), so unfiled notes cannot
+// exist. Returns true when the note was refiled.
+function ensureNoteFiled(note) {
+  if (!note || note.deleted) return false;
+  if (note.sections && typeof note.sections === 'object') {
+    for (const [secId, folder] of Object.entries(note.sections)) {
+      if (typeof folder !== 'string' || !folder.trim()) continue;
+      const section = customSections.find((entry) => entry.id === secId);
+      if (section && section.folders.includes(folder)) return false; // validly filed
+    }
+    // Filings exist but all stale: drop them so re-filing picks a fresh home.
+    const stale = Object.entries(note.sections).filter(([, folder]) => typeof folder !== 'string' || !folder.trim()
+      || !customSections.some((entry) => entry.id && entry.folders.includes(folder)));
+    if (stale.length === Object.keys(note.sections).length) note.sections = {};
+  }
+  // Resolve a destination: first folder of the first section; else create
+  // the default section (welcome seed shape) so the note always has a home.
+  let target = customSections.find((entry) => entry.folders.length);
+  if (!target) {
+    target = { id: WELCOME_SECTION_ID, name: 'Notes', folders: [...WELCOME_FOLDERS] };
+    customSections.unshift(target);
+  }
+  note.sections = { [target.id]: target.folders[0] };
+  return true;
+}
+
+// Sweep every live note through the invariant (boot, import, restore, sync).
+function enforceFilingInvariant() {
+  let changed = false;
+  notes.forEach((note) => { if (ensureNoteFiled(note)) changed = true; });
+  if (changed) {
+    persistNotes();
+    renderCustomSections();
+    renderNoteList();
+  }
+  return changed;
+}
+
 // ---- Nested folders: a folder path is segments joined with FOLDER_SEP
 // ("Work / Projects"). All folder namespaces share
 // these helpers; matching is always exact-path or proper-descendant.
 const FOLDER_SEP = ' / ';
+// Folders may nest twice (top-level -> sub -> sub-sub); a third level is not
+// allowed. folderDepth() returns 0 for top-level, 1 for a sub, 2 for the
+// deepest allowed sub-sub, so depth >= 2 cannot host another subfolder.
+const MAX_SUBFOLDER_PARENT_DEPTH = 2;
 
 function splitFolderPath(path) {
   return String(path == null ? '' : path).split('/').map((part) => part.trim()).filter(Boolean);
@@ -2530,6 +2705,14 @@ function folderLeaf(path) {
 
 function folderDepth(path) {
   return Math.max(0, splitFolderPath(path).length - 1);
+}
+
+// Icon name by nesting depth: parent (solid) -> subfolder (outline) ->
+// sub-subfolder and deeper (bold nested outline).
+function folderIconForDepth(depth) {
+  if (depth <= 0) return 'folder-solid';
+  if (depth === 1) return 'folder';
+  return 'folder-deep';
 }
 
 // True for the folder itself and anything nested under it ("Work" matches
@@ -2598,11 +2781,16 @@ function clearSearch() {
 // ---- Open-note tabs (dev): many notes open at once, replacing breadcrumbs ----
 let openTabs = []; // [{ id, vault }] in opening order, capped
 const MAX_OPEN_TABS = 20;
-// List glyph shared by the note list and the tab strip.
+// List glyph shared by the note list, tabs and strip. Recipes and to-dos keep
+// their distinctive glyphs; everything else gets its file-type icon.
 function noteGlyphFor(note) {
   if (note && note.template === 'recipe') return 'cooking';
-  if (note && note.template === 'todo') return 'check-square';
-  return note && note.ext === 'md' ? 'file' : 'file-text';
+  if (note && note.template === 'todo') return 'todo';
+  const ext = note && note.ext;
+  if (ext === 'txt') return 'type-txt';
+  if (ext === 'json') return 'type-json';
+  if (ext === 'yaml') return 'type-yaml';
+  return 'type-md';
 }
 function findTabbedNote(id, isVault) {
   if (isVault) return vault.unlocked ? vault.notes.find((entry) => entry.id === id) || null : null;
@@ -2815,11 +3003,15 @@ document.addEventListener('click', (event) => {
 window.addEventListener('resize', () => {
   closeTabOverflow();
   try { renderTabs(); } catch (error) {}
+  try { updateStripScrollButton(); } catch (error) {}
 });
 
-// Collapsed workspace strip: when inside a folder, show its notes plus its
-// immediate subfolders (gold folder glyph — distinct from note glyphs — so a
-// subfolder is never mistaken for a note; clicking one opens it).
+// Collapsed workspace strip. With the sidebar expanded it behaves as before:
+// inside a folder it lists that folder's notes plus immediate subfolders.
+// With the sidebar COLLAPSED the slide menu shows sections only, so this
+// strip becomes the folder navigator: every folder of the active section (or
+// of all sections when no section is selected) renders as its colored dot;
+// clicking one opens it. Gold folder glyphs stay distinct from note glyphs.
 function renderStripItems() {
   const box = document.getElementById('workspace-strip-items');
   if (!box) return;
@@ -2828,44 +3020,149 @@ function renderStripItems() {
   // Back button sits under the collapse toggle, over the folder name —
   // visible only inside a subfolder.
   const backBtn = document.getElementById('workspace-strip-back');
-  if (!section || !folder || activeView === 'vault') {
+  if (activeView === 'vault') {
     box.innerHTML = '';
-    if (backBtn) backBtn.hidden = true;
+    if (backBtn) {
+      backBtn.hidden = true;
+      delete backBtn.dataset.stripSection;
+      delete backBtn.dataset.stripTarget;
+    }
+    updateStripScrollButton();
     return;
   }
-  const parent = folderParent(folder);
+  // Folder navigation is always on in the strip (folders no longer live in
+  // the slide menu in any state). Folders render as a tree: each subfolder
+  // sits indented under its parent, preserving the section's list order.
+  // Notes join the strip only while inside a folder, after the tree.
+  const sections = section ? [section] : customSections.slice();
+  let html = '';
+  sections.forEach((sec) => {
+    if (!sec.folders.length) return;
+    if (!section && sections.length > 1) {
+      html += `<span class="strip-section-tag" title="${escapeHtml(sec.name)}" aria-hidden="true">${escapeHtml(sec.name.charAt(0).toUpperCase() || '?')}</span>`;
+    }
+    // When a folder is selected the strip is scoped to that folder's branch:
+    // it shows only the folder and its contents (its subfolders). Otherwise
+    // the whole section tree is shown for navigation.
+    const pool = (section && folder)
+      ? [folder, ...sec.folders.filter((name) => name !== folder && isFolderOrSub(name, folder))]
+      : sec.folders;
+    const childrenOf = new Map();
+    const roots = [];
+    pool.forEach((name) => {
+      const parent = folderParent(name);
+      if (parent && pool.includes(parent)) {
+        if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+        childrenOf.get(parent).push(name);
+      } else roots.push(name);
+    });
+    const emitted = new Set();
+    const emitFolder = (name) => {
+      if (emitted.has(name)) return;
+      emitted.add(name);
+      const depth = folderDepth(name);
+      const activeDot = section && folder === name;
+      const glyph = `<span class="strip-folder-glyph ${customFolderColor(sec, name)}">${icon(folderIconForDepth(depth))}</span>`;
+      html += `<button type="button" class="strip-btn is-folder${depth > 0 ? ' is-subfolder' : ''}${depth > 1 ? ' is-deep' : ''}${activeDot ? ' is-dot-active' : ''}" data-strip-section="${escapeHtml(sec.id)}" data-strip-folder="${escapeHtml(name)}" title="${escapeHtml(sec.name)} / ${escapeHtml(name)}" aria-label="Open ${escapeHtml(folderLeaf(name))}">${glyph}</button>`;
+      (childrenOf.get(name) || []).forEach(emitFolder);
+    };
+    roots.forEach(emitFolder);
+    pool.forEach(emitFolder);
+  });
+  // Inside a folder: append its direct notes beneath the folder icons.
+  if (section && folder && activeView !== 'bin') {
+    const pool = visibleNotes().filter((note) => !note.deleted);
+    const direct = pool.filter((note) => customNoteFolder(note, section.id) === folder);
+    if (direct.length) html += `<span class="strip-section-tag" title="Notes in ${escapeHtml(folderLeaf(folder))}" aria-hidden="true">·</span>`;
+    html += direct.map((note) => `<button type="button" class="strip-btn${note.id === currentId ? ' is-note-active' : ''}" data-strip-note="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}" aria-label="Open ${escapeHtml(note.title || 'Untitled note')}">${icon(noteGlyphFor(note))}</button>`).join('');
+  }
+  box.innerHTML = html;
   if (backBtn) {
-    if (parent) {
+    // Back is available anywhere inside a folder: up to the parent folder
+    // when nested, otherwise back to the section root (no folder selected).
+    if (section && folder) {
+      const parent = folderParent(folder);
       backBtn.hidden = false;
       backBtn.dataset.stripSection = section.id;
-      backBtn.dataset.stripParent = parent;
-      backBtn.title = `${parent} — back to parent folder`;
-      backBtn.setAttribute('aria-label', `Back to ${folderLeaf(parent)}`);
-    } else backBtn.hidden = true;
+      backBtn.dataset.stripTarget = parent || '';
+      if (parent) {
+        backBtn.title = `${parent} — back to parent folder`;
+        backBtn.setAttribute('aria-label', `Back to ${folderLeaf(parent)}`);
+      } else {
+        backBtn.title = `${section.name} — back to section`;
+        backBtn.setAttribute('aria-label', `Back to ${section.name}`);
+      }
+    } else {
+      backBtn.hidden = true;
+      delete backBtn.dataset.stripSection;
+      delete backBtn.dataset.stripTarget;
+    }
   }
-  const pool = visibleNotes().filter((note) => (activeView === 'bin' ? note.deleted : !note.deleted));
-  const direct = pool.filter((note) => customNoteFolder(note, section.id) === folder);
-  const subs = section.folders.filter((entry) => folderParent(entry) === folder
-    && pool.some((note) => {
-      const where = customNoteFolder(note, section.id);
-      return typeof where === 'string' && isFolderOrSub(where, entry);
-    }));
-  box.innerHTML = subs.map((entry) => `<button type="button" class="strip-btn is-sub" data-strip-section="${escapeHtml(section.id)}" data-strip-folder="${escapeHtml(entry)}" title="${escapeHtml(entry)} — open subfolder" aria-label="Open subfolder ${escapeHtml(folderLeaf(entry))}">${icon('folder')}</button>`).join('')
-    + direct.map((note) => `<button type="button" class="strip-btn${note.id === currentId ? ' is-note-active' : ''}" data-strip-note="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}" aria-label="Open ${escapeHtml(note.title || 'Untitled note')}">${icon(noteGlyphFor(note))}</button>`).join('');
+  updateStripScrollButton();
 }
 const stripBoxEl = document.getElementById('workspace-strip-items');
-if (stripBoxEl) stripBoxEl.addEventListener('click', (event) => {
-  const sub = event.target.closest('[data-strip-folder]');
-  if (sub) { selectCustomFolder(sub.dataset.stripSection, sub.dataset.stripFolder); return; }
-  const item = event.target.closest('[data-strip-note]');
-  if (item) selectNote(item.dataset.stripNote);
-});
+if (stripBoxEl) {
+  stripBoxEl.addEventListener('scroll', updateStripScrollButton, { passive: true });
+  stripBoxEl.addEventListener('click', (event) => {
+    const sub = event.target.closest('[data-strip-folder]');
+    if (sub) { selectCustomFolder(sub.dataset.stripSection, sub.dataset.stripFolder); return; }
+    const item = event.target.closest('[data-strip-note]');
+    if (item) selectNote(item.dataset.stripNote);
+  });
+  // Right-click a strip folder: same menu as everywhere else (Open / New note
+  // / Rename / New subfolder / Delete).
+  stripBoxEl.addEventListener('contextmenu', (event) => {
+    const sub = event.target.closest('[data-strip-folder]');
+    if (!sub) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openFolderContextMenu('custom', sub.dataset.stripFolder, event.clientX, event.clientY, sub.dataset.stripSection);
+  });
+}
 const stripBackEl = document.getElementById('workspace-strip-back');
-if (stripBackEl) stripBackEl.addEventListener('click', () => {
-  if (stripBackEl.dataset.stripSection && stripBackEl.dataset.stripParent) {
-    selectCustomFolder(stripBackEl.dataset.stripSection, stripBackEl.dataset.stripParent);
-  }
+if (stripBackEl) stripBackEl.addEventListener('click', (event) => {
+  event.preventDefault();
+  const sectionId = stripBackEl.dataset.stripSection;
+  if (!sectionId) return;
+  const target = stripBackEl.dataset.stripTarget;
+  if (target) selectCustomFolder(sectionId, target);
+  else selectCustomSection(sectionId);
 });
+
+// Strip overflow: when the dots/notes do not fit the strip height, a
+// scroll buttons appear above/below the strip (never a scrollbar): a down
+// arrow when there is more below, and an up arrow once scrolled down. Clicking
+// pages one viewport of items; both hide automatically at their ends.
+function makeStripScrollButton(id, dir, glyphName, label) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = `strip-scroll-btn strip-scroll-${dir}`;
+  btn.id = id;
+  btn.setAttribute('aria-label', label);
+  btn.setAttribute('title', label);
+  btn.innerHTML = icon(glyphName);
+  return btn;
+}
+const stripScrollUp = makeStripScrollButton('strip-scroll-up', 'up', 'chevron-up', 'Scroll up');
+const stripScrollDown = makeStripScrollButton('strip-scroll-down', 'down', 'chevron-down', 'Scroll down');
+if (stripBoxEl && stripBoxEl.parentElement) {
+  stripBoxEl.insertAdjacentElement('beforebegin', stripScrollUp);
+  stripBoxEl.insertAdjacentElement('afterend', stripScrollDown);
+  stripScrollUp.addEventListener('click', () => {
+    stripBoxEl.scrollBy({ top: -stripBoxEl.clientHeight, behavior: 'smooth' });
+  });
+  stripScrollDown.addEventListener('click', () => {
+    stripBoxEl.scrollBy({ top: stripBoxEl.clientHeight, behavior: 'smooth' });
+  });
+}
+function updateStripScrollButton() {
+  if (!stripBoxEl) return;
+  const collapsible = document.querySelector('.app-shell.workspace-collapsed:not(.workspace-focus)');
+  const canUp = stripBoxEl.scrollTop > 1;
+  const canDown = stripBoxEl.scrollTop + stripBoxEl.clientHeight < stripBoxEl.scrollHeight - 1;
+  if (stripScrollUp) stripScrollUp.classList.toggle('is-visible', Boolean(collapsible && canUp));
+  if (stripScrollDown) stripScrollDown.classList.toggle('is-visible', Boolean(collapsible && canDown));
+}
 
 // Rebuild the clickable breadcrumb trail: [view] [/ folder] / [note title].
 // The title element itself is persistent (editor writes to it directly); only
@@ -2953,15 +3250,34 @@ function visibleNotes() {
         if (isArchived) return false;
       }
     }
-    const safeTitle = typeof note.title === 'string' ? note.title : '';
-    const safeBody = typeof note.body === 'string' ? note.body : '';
-    const safeTags = Array.isArray(note.tags) ? note.tags.filter((t) => typeof t === 'string').join(' ') : '';
-    const matchesSearch = !searchQuery || `${safeTitle} ${safeBody} ${safeTags}`.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesSearch = noteMatchesSearch(note, searchQuery);
     const matchesFilter = activeFilter === 'all' || (activeFilter === 'favorites' && note.favorite) || (activeFilter === 'recent' && isRecentNote(note));
     const matchesCustom = !activeCustom || (customNoteFolder(note, activeCustom.section) !== null
       && (!activeCustom.folder || isFolderOrSub(customNoteFolder(note, activeCustom.section), activeCustom.folder)));
     return matchesSearch && matchesFilter && matchesCustom;
   });
+}
+
+// Search over title, body and tags. `#tag` / `tag:tag` terms match tags only;
+// other terms match any text (tags included). Multiple terms are AND-ed.
+function noteMatchesSearch(note, query) {
+  const q = String(query == null ? '' : query).trim().toLowerCase();
+  if (!q) return true;
+  const title = typeof note.title === 'string' ? note.title : '';
+  const body = typeof note.body === 'string' ? note.body : '';
+  const tags = (Array.isArray(note.tags) ? note.tags : []).filter((t) => typeof t === 'string').map((t) => t.toLowerCase());
+  const tagTerms = [];
+  const textTerms = [];
+  q.split(/\s+/).filter(Boolean).forEach((token) => {
+    if (token.startsWith('#')) tagTerms.push(token.slice(1));
+    else if (token.startsWith('tag:')) tagTerms.push(token.slice(4));
+    else textTerms.push(token);
+  });
+  if (tagTerms.some((term) => !term)) return false; // a bare "#" matches nothing
+  const tagMatch = tagTerms.every((term) => tags.some((tag) => tag.includes(term)));
+  const haystack = `${title} ${body} ${tags.join(' ')}`.toLowerCase();
+  const textMatch = textTerms.every((term) => haystack.includes(term));
+  return tagMatch && textMatch;
 }
 
 // Notes in the current view + selected folder, ignoring the search box and
@@ -3009,9 +3325,187 @@ function autogrow() {
   markdownInput.style.height = `${markdownInput.scrollHeight}px`;
 }
 
+// ---- JSON/YAML syntax highlighting ---------------------------------------
+// The editing textarea cannot render colors, so a pre overlay behind it paints
+// colored tokens while the textarea text runs transparent. Both share font,
+// padding and line-height so the glyphs sit exactly on top of each other.
+const syntaxLayer = document.getElementById('syntax-layer');
+
+function highlightJson(text) {
+  const re = /("(?:\\.|[^"\\])*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false)\b|\b(null)\b|(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|([{}\[\],:])/g;
+  let out = '';
+  let last = 0;
+  let match;
+  while ((match = re.exec(text))) {
+    out += escapeHtml(text.slice(last, match.index));
+    if (match[1] !== undefined) {
+      out += `<span class="tok-${match[2] ? 'key' : 'string'}">${escapeHtml(match[1])}</span>`;
+      if (match[2]) out += `<span class="tok-punct">${escapeHtml(match[2])}</span>`;
+    } else if (match[3] !== undefined) {
+      out += `<span class="tok-number">${escapeHtml(match[3])}</span>`;
+    } else if (match[4] !== undefined) {
+      out += `<span class="tok-bool">${escapeHtml(match[4])}</span>`;
+    } else if (match[5] !== undefined) {
+      out += `<span class="tok-bool">${escapeHtml(match[5])}</span>`;
+    } else if (match[6] !== undefined) {
+      out += `<span class="tok-comment">${escapeHtml(match[6])}</span>`;
+    } else {
+      out += `<span class="tok-punct">${escapeHtml(match[7])}</span>`;
+    }
+    last = re.lastIndex;
+  }
+  return out + escapeHtml(text.slice(last));
+}
+
+// Index of a # comment start, ignoring # inside quotes.
+function yamlCommentAt(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === '#' && (i === 0 || /\s/.test(line[i - 1]))) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function highlightYamlValue(text) {
+  const re = /("(?:\\.|[^"\\])*"|'(?:''|[^'])*')|(-?\d+(?:\.\d+)?)|\b(true|false|null|yes|no|on|off|~)\b|(&\w+|\*\w+)/gi;
+  let out = '';
+  let last = 0;
+  let match;
+  while ((match = re.exec(text))) {
+    out += escapeHtml(text.slice(last, match.index));
+    if (match[1] !== undefined) out += `<span class="tok-string">${escapeHtml(match[1])}</span>`;
+    else if (match[2] !== undefined) out += `<span class="tok-number">${escapeHtml(match[2])}</span>`;
+    else if (match[3] !== undefined) out += `<span class="tok-bool">${escapeHtml(match[3])}</span>`;
+    else out += `<span class="tok-anchor">${escapeHtml(match[4])}</span>`;
+    last = re.lastIndex;
+  }
+  return out + escapeHtml(text.slice(last));
+}
+
+function highlightYaml(text) {
+  return String(text).split('\n').map((line) => {
+    let content = line;
+    let comment = '';
+    const commentAt = yamlCommentAt(content);
+    if (commentAt >= 0) { comment = content.slice(commentAt); content = content.slice(0, commentAt); }
+    let html = '';
+    // key: optional indent, optional "- ", a name, then ":".
+    const keyMatch = content.match(/^(\s*)(-\s+)?([^\s:#][^:\n]*?)(\s*:\s*|:\s*$|:$)/);
+    if (keyMatch) {
+      html += escapeHtml(keyMatch[1]);
+      if (keyMatch[2]) html += `<span class="tok-punct">${escapeHtml(keyMatch[2])}</span>`;
+      html += `<span class="tok-key">${escapeHtml(keyMatch[3])}</span>`;
+      html += `<span class="tok-punct">${escapeHtml(keyMatch[4])}</span>`;
+      content = content.slice(keyMatch[0].length);
+    } else {
+      const dash = content.match(/^(\s*)(-\s+)/);
+      if (dash) {
+        html += escapeHtml(dash[1]) + `<span class="tok-punct">${escapeHtml(dash[2])}</span>`;
+        content = content.slice(dash[0].length);
+      }
+    }
+    html += highlightYamlValue(content);
+    if (comment) html += `<span class="tok-comment">${escapeHtml(comment)}</span>`;
+    return html;
+  }).join('\n');
+}
+
+// Paint (or clear) the overlay for the open note. Only JSON/YAML are colored.
+function updateSyntaxLayer(note, showPreview) {
+  if (!syntaxLayer) return;
+  const ext = note && note.ext;
+  const lang = ext === 'json' ? 'json' : (ext === 'yaml' ? 'yaml' : null);
+  if (!lang || showPreview) {
+    syntaxLayer.hidden = true;
+    syntaxLayer.innerHTML = '';
+    markdownInput.classList.remove('is-highlighted');
+    return;
+  }
+  const source = typeof note.body === 'string' ? note.body : markdownInput.value;
+  const html = lang === 'json' ? highlightJson(source) : highlightYaml(source);
+  syntaxLayer.className = `syntax-layer lang-${lang}`;
+  // Trailing newline keeps the last line's height in sync with the textarea.
+  syntaxLayer.innerHTML = `${html}\n`;
+  syntaxLayer.hidden = false;
+  markdownInput.classList.add('is-highlighted');
+}
+
+// ---- Beautify (JSON / YAML) ----------------------------------------------
+// JSON: strict parse + 2-space re-emit (throws on invalid, surfaced as toast).
+function beautifyJsonText(text) {
+  return `${JSON.stringify(JSON.parse(text), null, 2)}\n`;
+}
+
+// YAML: safe normalization — tabs to spaces, trailing whitespace stripped,
+// blank runs collapsed, and distinct indent depths remapped to 2-space steps
+// (relative nesting preserved). Comments and values are left intact.
+function beautifyYamlText(text) {
+  const rawLines = String(text == null ? '' : text).replace(/\t/g, '  ').split('\n');
+  const depths = [];
+  rawLines.forEach((line) => {
+    if (!line.trim()) return;
+    const indent = (line.match(/^ */) || [''])[0].length;
+    if (!depths.includes(indent)) depths.push(indent);
+  });
+  depths.sort((a, b) => a - b);
+  const levelOf = new Map(depths.map((n, index) => [n, index]));
+  const staged = rawLines.map((line) => {
+    if (!line.trim()) return '';
+    const match = line.match(/^( *)([\s\S]*)$/);
+    const level = levelOf.get(match[1].length) || 0;
+    let content = match[2].replace(/\s+$/, '');
+    content = content.replace(/^-\s+/, '- ').replace(/^-$/, '-');
+    // Collapse 2+ spaces after a simple "key:" into one (never touches URLs or
+    // values with no gap, and unquoted leading spaces are insignificant).
+    content = content.replace(/^((?:-\s+)?[A-Za-z_][\w .-]*?):[ \t]{2,}(\S)/, '$1: $2');
+    return '  '.repeat(level) + content;
+  });
+  const cleaned = [];
+  staged.forEach((line) => {
+    if (!line) {
+      if (cleaned.length && cleaned[cleaned.length - 1] !== '') cleaned.push('');
+      return;
+    }
+    cleaned.push(line);
+  });
+  while (cleaned.length && cleaned[cleaned.length - 1] === '') cleaned.pop();
+  return `${cleaned.join('\n')}\n`;
+}
+
+// Apply the formatter to the open note (button is visible for json/yaml only).
+function applyBeautify() {
+  const note = activeEditorNote();
+  if (!note || note.deleted || note.archived) return;
+  if (note.ext !== 'json' && note.ext !== 'yaml') return;
+  const source = typeof markdownInput.value === 'string' && markdownInput.value ? markdownInput.value : (note.body || '');
+  let formatted;
+  try {
+    formatted = note.ext === 'json' ? beautifyJsonText(source) : beautifyYamlText(source);
+  } catch (error) {
+    showToast(note.ext === 'json' ? 'Invalid JSON — fix the syntax first' : 'Could not format this YAML');
+    return;
+  }
+  if (formatted === source) { showToast('Already tidy'); return; }
+  note.body = formatted;
+  markdownInput.value = formatted;
+  renderPreview(note);
+  updateMeta(note);
+  setSaveLabel('Saving...', 'green');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 200);
+  showToast(`${note.ext === 'json' ? 'JSON' : 'YAML'} beautified`);
+}
+
 // Swap the writing area between Markdown source and rendered preview; non-Markdown notes never preview.
 function renderPreview(note) {
-  const bottomHint = document.querySelector('.editor-bottom span:first-child');
+  const bottomHint = document.querySelector('.editor-bottom-fixed span:first-child');
   const isMd = note.ext === 'md';
   const plainLabel = note.ext === 'txt' ? 'Plain text' : (EXT_LABELS[note.ext] || 'MD');
   const showPreview = isMd && writeMode === 'preview';
@@ -3019,17 +3513,21 @@ function renderPreview(note) {
   markdownInput.hidden = showPreview;
   preview.hidden = !showPreview;
   if (modeLabel) modeLabel.textContent = isMd ? (showPreview ? 'Preview' : 'Write') : plainLabel;
-  if (idleHint) idleHint.textContent = isMd ? 'Markdown source · live preview after 10s idle' : `${plainLabel} file — no preview`;
+  // Preview toggle is for standard Markdown notes only (recipes/to-dos and
+  // every other file type have no preview).
+  const showLivePreview = isMd && !note.template;
   if (modeToggle) {
-    modeToggle.hidden = !isMd;
+    modeToggle.hidden = !showLivePreview;
     modeToggle.textContent = showPreview ? 'Write' : 'Preview';
   }
-  if (bottomHint) bottomHint.textContent = isMd ? 'Markdown · auto-preview after 10s idle' : `${plainLabel} file (.${note.ext})`;
+  if (bottomHint) bottomHint.textContent = isMd ? 'Markdown' : plainLabel;
   if (typeBadge) typeBadge.textContent = EXT_LABELS[note.ext] || 'MD';
-  if (editorToolbar) editorToolbar.classList.toggle('is-plain', !isMd);
-  // Recipe notes get no formatting toolbar at all.
-  if (editorToolbar) editorToolbar.hidden = Boolean(note && note.template === 'recipe');
+  if (beautifyBtn) beautifyBtn.hidden = !(note.ext === 'json' || note.ext === 'yaml');
+  // Formatting toolbar returns only for notes carrying the "md" tag.
+  const mdTagged = Array.isArray(note.tags) && note.tags.some((tag) => String(tag).toLowerCase() === 'md');
+  if (editorToolbar) editorToolbar.hidden = !mdTagged;
   if (!showPreview) autogrow();
+  updateSyntaxLayer(note, showPreview);
 }
 
 // ---- Note cover pictures ------------------------------------------------
@@ -3308,8 +3806,10 @@ function setWriteMode(mode, { focus = false } = {}) {
   if (mode === 'edit') {
     resetIdleTimer();
     if (focus) {
-      markdownInput.focus();
-      markdownInput.setSelectionRange(markdownInput.value.length, markdownInput.value.length);
+      // Focus without jumping the caret to the end: setSelectionRange(end)
+      // used to scroll the whole editor to the bottom on every Write click.
+      try { markdownInput.focus({ preventScroll: true }); }
+      catch (error) { markdownInput.focus(); }
     }
   }
 }
@@ -3645,29 +4145,19 @@ function renderNoteList() {
   const visible = visibleNotes();
   const searching = searchQuery.trim() !== '';
   // Grouping follows the active folder namespace: custom-section paths when one
-  // of those is selected, otherwise each note's first filing (unfiled notes
-  // render as plain rows without a folder header).
+  // of those is selected, otherwise each note's first filing. The
+  // folder-required invariant guarantees every note has a filing.
   const groupKeyOfNote = (note) => {
     if (activeCustom) return customNoteFolder(note, activeCustom.section);
     return firstFilingOf(note);
   };
   const groups = new Map();
-  const unfiledNotes = [];
   visible.forEach((note) => {
     const folder = groupKeyOfNote(note);
-    if (folder == null) { unfiledNotes.push(note); return; }
+    if (folder == null) return;
     if (!groups.has(folder)) groups.set(folder, []);
     groups.get(folder).push(note);
   });
-  // One bare note row (same markup as folder-grouped rows, minus the folder).
-  // Glyphs come from noteGlyphFor (recipe pot, to-do checkbox).
-  const renderBareNoteRow = (note) => `
-        <button class="tree-file${note.id === currentId ? ' selected' : ''}" data-note-id="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}">
-          <span class="tree-file-icon tree-file-icon-${note.ext}">${icon(noteGlyphFor(note))}</span>
-          <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
-          ${activeView === 'bin' ? `<span class="bin-meta">${binRemainingText(note)}</span>` : ''}
-          ${note.favorite && activeView !== 'bin' ? `<span class="mini-star">${icon('star')}</span>` : ''}
-        </button>`;
   // Newest-first ordering (item 7): folders sort by their newest note, so a
   // freshly created note always lands on top of the list.
   const orderOf = new Map();
@@ -3738,7 +4228,7 @@ function renderNoteList() {
       <div class="tree-folder-row">
         <button class="tree-folder" data-folder="${escapeHtml(folder)}" aria-expanded="${isCollapsed ? 'false' : 'true'}" title="${escapeHtml(folder)}${activeView === 'bin' ? '' : ' — double-click to rename'}">
           <span class="tree-chevron">${icon('chevron-right')}</span>
-          <span class="tree-folder-icon">${icon('folder')}</span>
+          <span class="tree-folder-icon">${icon(folderIconForDepth(folderDepth(folder)))}</span>
           <span class="tree-folder-name">${escapeHtml(folderLeaf(folder))}</span>
           <span class="tree-count">${subtreeCount(node)}</span>
         </button>
@@ -3795,14 +4285,11 @@ function renderNoteList() {
       });
       if (sectionGroups.size) parts.push(renderSectionShell('custom', section.id, section.name, sectionGroups));
     });
-    // Notes without a folder filing stay visible as plain rows.
-    if (!activeCustom) {
-      const unfiled = visible.filter((note) => isUnfiled(note));
-      if (unfiled.length) parts.push(unfiled.map(renderBareNoteRow).join(''));
-    }
+    // Folder-required invariant: unfiled notes cannot exist (enforced at
+    // every entry path), so no plain rows outside sections are rendered.
     noteList.innerHTML = parts.join('');
   } else {
-    noteList.innerHTML = renderFolderGroups(groups) + unfiledNotes.map(renderBareNoteRow).join('');
+    noteList.innerHTML = renderFolderGroups(groups);
   }
   const inBin = activeView === 'bin';
   listEmpty.hidden = visible.length !== 0;
@@ -3829,25 +4316,18 @@ function renderNoteList() {
   updateBinUI();
   updateVaultUI();
   updateBreadcrumbs();
+  updateFoldToggle();
   noteList.querySelectorAll('[data-note-id]').forEach((item) => item.addEventListener('click', () => selectNote(item.dataset.noteId)));
   enableNoteDragDrop();
-  noteList.querySelectorAll('[data-folder]').forEach((item) => item.addEventListener('click', (event) => {
+  noteList.querySelectorAll('[data-folder]').forEach((item) => item.addEventListener('click', () => {
+    // Expanded workspace: clicking a folder just opens/closes its contents in
+    // place. It never "zooms into" the folder (that lives in the workspace
+    // strip when collapsed), so the full list stays put.
     const folder = item.dataset.folder;
-    const toggleCollapse = () => {
-      if (collapsedFolders.has(folder)) collapsedFolders.delete(folder);
-      else collapsedFolders.add(folder);
-      persistCollapsedFolders();
-      renderNoteList();
-    };
-    // Chevron collapses; the rest of the header marks the folder so + New
-    // Note files into it. Bin and Vault keep collapse-only (never navigate away).
-    if (activeView === 'bin' || activeView === 'vault' || event.target.closest('.tree-chevron')) {
-      toggleCollapse();
-      return;
-    }
-    const target = resolveListFolderTarget(item);
-    if (!target) { toggleCollapse(); return; }
-    selectCustomFolder(target.section, target.path);
+    if (collapsedFolders.has(folder)) collapsedFolders.delete(folder);
+    else collapsedFolders.add(folder);
+    persistCollapsedFolders();
+    renderNoteList();
   }));
   noteList.querySelectorAll('[data-folder-rename]').forEach((item) => item.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -3996,7 +4476,7 @@ function openNoteContextMenu(noteId, x, y) {
   menu.querySelectorAll('[data-menu-action]').forEach((btn) => {
     const actionName = btn.dataset.menuAction;
     if (isDeleted) btn.hidden = !(actionName === 'restore' || actionName === 'delete');
-    else if (isArchived) btn.hidden = !(actionName === 'open' || actionName === 'unarchive' || actionName === 'download' || actionName === 'delete');
+    else if (isArchived) btn.hidden = !(actionName === 'open' || actionName === 'unarchive' || actionName === 'download' || actionName === 'tags' || actionName === 'delete');
     else btn.hidden = (actionName === 'restore' || actionName === 'unarchive');
   });
   const archiveLabel = document.getElementById('context-archive-label');
@@ -4085,7 +4565,7 @@ function clearEditor() {
   // Drop rendered preview HTML too: it may hold vault content, which must not
   // linger in the DOM past lock/logout (separation both ways).
   preview.innerHTML = '';
-  if (editorToolbar) editorToolbar.hidden = false;
+  if (editorToolbar) editorToolbar.hidden = true;
   renderRecipeHero(null);
   renderCover(null);
   // Nothing marked: hide the editor and let the notes panel take the room.
@@ -4126,6 +4606,7 @@ function restoreNoteById(id) {
   // Custom folders inside live sections are re-adopted by the sync below.
   reviveSectionsForNote(note);
   syncCustomSections();
+  ensureNoteFiled(note);
   persistNotes();
   renderCustomSections();
   try { renderCustomSections(); } catch (error) {}
@@ -4209,16 +4690,179 @@ function emptyBin() {
 // Dispatch a validated context-menu action; unknown ids/actions are ignored.
 function handleNoteMenuAction(action, id) {
   if (!id || typeof id !== 'string' || !isValidNoteId(id)) return;
-  if (typeof action !== 'string' || !/^(open|favorite|important|restore|duplicate|download|archive|unarchive|delete)$/.test(action)) return;
+  if (typeof action !== 'string' || !/^(open|favorite|important|tags|restore|duplicate|download|archive|unarchive|delete)$/.test(action)) return;
   if (action === 'open') selectNote(id);
   else if (action === 'favorite') toggleFavoriteById(id);
   else if (action === 'important') toggleImportantById(id);
+  else if (action === 'tags') openTagEditor(id);
   else if (action === 'restore') restoreNoteById(id);
   else if (action === 'archive') archiveNoteById(id);
   else if (action === 'unarchive') unarchiveNoteById(id);
   else if (action === 'duplicate') duplicateNoteById(id);
   else if (action === 'download') downloadNoteById(id);
   else if (action === 'delete') requestDeleteNoteById(id);
+}
+
+// ---- Tags -----------------------------------------------------------------
+// Tags live on each note as freeform strings (<=40 chars, max 20 per note).
+// The account-wide view (settings) aggregates them for rename/delete.
+
+function normalizeTagName(name) {
+  return String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, 40);
+}
+function noteTagIndex(note, name) {
+  const wanted = normalizeTagName(name).toLowerCase();
+  return (Array.isArray(note.tags) ? note.tags : []).findIndex((tag) => String(tag).toLowerCase() === wanted);
+}
+function addNoteTag(note, name) {
+  const tag = normalizeTagName(name);
+  if (!note || !tag) return false;
+  if (!Array.isArray(note.tags)) note.tags = [];
+  if (noteTagIndex(note, tag) !== -1) return false;
+  if (note.tags.length >= 20) { showToast('Tag limit reached (20 per note)'); return false; }
+  note.tags.push(tag);
+  return true;
+}
+function removeNoteTag(note, name) {
+  const at = noteTagIndex(note, name);
+  if (at === -1) return false;
+  note.tags.splice(at, 1);
+  return true;
+}
+// Aggregate every tag with a note count (case-insensitive; first casing wins).
+function allTagCounts() {
+  const map = new Map();
+  notes.forEach((note) => {
+    (Array.isArray(note.tags) ? note.tags : []).forEach((tag) => {
+      const key = String(tag).toLowerCase();
+      const entry = map.get(key);
+      if (entry) entry.count += 1;
+      else map.set(key, { label: String(tag), count: 1 });
+    });
+  });
+  return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+function refreshTagsAcrossUi() {
+  persistNotes();
+  renderNoteList();
+  const open = activeEditorNote();
+  if (open) updateMeta(open);
+}
+// Rename a tag on every note (folds duplicates created by the rename).
+function renameTagEverywhere(oldName, rawNew) {
+  const from = normalizeTagName(oldName).toLowerCase();
+  const to = normalizeTagName(rawNew);
+  if (!from || !to || from === to.toLowerCase()) return false;
+  let changed = 0;
+  notes.forEach((note) => {
+    if (!Array.isArray(note.tags)) return;
+    const next = [];
+    let touched = false;
+    note.tags.forEach((tag) => {
+      if (String(tag).toLowerCase() === from) { touched = true; next.push(to); return; }
+      next.push(tag);
+    });
+    if (!touched) return;
+    changed += 1;
+    const seen = new Set();
+    note.tags = next.filter((tag) => {
+      const key = String(tag).toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  });
+  if (changed) refreshTagsAcrossUi();
+  return changed > 0;
+}
+// Delete a tag from every note.
+function deleteTagEverywhere(name) {
+  const key = normalizeTagName(name).toLowerCase();
+  let changed = 0;
+  notes.forEach((note) => {
+    if (!Array.isArray(note.tags)) return;
+    const before = note.tags.length;
+    note.tags = note.tags.filter((tag) => String(tag).toLowerCase() !== key);
+    if (note.tags.length !== before) changed += 1;
+  });
+  if (changed) refreshTagsAcrossUi();
+  return changed > 0;
+}
+
+// ---- Note tag editor (opened from the note right-click menu) --------------
+let tagEditorNoteId = null;
+
+function openTagEditor(id) {
+  const note = notes.find((item) => item.id === id);
+  const overlay = document.getElementById('tag-editor-overlay');
+  if (!note || !overlay) return;
+  tagEditorNoteId = id;
+  const desc = document.getElementById('tag-editor-desc');
+  if (desc) desc.textContent = `Add or remove tags for “${note.title || 'Untitled note'}”.`;
+  renderTagEditor();
+  overlay.hidden = false;
+  const input = document.getElementById('tag-editor-input');
+  if (input) { input.value = ''; try { input.focus(); } catch (error) {} }
+}
+function closeTagEditor() {
+  const overlay = document.getElementById('tag-editor-overlay');
+  if (overlay) overlay.hidden = true;
+  tagEditorNoteId = null;
+}
+function renderTagEditor() {
+  const note = notes.find((item) => item.id === tagEditorNoteId);
+  if (!note) return;
+  const current = document.getElementById('tag-editor-current');
+  const suggest = document.getElementById('tag-editor-suggest');
+  const tags = Array.isArray(note.tags) ? note.tags : [];
+  if (current) {
+    current.innerHTML = tags.length
+      ? tags.map((tag) => `<button type="button" class="tag-chip" data-tag-remove="${escapeHtml(tag)}" title="Remove ${escapeHtml(tag)}">${escapeHtml(tag)}<span aria-hidden="true">×</span></button>`).join('')
+      : '<span class="tag-editor-empty">No tags yet — add one below.</span>';
+  }
+  if (suggest) {
+    const have = new Set(tags.map((tag) => String(tag).toLowerCase()));
+    const others = allTagCounts().filter((entry) => !have.has(entry.label.toLowerCase()));
+    suggest.innerHTML = others.length
+      ? `<span class="tag-editor-suggest-label">Existing tags</span>${others.map((entry) => `<button type="button" class="tag-chip is-add" data-tag-add="${escapeHtml(entry.label)}">${escapeHtml(entry.label)}</button>`).join('')}`
+      : '';
+  }
+}
+function tagEditorAdd(raw) {
+  const note = notes.find((item) => item.id === tagEditorNoteId);
+  if (!note) return;
+  if (addNoteTag(note, raw)) {
+    refreshTagsAcrossUi();
+    renderTagEditor();
+    renderSettingsTags();
+  }
+}
+function tagEditorRemove(name) {
+  const note = notes.find((item) => item.id === tagEditorNoteId);
+  if (!note) return;
+  if (removeNoteTag(note, name)) {
+    refreshTagsAcrossUi();
+    renderTagEditor();
+    renderSettingsTags();
+  }
+}
+
+// ---- Settings → Customization → Tags --------------------------------------
+function renderSettingsTags() {
+  const box = document.getElementById('settings-tag-list');
+  if (!box) return;
+  const tags = allTagCounts();
+  if (!tags.length) {
+    box.innerHTML = '<p class="modal-desc">No tags yet. Right-click a note and choose “Tags…” to add some.</p>';
+    return;
+  }
+  box.innerHTML = tags.map((entry) => `
+    <div class="settings-tag-row" data-settings-tag="${escapeHtml(entry.label)}">
+      <span class="tag">${escapeHtml(entry.label)}</span>
+      <span class="settings-tag-count">${entry.count} note${entry.count === 1 ? '' : 's'}</span>
+      <button type="button" class="settings-tag-action" data-tag-rename="${escapeHtml(entry.label)}" title="Rename tag" aria-label="Rename ${escapeHtml(entry.label)}">${icon('pencil')}</button>
+      <button type="button" class="settings-tag-action danger" data-tag-delete="${escapeHtml(entry.label)}" title="Delete tag" aria-label="Delete ${escapeHtml(entry.label)}">${icon('trash')}</button>
+    </div>`).join('');
 }
 
 // Keyboard-accessible delete: mirrors the context-menu rules exactly —
@@ -4236,6 +4880,7 @@ function requestDeleteNoteById(id) {
 let pendingDeleteId = null;
 let pendingDeleteMode = 'soft';
 let pendingDeleteSection = null; // custom section id for folder/section deletes
+let pendingDeleteTag = null; // tag name for tag deletes
 
 // Fill the shared in-app confirm popup (eyebrow/title/name/message). Name is set via textContent — never HTML.
 function setDeleteDialog({ eyebrow, title, name, message }) {
@@ -4338,6 +4983,7 @@ function confirmPendingDelete() {
   else if (mode === 'vault-folder') deleteVaultFolder(id);
   else if (mode === 'custom-section') deleteCustomSection(id);
   else if (mode === 'custom-folder') deleteCustomFolder(sectionId, id);
+  else if (mode === 'tag') { if (pendingDeleteTag) { deleteTagEverywhere(pendingDeleteTag); renderSettingsTags(); } }
   else deleteNoteById(id);
 }
 
@@ -4733,7 +5379,7 @@ function renderVaultList() {
           <div class="tree-folder-row">
             <button class="tree-folder" data-vault-folder="${escapeHtml(folder)}" aria-expanded="${isCollapsed ? 'false' : 'true'}" title="${escapeHtml(folder)}">
               <span class="tree-chevron">${icon('chevron-right')}</span>
-              <span class="tree-folder-icon">${icon('folder')}</span>
+          <span class="tree-folder-icon">${icon(folderIconForDepth(folderDepth(folder)))}</span>
               <span class="tree-folder-name vault-folder-name">${escapeHtml(folder)}</span>
               <span class="tree-count">${files.length}</span>
             </button>
@@ -5117,7 +5763,7 @@ const NOTE_TEMPLATES = {
   recipe: {
     label: 'Recipe',
     titleBase: 'New Recipe',
-    tags: [],
+    tags: ['recipe'],
     body: () => ``
   },
   todo: {
@@ -5256,6 +5902,30 @@ function onNewNoteClick() {
   openTemplatePicker();
 }
 
+// Order picker entries like the expanded workspace note list: a parent is
+// followed immediately by all its children (recursively), matching the
+// strip's tree grouping. Roots/orphans keep the section's list order.
+function orderFoldersLikeWorkspace(folders) {
+  const childrenOf = new Map();
+  const roots = [];
+  folders.forEach((name) => {
+    const parent = folderParent(name);
+    if (parent && folders.includes(parent)) {
+      if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+      childrenOf.get(parent).push(name);
+    } else roots.push(name);
+  });
+  const out = [];
+  const emit = (name) => {
+    if (out.includes(name)) return;
+    out.push(name);
+    (childrenOf.get(name) || []).forEach(emit);
+  };
+  roots.forEach(emit);
+  folders.forEach(emit);
+  return out;
+}
+
 // Fill + show the folder chooser. With (ns, sectionId) it lists one section
 // (bare-section flow, resumes at the template picker). With no args it lists
 // every folder in the workspace (folder-required gate, resumes a parked
@@ -5269,11 +5939,11 @@ function openFolderPicker(ns, sectionId) {
   if (ns === 'custom') {
     const section = customSections.find((entry) => entry.id === sectionId);
     if (!section || !section.folders.length) return false;
-    entries = section.folders.map((folder) => ({ ns, section: sectionId, folder, context: section.name }));
+    entries = orderFoldersLikeWorkspace(section.folders).map((folder) => ({ ns, section: sectionId, folder, context: section.name }));
     heading = `Where in ${entries[0].context} should this note land?`;
   } else {
     (customSections || []).forEach((section) => {
-      (section.folders || []).forEach((folder) => {
+      orderFoldersLikeWorkspace(section.folders || []).forEach((folder) => {
         entries.push({ ns: 'custom', section: section.id, folder, context: section.name });
       });
     });
@@ -5284,9 +5954,15 @@ function openFolderPicker(ns, sectionId) {
   box.innerHTML = entries.map((entry) => {
     const leaf = folderLeaf(entry.folder);
     const sub = leaf === entry.folder ? entry.context : entry.folder;
+    // Indent icon + label text (not the button) one notch per depth level.
+    // Icons mirror the workspace strip: colored folder, nested glyph for subs.
+    const section = customSections.find((sec) => sec.id === entry.section);
+    const depth = folderDepth(entry.folder);
+    const glyphClass = `strip-folder-glyph ${section ? customFolderColor(section, entry.folder) : 'blue'}`;
+    const glyph = `<span class="${glyphClass}">${icon(folderIconForDepth(depth))}</span>`;
     return `
     <button class="template-option" data-pick-ns="${entry.ns}" data-pick-section="${escapeHtml(entry.section || '')}" data-pick-folder="${escapeHtml(entry.folder)}">
-      <span class="template-icon">${icon('folder')}</span>
+      <span class="template-icon template-icon-bare" style="margin-left:${depth * 14}px">${glyph}</span>
       <span class="theme-option-text"><strong>${escapeHtml(leaf)}</strong><span>${escapeHtml(sub)}</span></span>
     </button>`;
   }).join('');
@@ -5410,6 +6086,68 @@ document.getElementById('close-folder-pick').addEventListener('click', closeFold
 document.getElementById('folder-pick-overlay').addEventListener('click', (event) => {
   if (event.target.id === 'folder-pick-overlay') closeFolderPicker();
 });
+// Section icon picker: close button, backdrop click, and icon choice.
+document.getElementById('close-section-icon').addEventListener('click', closeSectionIconPicker);
+document.getElementById('section-icon-overlay').addEventListener('click', (event) => {
+  if (event.target.id === 'section-icon-overlay') closeSectionIconPicker();
+});
+document.getElementById('section-icon-grid').addEventListener('click', (event) => {
+  const choice = event.target.closest('[data-icon-choice]');
+  if (choice) chooseSectionIcon(choice.dataset.iconChoice);
+});
+// Note tag editor wiring.
+document.getElementById('close-tag-editor').addEventListener('click', closeTagEditor);
+document.getElementById('tag-editor-done').addEventListener('click', closeTagEditor);
+document.getElementById('tag-editor-overlay').addEventListener('click', (event) => {
+  if (event.target.id === 'tag-editor-overlay') closeTagEditor();
+});
+document.getElementById('tag-editor-current').addEventListener('click', (event) => {
+  const remove = event.target.closest('[data-tag-remove]');
+  if (remove) tagEditorRemove(remove.dataset.tagRemove);
+});
+document.getElementById('tag-editor-suggest').addEventListener('click', (event) => {
+  const add = event.target.closest('[data-tag-add]');
+  if (add) tagEditorAdd(add.dataset.tagAdd);
+});
+document.getElementById('tag-editor-add-btn').addEventListener('click', () => {
+  const input = document.getElementById('tag-editor-input');
+  if (input) { tagEditorAdd(input.value); input.value = ''; input.focus(); }
+});
+document.getElementById('tag-editor-input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ',') {
+    event.preventDefault();
+    event.stopPropagation();
+    tagEditorAdd(event.target.value);
+    event.target.value = '';
+  }
+});
+// Settings → Tags: rename / delete across all notes.
+document.getElementById('settings-tag-list').addEventListener('click', (event) => {
+  const rename = event.target.closest('[data-tag-rename]');
+  if (rename) {
+    const oldName = rename.dataset.tagRename;
+    askInput({ eyebrow: 'Rename tag', title: oldName, desc: 'Renames this tag on every note.', label: 'Tag name', password: false, placeholder: oldName, okText: 'Rename' }).then((value) => {
+      if (value == null) return;
+      if (!renameTagEverywhere(oldName, value)) showToast('Tag not changed');
+      renderSettingsTags();
+    });
+    return;
+  }
+  const del = event.target.closest('[data-tag-delete]');
+  if (del) {
+    const name = del.dataset.tagDelete;
+    pendingDeleteId = '__TAG__';
+    pendingDeleteMode = 'tag';
+    pendingDeleteTag = name;
+    setDeleteDialog({ eyebrow: 'Delete tag', title: 'Delete this tag?', name, message: '” will be removed from every note. This cannot be undone.' });
+    const overlay = document.getElementById('delete-overlay');
+    if (overlay) {
+      overlay.hidden = false;
+      const confirmBtn = document.getElementById('confirm-delete');
+      if (confirmBtn) confirmBtn.focus();
+    }
+  }
+});
 document.querySelectorAll('#template-overlay .template-option').forEach((option) => option.addEventListener('click', () => {
   const forVault = vaultTemplatePending;
   vaultTemplatePending = false;
@@ -5459,6 +6197,43 @@ document.querySelectorAll('.filter-chip').forEach((chip) => chip.addEventListene
   renderNoteList();
 }));
 
+// Expand/shrink all folder contents (button at the right end of the filter
+// row, beside "Starred"). State is inferred: any collapsible folder still
+// open -> collapse everything; otherwise expand everything. The chevron
+// points down when folders are expanded (click = collapse) and flips when
+// everything is already collapsed.
+const foldToggle = document.getElementById('toggle-folders');
+function visibleFolderPaths() {
+  const paths = new Set();
+  notes.forEach((note) => {
+    if (note.deleted || note.archived) return;
+    if (note.sections && typeof note.sections === 'object') {
+      Object.values(note.sections).forEach((folder) => {
+        if (typeof folder === 'string' && folder.trim()) paths.add(folder);
+      });
+    }
+  });
+  customSections.forEach((section) => section.folders.forEach((folder) => paths.add(folder)));
+  return [...paths];
+}
+function updateFoldToggle() {
+  if (!foldToggle) return;
+  const anyOpen = visibleFolderPaths().some((folder) => !collapsedFolders.has(folder));
+  foldToggle.classList.toggle('is-expanded', anyOpen);
+  const label = anyOpen ? 'Collapse all folders' : 'Expand all folders';
+  foldToggle.setAttribute('aria-label', label);
+  foldToggle.setAttribute('title', label);
+}
+if (foldToggle) {
+  foldToggle.addEventListener('click', () => {
+    const anyOpen = visibleFolderPaths().some((folder) => !collapsedFolders.has(folder));
+    if (anyOpen) visibleFolderPaths().forEach((folder) => collapsedFolders.add(folder));
+    else visibleFolderPaths().forEach((folder) => collapsedFolders.delete(folder));
+    persistCollapsedFolders();
+    renderNoteList();
+  });
+}
+
 // Display name of a sidebar section.
 // Display folder of a note inside one custom section (null when unassigned).
 function customNoteFolder(note, sectionId) {
@@ -5497,7 +6272,17 @@ function selectCustomSection(sectionId) {
 
 function selectCustomFolder(sectionId, folder) {
   const section = customSections.find((entry) => entry.id === sectionId);
-  if (!section || !section.folders.includes(folder)) return;
+  if (!section || !folder) return;
+  // Intermediate parents are not always stored in the folder list (a note can
+  // be filed three levels deep without its ancestors listed). Accept any
+  // ancestor of a known folder, registering it so it stays navigable.
+  if (!section.folders.includes(folder)) {
+    const isAncestor = section.folders.some((entry) => isFolderOrSub(entry, folder));
+    if (!isAncestor) return;
+    section.folders.push(folder);
+    persistCustomSections();
+    renderCustomSections();
+  }
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   activeView = 'notes';
@@ -5586,22 +6371,24 @@ document.getElementById('favorite-button').addEventListener('click', () => {
   showToast(note.favorite ? 'Added to favorites' : 'Removed from favorites');
 });
 
-document.getElementById('share-button').addEventListener('click', async () => {
-  const note = activeEditorNote();
-  if (!note) return;
-  if (note.deleted || note.archived) { showToast('Only active notes can be shared'); return; }
-  const title = typeof note.title === 'string' ? note.title.slice(0, 200) : 'Untitled note';
-  const body = typeof note.body === 'string' ? note.body.slice(0, 5000) : '';
-  const shareText = `${title}\n\n${body}`;
-  if (!window.isSecureContext && !navigator.share) { showToast('Sharing needs a secure context'); return; }
-  try {
-    if (navigator.share) await navigator.share({ title: note.title, text: shareText });
-    else await navigator.clipboard.writeText(shareText);
-    showToast(navigator.share ? 'Share sheet opened' : 'Note copied to clipboard');
-  } catch (error) {
-    if (error.name !== 'AbortError') showToast('Could not share this note');
-  }
-});
+// Strip Markdown syntax from a body, keeping the raw text: headings lose #,
+// emphasis loses markers, lists keep a dash, blockquotes lose >, code fences
+// lose backticks, images become their alt text, links become label (url).
+function stripMarkdown(text) {
+  let out = String(text || '');
+  out = out.replace(/```[\s\S]*?```/g, (m) => m.replace(/^```[a-zA-Z0-9_-]*\n?/, '').replace(/```$/gm, ''));
+  out = out.replace(/`([^`]*)`/g, '$1');
+  out = out.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');
+  out = out.replace(/\[([^\]]*)\]\(([^)]*)\)/g, '$1 ($2)');
+  out = out.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+  out = out.replace(/^\s{0,3}>\s?/gm, '');
+  out = out.replace(/^(\s*)([-*+]|\d+\.)\s+/gm, '$1');
+  out = out.replace(/^(\s*)-\s+\[[ xX]\]\s+/gm, '$1');
+  out = out.replace(/(\*\*\*|\*\*|__|\*|_|~~)([^*_~]+)\1/g, '$2');
+  out = out.replace(/^\s{0,3}([-*_])\s*\1\s*\1[\s\S]*$/gm, '');
+  out = out.replace(/\|/g, ' ');
+  return out;
+}
 
 if (typeBadge) typeBadge.addEventListener('click', () => {
   const note = activeEditorNote();
@@ -5609,7 +6396,18 @@ if (typeBadge) typeBadge.addEventListener('click', () => {
   if (note.deleted) { showToast('Restore this note to edit it'); return; }
   if (note.archived) { showToast('Unarchive this note to edit it'); return; }
   const order = ['md', 'txt', 'json', 'yaml'];
-  note.ext = order[(order.indexOf(note.ext) + 1) % order.length];
+  const next = order[(order.indexOf(note.ext) + 1) % order.length];
+  // Markdown never survives a switch to plain text: the syntax markers are
+  // stripped from this note's body (raw text kept).
+  if (next === 'txt' && note.ext === 'md' && typeof note.body === 'string' && note.body) {
+    const stripped = stripMarkdown(note.body);
+    if (stripped !== note.body) {
+      note.body = stripped;
+      markdownInput.value = note.body;
+      showToast('Markdown formatting removed');
+    }
+  }
+  note.ext = next;
   writeMode = 'edit';
   clearTimeout(idleTimer);
   renderPreview(note);
@@ -5619,6 +6417,8 @@ if (typeBadge) typeBadge.addEventListener('click', () => {
   const typeNames = { md: 'Markdown (.md)', txt: 'plain text (.txt)', json: 'JSON (.json)', yaml: 'YAML (.yaml)' };
   showToast(`Switched to ${typeNames[note.ext]}`);
 });
+
+if (beautifyBtn) beautifyBtn.addEventListener('click', applyBeautify);
 
 const importNotesBtn = document.getElementById('import-notes');
 if (importNotesBtn) importNotesBtn.addEventListener('click', () => importInput.click());
@@ -5692,6 +6492,7 @@ importInput.addEventListener('change', async (event) => {
         sections: (activeCustom && activeCustom.folder) ? { [activeCustom.section]: activeCustom.folder } : {},
         body: (text || (ext === 'md' ? `# ${base}\n` : '')).slice(0, 500000)
       };
+      ensureNoteFiled(note);
       notes.unshift(note);
       if (imported === 0) currentId = note.id;
       imported += 1;
@@ -5709,9 +6510,6 @@ importInput.addEventListener('change', async (event) => {
   }
 });
 
-document.getElementById('more-button').addEventListener('click', () => {
-  downloadNoteObject(activeEditorNote());
-});
 document.getElementById('focus-editor').addEventListener('click', () => {
   document.querySelector('.editor-panel').classList.toggle('focus-mode');
   showToast(document.querySelector('.editor-panel').classList.contains('focus-mode') ? 'Focus mode on' : 'Focus mode off');
@@ -5720,6 +6518,57 @@ document.getElementById('open-sidebar').addEventListener('click', () => document
 document.getElementById('close-sidebar').addEventListener('click', () => document.getElementById('sidebar').classList.remove('open'));
 
 // ---- App shell wiring: search, filters, nav, import/export, sidebar collapse ----
+
+// Panel resizing: drag the handle between the expanded notes panel and the
+// editor to change the panel width. Bounds: 220px–560px (min keeps search +
+// chips usable; max keeps the editor readable). The collapsed strip (55px)
+// is never affected — the handle is hidden in strip/focus modes. Width is
+// persisted per device and re-applied on boot.
+const PANEL_MIN_WIDTH = 220;
+const PANEL_MAX_WIDTH = 560;
+const panelResizer = document.getElementById('panel-resizer');
+const notesPanel = document.querySelector('.notes-panel');
+function applyPanelWidth(px) {
+  if (!notesPanel) return;
+  const width = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(px)));
+  notesPanel.style.flexBasis = `${width}px`;
+  try { localStorage.setItem('notely-panel-width', String(width)); } catch (error) {}
+}
+function restorePanelWidth() {
+  if (!notesPanel) return;
+  try {
+    const saved = parseInt(localStorage.getItem('notely-panel-width') || '', 10);
+    if (Number.isFinite(saved)) notesPanel.style.flexBasis = `${Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, saved))}px`;
+  } catch (error) {}
+}
+if (panelResizer && notesPanel) {
+  let dragging = false;
+  panelResizer.addEventListener('pointerdown', (event) => {
+    if (document.querySelector('.app-shell.workspace-collapsed')) return;
+    dragging = true;
+    panelResizer.classList.add('is-dragging');
+    document.body.classList.add('is-panel-resizing');
+    panelResizer.setPointerCapture(event.pointerId);
+  });
+  panelResizer.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    applyPanelWidth(event.clientX - notesPanel.getBoundingClientRect().left);
+  });
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    panelResizer.classList.remove('is-dragging');
+    document.body.classList.remove('is-panel-resizing');
+  };
+  panelResizer.addEventListener('pointerup', endDrag);
+  panelResizer.addEventListener('pointercancel', endDrag);
+  // Double-click resets to the default width (325px) and clears the override.
+  panelResizer.addEventListener('dblclick', () => {
+    notesPanel.style.flexBasis = '';
+    try { localStorage.removeItem('notely-panel-width'); } catch (error) {}
+  });
+  restorePanelWidth();
+}
 
 const sidebar = document.getElementById('sidebar');
 const sidebarToggle = document.getElementById('toggle-sidebar');
@@ -5732,6 +6581,8 @@ function setSidebarCollapsed(collapsed) {
     sidebarToggle.setAttribute('aria-label', label);
     sidebarToggle.setAttribute('title', label);
   }
+  // Folder dots migrate between slide menu and workspace strip on toggle.
+  try { renderStripItems(); } catch (error) {}
 }
 // Whether the sidebar starts collapsed on load (Settings → Side Menu; device-local).
 function startCollapsedPref() {
@@ -5757,6 +6608,11 @@ function setWorkspaceCollapsed(collapsed) {
     workspaceToggle.setAttribute('aria-label', label);
     workspaceToggle.setAttribute('title', label);
   }
+  // The strip is only measurable while collapsed: repaint it and re-evaluate
+  // the scroll arrows after the layout switches.
+  try { renderStripItems(); } catch (error) {}
+  try { requestAnimationFrame(updateStripScrollButton); } catch (error) {}
+  try { setTimeout(updateStripScrollButton, 60); } catch (error) {}
 }
 if (workspaceToggle) {
   restoreWorkspaceCollapsed();
@@ -6052,6 +6908,22 @@ async function e2eeUpgradeKdf(username, password) {
   e2ee.iterations = 0;
 }
 
+// Password reveal: any .password-eye button toggles its target input between
+// masked and visible. Delegated so it works for every field that opts in.
+document.addEventListener('click', (event) => {
+  const eye = event.target.closest && event.target.closest('.password-eye');
+  if (!eye) return;
+  event.preventDefault();
+  const input = document.getElementById(eye.dataset.eye || '');
+  if (!input) return;
+  const reveal = input.type === 'password';
+  input.type = reveal ? 'text' : 'password';
+  eye.setAttribute('aria-pressed', reveal ? 'true' : 'false');
+  eye.setAttribute('aria-label', reveal ? 'Hide password' : 'Show password');
+  eye.innerHTML = icon(reveal ? 'eye-off' : 'eye');
+  try { input.focus({ preventScroll: true }); } catch (error) { input.focus(); }
+});
+
 document.getElementById('login-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (authBusy) return;
@@ -6211,7 +7083,8 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
     await loadNotesFromServer();
     if (purgeExpiredBin()) persistNotes();
     await loadUiVault();
-    try { ensureMigratedCollectionsSection([], null); } catch (error) {}
+    // No default section/folder seeding: new accounts start with an empty
+    // sidebar. ensureMigratedCollectionsSection only runs for genuine legacy data.
     syncCustomSections();
     // First login on a v1 row (or a device that knew more than the server):
     // push the merged sidebar up so the next relog/device sees it.
@@ -6490,7 +7363,7 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
     await loadNotesFromServer();
     if (purgeExpiredBin()) persistNotes();
     await loadUiVault();
-    try { ensureMigratedCollectionsSection([], null); } catch (error) {}
+    // Same normalization as the password path: no default section seeding.
     syncCustomSections();
     if (!serverUiLoaded) {
       try { await writeUiVaultLocal(); } catch (error) {}
@@ -7320,6 +8193,7 @@ function setSettingsTab(name) {
   document.querySelectorAll('.settings-pane').forEach((pane) => {
     pane.hidden = pane.dataset.settingsPane !== name;
   });
+  if (name === 'tags') { try { renderSettingsTags(); } catch (error) {} }
 }
 document.querySelectorAll('.settings-nav-item').forEach((item) => item.addEventListener('click', () => setSettingsTab(item.dataset.settingsTab)));
 document.getElementById('start-collapsed').addEventListener('change', (event) => {
@@ -7500,6 +8374,10 @@ document.addEventListener('keydown', (event) => {
     if (templateOverlay && !templateOverlay.hidden) { closeTemplatePicker(); return; }
     const folderPickOverlay = document.getElementById('folder-pick-overlay');
     if (folderPickOverlay && !folderPickOverlay.hidden) { closeFolderPicker(); return; }
+    const sectionIconOverlay = document.getElementById('section-icon-overlay');
+    if (sectionIconOverlay && !sectionIconOverlay.hidden) { closeSectionIconPicker(); return; }
+    const tagEditorOverlay = document.getElementById('tag-editor-overlay');
+    if (tagEditorOverlay && !tagEditorOverlay.hidden) { closeTagEditor(); return; }
     if (settingsOverlay && !settingsOverlay.hidden) { closeSettings(); return; }
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {

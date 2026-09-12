@@ -43,7 +43,10 @@ import os
 import re
 import secrets
 import sqlite3
+import ssl
 import struct
+import sys
+import threading
 import time
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -53,6 +56,13 @@ from argon2.low_level import Type as Argon2Type, hash_secret_raw
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get('NOTELY_DB_PATH', os.path.join(BASE_DIR, 'notely.db'))
 KEY_PATH = os.environ.get('NOTELY_KEY_PATH', os.path.join(BASE_DIR, 'notely.key'))
+# Automatic backups: SQLite online-backup copies of DB_PATH, taken on a daemon
+# thread. Copies (not moves) — the DB itself is never touched. Env overrides:
+#   NOTELY_BACKUP_INTERVAL_SECONDS  cadence (0 disables backups entirely)
+#   NOTELY_BACKUP_KEEP              how many timestamped copies to retain
+BACKUP_DIR = os.environ.get('NOTELY_BACKUP_DIR', os.path.join(BASE_DIR, 'dbbackup'))
+BACKUP_INTERVAL_SECONDS = int(os.environ.get('NOTELY_BACKUP_INTERVAL_SECONDS', '3600'))
+BACKUP_KEEP = max(1, int(os.environ.get('NOTELY_BACKUP_KEEP', '48')))
 # __Host- prefix enforces Secure + Path=/ + no Domain (cookie tossing defense).
 # Transition: server still accepts legacy 'notely_session' for 7 days (see
 # get_session_token_from_request), but always sets the __Host- cookie.
@@ -336,61 +346,125 @@ def dummy_kdf_salt_for(username):
     return hmac.new(DB_KEY, b'kdf-dummy-v1:' + name, hashlib.sha256).digest()[:16]
 
 
-# Small weak-password screen for E2EE verifiers. The server never sees the
-# password, but it knows saltAuth+authHash, so it can test a tiny dictionary
-# (top leaked passwords + trivial strings). Each check is one Argon2id (64MiB,
-# ~0.3-1s); only ~8 candidates to keep registration <5s. This catches
-# "123"/"password"/"qwerty" style bypasses of client-side policy without
-# learning anything about strong passwords. Not a substitute for OPAQUE.
+# Weak-password screen for E2EE verifiers. The server never sees the password,
+# only Argon2id(password, saltAuth), so it cannot measure length or character
+# classes — the client policy check remains the primary gate. What the server
+# CAN do is reject verifiers that match a known-weak password, plus identity-
+# derived guesses. Every candidate costs one pinned Argon2id (~0.1 s at 64 MiB),
+# so the search is bounded by NOTELY_WEAK_SCREEN_MAX (default 40) to keep
+# registration responsive. This is a bar-raiser against scripted policy bypass,
+# NOT a complete policy: a determined API client can still register a weak
+# password the list misses. The definitive fix is OPAQUE/PAKE (server never
+# sees the password yet can still bind policy at the protocol level).
+WEAK_SCREEN_MAX = max(1, int(os.environ.get('NOTELY_WEAK_SCREEN_MAX', '48')))
+IDENTITY_SCREEN_MAX = max(0, int(os.environ.get('NOTELY_IDENTITY_SCREEN_MAX', '12')))
+
+# Top leaked / trivial passwords, including the common capitalised variants a
+# naive lowercase-only dictionary misses and obvious repeated-character
+# patterns. Order matters: entries past WEAK_SCREEN_MAX after identity guesses
+# are not tested, so the highest-value candidates come first.
 _WEAK_PASSWORD_CANDIDATES = (
-    '123', 'password', '123456', '123456789', 'qwerty', '12345678',
-    'password123', 'admin123',
+    '123456', '123456789', '12345678', '12345', '1234', '123',
+    '111111', '000000', '123123',
+    'password', 'password1', 'Password1!', 'password123', 'Password123!',
+    'passw0rd', 'pass1234', 'abc123',
+    'admin', 'admin123', 'Admin123!', 'administrator', 'root', 'login',
+    'qwerty', 'qwerty123', 'qwertyuiopas', 'qazwsx', '1q2w3e4r', 'asdfghjkl',
+    'aaaaaaaaaaaa',
 )
 
+# Suffixes appended to identity bases ("reizu" -> "reizu123", "reizu!" ...).
+_IDENTITY_SUFFIXES = ('', '1', '12', '123', '1234', '12345', '123456',
+                      '!', '@', '1!', '!1', '2024', '2025', '2026')
 
-def is_weak_verifier(auth_hash_bytes, salt_auth_bytes):
-    """True if authHash matches a trivial password under the given salt.
 
-    Constant-time over candidates (no early exit) so timing does not reveal
-    whether/which weak password matched.
+def identity_password_candidates(*values):
+    """Bounded weak-password guesses derived from an account's own identifiers.
+
+    Catches the very common "username123" / "firstname!" class of weak
+    passwords cheaply. Output is capped by IDENTITY_SCREEN_MAX so the total
+    Argon2id budget stays predictable.
+    """
+    if IDENTITY_SCREEN_MAX <= 0:
+        return []
+    bases = []
+    seen_base = set()
+
+    def add_base(text):
+        text = str(text or '').strip().lower()
+        if 3 <= len(text) <= 32 and text not in seen_base:
+            seen_base.add(text)
+            bases.append(text)
+
+    for value in values:
+        text = str(value or '').strip().lower()
+        if not text:
+            continue
+        add_base(text)
+        if '@' in text:
+            add_base(text.split('@', 1)[0])
+        for part in re.split(r'[^a-z0-9]+', text):
+            add_base(part)
+
+    out = []
+    for base in bases:
+        for suffix in _IDENTITY_SUFFIXES:
+            out.append(base + suffix)
+            if len(out) >= IDENTITY_SCREEN_MAX:
+                return out
+    return out
+
+
+def bounded_weak_candidates(extra_candidates=()):
+    """Merge identity guesses (first) with the curated list, deduped and capped."""
+    merged = []
+    seen = set()
+    for candidate in list(extra_candidates) + list(_WEAK_PASSWORD_CANDIDATES):
+        text = str(candidate)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        merged.append(text)
+        if len(merged) >= WEAK_SCREEN_MAX:
+            break
+    return merged
+
+
+def verifier_matches_any(target_bytes, salt_auth_bytes, candidates):
+    """Constant-time-over-candidates Argon2id match against a bounded list.
+
+    No early exit, so timing does not reveal whether/which weak password
+    matched. Returns False on any malformed input.
     """
     try:
-        matched = False
-        for candidate in _WEAK_PASSWORD_CANDIDATES:
-            try:
-                cand = argon2id_raw(candidate, bytes(salt_auth_bytes))
-            except Exception:
-                continue
-            if hmac.compare_digest(cand, bytes(auth_hash_bytes)):
-                matched = True
-        return matched
+        target = bytes(target_bytes)
+        salt = bytes(salt_auth_bytes)
     except Exception:
         return False
-    return False
+    matched = False
+    for candidate in candidates:
+        try:
+            if hmac.compare_digest(argon2id_raw(candidate, salt), target):
+                matched = True
+        except Exception:
+            continue
+    return matched
 
 
-# Tiny weak-password screen for VAULT verifiers. The vault password never
-# reaches the server (E2EE), so the full length/complexity policy is enforced
-# only client-side. This mirrors is_weak_verifier for the vault's verifier to
-# catch trivially weak but policy-compliant vault passwords (e.g. "Vault123!")
-# that a scripted registration could otherwise smuggle past the client check.
-# Same ~8 Argon2id candidates, constant-time, ~0.3-1s — imperceptible one-time
-# cost on vault setup.
+def is_weak_verifier(auth_hash_bytes, salt_auth_bytes, extra_candidates=()):
+    """True if authHash matches a weak/identity-derived password under its salt."""
+    return verifier_matches_any(auth_hash_bytes, salt_auth_bytes,
+                                bounded_weak_candidates(extra_candidates))
+
+
+# Same screen for VAULT verifiers. The vault password never reaches the server
+# (E2EE), so the full length/complexity policy is enforced only client-side;
+# this catches trivially weak vault passwords a scripted client could smuggle
+# past the browser check.
 def is_weak_vault_verifier(verifier_bytes, salt_auth_bytes):
     """True if the vault verifier matches a trivial password under its salt."""
-    try:
-        matched = False
-        for candidate in _WEAK_PASSWORD_CANDIDATES:
-            try:
-                cand = argon2id_raw(candidate, bytes(salt_auth_bytes))
-            except Exception:
-                continue
-            if hmac.compare_digest(cand, bytes(verifier_bytes)):
-                matched = True
-        return matched
-    except Exception:
-        return False
-    return False
+    return verifier_matches_any(verifier_bytes, salt_auth_bytes,
+                                bounded_weak_candidates())
 
 
 # --- MFA TOTP (RFC 6238, 6-digit, SHA1, 30s) + pepper (OPAQUE interim) ---
@@ -431,10 +505,17 @@ def pepper_auth_hash(auth_hash_bytes):
 
 
 def verify_auth_hash(candidate_bytes, row):
-    """Dual-verify (non-breaking pepper migration).
+    """Dual-verify during the pepper migration.
 
-    Returns ('peppered'|'raw'|None). New rows have auth_hash2; old rows only
-    auth_hash. Caller upgrades raw->peppered on success.
+    Returns ('peppered'|'raw'|None). A row with a valid peppered hash
+    (auth_hash2) is verified only through the pepper; a row still holding only
+    the legacy raw hash returns 'raw' and is upgraded by the caller on success.
+
+    NOTE: this is a consistency/defence-in-depth hardening, not a complete fix
+    for the DB-leak replay case. Because the server peppers the client-supplied
+    candidate, a leaked raw 'auth_hash' can still authenticate through the
+    peppered branch. Fully closing M-4 requires dropping/encrypting the stored
+    raw verifier (a storage migration), which is intentionally NOT done here.
     """
     try:
         cand = bytes(candidate_bytes)
@@ -450,6 +531,9 @@ def verify_auth_hash(candidate_bytes, row):
                 return 'peppered'
         except Exception:
             pass
+        # Peppered row: do not fall back to the stored raw verifier (e.g. after
+        # a key change the stale peppered hash must fail closed, not downgrade).
+        return None
     try:
         stored = bytes(row['auth_hash']) if row['auth_hash'] else None
     except Exception:
@@ -503,12 +587,19 @@ def b64url_decode(value):
         raise ValueError('Invalid base64url.')
 
 
-def cbor_decode_minimal(data, pos=0):
+# WebAuthn CBOR (attestationObject/COSE keys) is shallow; a hard cap stops a
+# crafted deeply-nested object from exhausting the C stack (RecursionError).
+CBOR_MAX_DEPTH = 16
+
+
+def cbor_decode_minimal(data, pos=0, depth=0):
     """Minimal definite-length CBOR decoder (maps/arrays/bstr/tstr/uint/negint/tags).
 
     Returns (value, next_pos). Byte strings -> bytes, text -> str, arrays ->
     list, maps -> dict, tags -> inner value (tag ignored). Enough for
     attestationObject and COSE keys (no indefinite lengths/floats)."""
+    if depth > CBOR_MAX_DEPTH:
+        raise ValueError('CBOR nested too deeply.')
     if pos >= len(data):
         raise ValueError('CBOR truncated.')
     initial = data[pos]
@@ -545,20 +636,20 @@ def cbor_decode_minimal(data, pos=0):
         n, pos = read_length(info, pos)
         out = []
         for _ in range(n):
-            val, pos = cbor_decode_minimal(data, pos)
+            val, pos = cbor_decode_minimal(data, pos, depth + 1)
             out.append(val)
         return out, pos
     if major == 5:
         n, pos = read_length(info, pos)
         out = {}
         for _ in range(n):
-            key, pos = cbor_decode_minimal(data, pos)
-            val, pos = cbor_decode_minimal(data, pos)
+            key, pos = cbor_decode_minimal(data, pos, depth + 1)
+            val, pos = cbor_decode_minimal(data, pos, depth + 1)
             out[key] = val
         return out, pos
     if major == 6:
         _tag, pos = read_length(info, pos)
-        return cbor_decode_minimal(data, pos)
+        return cbor_decode_minimal(data, pos, depth + 1)
     if major == 7:
         if info == 20:
             return False, pos
@@ -811,6 +902,75 @@ def init_db():
         pass
 
 
+# --- Automatic DB backups (SQLite online-backup on a daemon thread) ---
+
+# Copy DB_PATH into BACKUP_DIR as notely-<timestamp>.db via sqlite3's backup
+# API, which takes a consistent snapshot even while the server is writing.
+# Uses a temp name + atomic rename so a crash mid-copy never leaves a truncated
+# file looking like a valid backup. Returns the final path, or None on failure.
+def take_db_backup():
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime())
+    final_path = os.path.join(BACKUP_DIR, f'notely-{stamp}.db')
+    tmp_path = final_path + '.tmp'
+    try:
+        src = sqlite3.connect(DB_PATH)
+        dst = sqlite3.connect(tmp_path)
+        try:
+            with dst:
+                src.backup(dst)
+        finally:
+            src.close()
+            dst.close()
+        os.replace(tmp_path, final_path)
+    except Exception as error:
+        print(f'NOTELY BACKUP: failed: {error}', flush=True)
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return None
+    try:
+        os.chmod(final_path, 0o600)
+    except OSError:
+        pass
+    _prune_old_backups()
+    return final_path
+
+
+# Keep only the newest BACKUP_KEEP timestamped copies; never touch .tmp files
+# (take_db_backup cleans its own) or anything else a user may keep there.
+def _prune_old_backups():
+    try:
+        names = sorted(n for n in os.listdir(BACKUP_DIR)
+                       if n.startswith('notely-') and n.endswith('.db'))
+    except OSError:
+        return
+    for name in names[:-BACKUP_KEEP] if len(names) > BACKUP_KEEP else []:
+        try:
+            os.remove(os.path.join(BACKUP_DIR, name))
+        except OSError:
+            pass
+
+
+# Daemon loop: sleep first (a fresh start needs no backup of an unchanged DB),
+# then take one snapshot per interval and exit cleanly with the interpreter.
+# NOTELY_BACKUP_INTERVAL_SECONDS=0 disables the thread entirely.
+def _backup_loop():
+    while True:
+        time.sleep(max(1, BACKUP_INTERVAL_SECONDS))
+        take_db_backup()
+
+
+def start_backup_thread():
+    if BACKUP_INTERVAL_SECONDS <= 0:
+        print('NOTELY BACKUP: disabled (NOTELY_BACKUP_INTERVAL_SECONDS=0).', flush=True)
+        return
+    threading.Thread(target=_backup_loop, name='notely-backup', daemon=True).start()
+    print(f'NOTELY BACKUP: every {BACKUP_INTERVAL_SECONDS}s, keeping {BACKUP_KEEP} '
+          f'copies in {BACKUP_DIR}', flush=True)
+
+
 # --- DB-backed rate limiting (shared across processes/restarts) ---
 
 def _prune_rate_hits(conn, now, max_window):
@@ -886,41 +1046,43 @@ def ip_user_bucket(endpoint, username):
 # is present, and must carry JSON (or no body for logout). Blocks classic
 # cross-site form/fetch POSTs; SameSite=Lax remains as second layer.
 def csrf_check_failed():
-    """True when the request looks cross-site (reject with 403)."""
+    """True when the request looks cross-site (reject with 403).
+
+    Compares the FULL origin: scheme, host and effective port. Comparing only
+    the hostname let any other service on the same host (different port) or
+    scheme forge state-changing requests.
+    """
     try:
         if request.method not in ('POST', 'PUT', 'DELETE', 'PATCH'):
             return False
         if not request.path.startswith('/api/'):
             return False
+        from urllib.parse import urlparse
+
+        def _parts(url):
+            try:
+                parsed = urlparse(url)
+                scheme = (parsed.scheme or '').lower()
+                host = (parsed.hostname or '').lower()
+                port = parsed.port
+                if port is None:
+                    port = 443 if scheme == 'https' else (80 if scheme == 'http' else None)
+                return scheme, host, port
+            except Exception:
+                return '', '', None
+
+        req_scheme, req_host, req_port = _parts(f'{request.scheme}://{request.host}')
+        if not req_host:
+            return True
         origin = request.headers.get('Origin')
         referer = request.headers.get('Referer')
-        host = request.host or ''
-        # Normalise: compare host (with port) case-insensitively.
-        def _host_of(url):
-            try:
-                from urllib.parse import urlparse
-                return (urlparse(url).hostname or '').lower(), urlparse(url).port
-            except Exception:
-                return '', None
         if origin:
-            oh, oport = _host_of(origin)
-            try:
-                rh = (request.host.split(':')[0] or '').lower()
-                rport = request.host.split(':')[1] if ':' in request.host else None
-                # Allow same host regardless of scheme/port mismatch behind proxies?
-                # Strict: hostname must match; port must match if Origin specifies one.
-                if oh != rh:
-                    return True
-            except Exception:
+            return _parts(origin) != (req_scheme, req_host, req_port)
+        if referer:
+            ref_scheme, ref_host, ref_port = _parts(referer)
+            if not ref_host:
                 return True
-        elif referer:
-            rh, _ = _host_of(referer)
-            try:
-                myhost = (request.host.split(':')[0] or '').lower()
-                if rh and rh != myhost:
-                    return True
-            except Exception:
-                return True
+            return (ref_scheme, ref_host, ref_port) != (req_scheme, req_host, req_port)
         return False
     except Exception:
         return False
@@ -1417,11 +1579,11 @@ def api_register():
         conn.close()
         return jsonify({'error': 'First and last name must be 1-40 letters (spaces, hyphens, apostrophes OK).'}), 400
     # E2EE: server never sees the password, but it can still screen the
-    # verifier against a tiny weak-password dictionary under the provided
-    # salt (see is_weak_verifier). Strong passwords learn nothing; weak ones
-    # are rejected with the same 400 as other policy failures. Client-side
-    # passwordPolicyCheck remains the primary gate.
-    if is_weak_verifier(auth_hash, salt_auth):
+    # verifier against the bounded weak-password list plus guesses derived from
+    # the account's own identifiers (see is_weak_verifier). Strong passwords
+    # learn nothing; weak ones are rejected with the same 400 as other policy
+    # failures. Client-side passwordPolicyCheck remains the primary gate.
+    if is_weak_verifier(auth_hash, salt_auth, identity_password_candidates(username, email, first, last)):
         rate_hit(conn, ip_bucket('register'))
         conn.close()
         return jsonify({'error': 'Password too weak: choose a longer, less common password.'}), 400
@@ -1443,17 +1605,31 @@ def api_register():
         auth_hash2 = pepper_auth_hash(bytes(auth_hash))
     except Exception:
         auth_hash2 = None
-    conn.execute(
-        'INSERT INTO users (username, pwd_salt, pwd_hash, iterations, enc_profile, created_at,'
-        ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params, auth_hash2)'
-        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        (username, b'', b'', 0,
-         encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': 'Personal space', 'email': email}),
-         int(time.time()), salt_auth, salt_enc, auth_hash, wrap_iv + wrap_ct,
-         'argon2id', json.dumps(ARGON2_DESCRIPTOR), auth_hash2),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            'INSERT INTO users (username, pwd_salt, pwd_hash, iterations, enc_profile, created_at,'
+            ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params, auth_hash2)'
+            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (username, b'', b'', 0,
+             encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': 'Personal space', 'email': email}),
+             int(time.time()), salt_auth, salt_enc, auth_hash, wrap_iv + wrap_ct,
+             'argon2id', json.dumps(ARGON2_DESCRIPTOR), auth_hash2),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # Concurrent registration of the same username: answer exactly like the
+        # pre-check path (uniform 202) instead of a 500, and never leak the
+        # connection/lock.
+        conn.close()
+        return jsonify({
+            'ok': True,
+            'message': 'If the username is available, the account was created. You can now log in.',
+        }), 202
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
     return jsonify({
         'ok': True,
         'message': 'If the username is available, the account was created. You can now log in.',
@@ -1497,7 +1673,7 @@ def api_change_password():
             rate_hit(conn, 'pwchange:' + user['username'].lower())
             conn.close()
             return jsonify({'error': 'Current password is incorrect.'}), 401
-        if is_weak_verifier(new_auth, new_salt_auth):
+        if is_weak_verifier(new_auth, new_salt_auth, identity_password_candidates(user['username'])):
             conn.close()
             return jsonify({'error': 'New password too weak: choose a longer, less common password.'}), 400
         try:
@@ -2678,25 +2854,42 @@ def api_recovery_email_start():
 
 
 def trusted_app_origin():
-    """Hardened origin for links minted server-side (CWE-74 fix).
+    """Configured origin for links minted server-side (CWE-640 fix).
 
     The Host header is client-supplied, so deriving emailed links from it
-    invites password-reset poisoning. When NOTELY_PUBLIC_ORIGIN is set
-    (e.g. 'https://notes.example.com'), it always wins. Otherwise fall
-    back to request.host for local/dev use only."""
+    invites password-reset poisoning. NOTELY_PUBLIC_ORIGIN must be set to the
+    app's real public origin (e.g. 'https://notes.example.com'); there is no
+    Host fallback. Returns None when unset so callers fail closed rather than
+    mail a link to an attacker-controlled host."""
     trusted = os.environ.get('NOTELY_PUBLIC_ORIGIN')
     if trusted:
-        return trusted.rstrip('/')
-    host = (request.host or '').split(':')[0]
-    scheme = request.scheme or 'http'
-    return f'{scheme}://{request.host}'
+        candidate = trusted.rstrip('/')
+        # Must be an absolute http(s) origin; reject anything malformed.
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(candidate)
+            if parsed.scheme in ('http', 'https') and parsed.hostname:
+                return candidate
+        except Exception:
+            pass
+        print('NOTELY: NOTELY_PUBLIC_ORIGIN is set but invalid; reset links disabled.', flush=True)
+        return None
+    print('NOTELY: NOTELY_PUBLIC_ORIGIN is not set; password-reset emails are disabled '
+          '(set it to the public https origin to enable them).', flush=True)
+    return None
 
 
 def send_recovery_email(to_email, username, token):
     """Send the reset link via SMTP env config. Dev fallback: log the link so
-    the flow stays testable without a mail server (never returned to clients)."""
+    the flow stays testable without a mail server (never returned to clients).
+
+    Fails closed when no trusted origin is configured: the link (and therefore
+    the token) is never minted from the client-supplied Host header."""
+    origin = trusted_app_origin()
+    if not origin:
+        return
     host = (request.host or '').split(':')[0]
-    link = trusted_app_origin() + f'/?emailToken={token}'
+    link = origin + f'/?emailToken={token}'
     smtp_host = os.environ.get('NOTELY_SMTP_HOST')
     if not smtp_host:
         print(f'NOTELY DEV: password-reset link for {username!r}: {link}', flush=True)
@@ -2752,7 +2945,7 @@ def api_recovery_email_complete():
     except (ValueError, AttributeError):
         conn.close()
         return jsonify({'error': 'Invalid request.'}), 400
-    if is_weak_verifier(new_auth, new_salt_auth):
+    if is_weak_verifier(new_auth, new_salt_auth, identity_password_candidates(username)):
         conn.close()
         return jsonify({'error': 'New password too weak.'}), 400
     user = conn.execute('SELECT username FROM users WHERE username = ?', (username,)).fetchone()
@@ -2941,7 +3134,7 @@ def api_recovery_account_reset():
     if new_kdf != 'argon2id' or not valid_argon2_params(new_params):
         conn.close()
         return jsonify({'error': 'Invalid request.'}), 400
-    if is_weak_verifier(new_auth, new_salt_auth):
+    if is_weak_verifier(new_auth, new_salt_auth, identity_password_candidates(username)):
         conn.close()
         return jsonify({'error': 'New password too weak.'}), 400
     user = conn.execute('SELECT username FROM users WHERE username = ?', (username,)).fetchone()
@@ -2996,8 +3189,35 @@ def api_logout():
     return response
 
 
+def build_tls_context(cert_path, key_path):
+    """Hardened TLS server context (M-1).
+
+    Werkzeug's default ssl_context still negotiated TLS 1.0/1.1 and anonymous
+    (unauthenticated) cipher suites. This pins TLS >= 1.2, permits only AEAD
+    suites with forward secrecy (AES-GCM / ChaCha20-Poly1305), and disables
+    compression and anonymous/NULL/export/RC4/3DES/MD5. TLS 1.3 suites are not
+    affected by set_ciphers and are secure by default."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        context.options |= ssl.OP_NO_COMPRESSION
+        context.options |= ssl.OP_CIPHER_SERVER_PREFERENCE
+    except Exception:
+        pass
+    try:
+        context.set_ciphers(
+            'ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:'
+            '!aNULL:!eNULL:!EXPORT:!DES:!RC4:!3DES:!MD5:!PSK:!SRP'
+        )
+    except ssl.SSLError:
+        pass
+    context.load_cert_chain(cert_path, key_path)
+    return context
+
+
 if __name__ == '__main__':
     init_db()
+    start_backup_thread()
     # Hide Werkzeug version banner (info-disclosure fix). Must run before app.run.
     try:
         import werkzeug.serving
@@ -3005,7 +3225,21 @@ if __name__ == '__main__':
         werkzeug.serving.WSGIRequestHandler.sys_version = ''
     except Exception:
         pass
-    port = int(os.environ.get('PORT', '5000'))
+    port = int(os.environ.get('PORT', '5001'))
+    # HTTPS is mandatory: the app relies on Web Crypto and __Host- session
+    # cookies, both of which need a secure context. There is no plain-HTTP
+    # mode — bind all interfaces by default so the LAN can reach it, and
+    # require a cert/key (env override, else certs/notely.{crt,key}).
+    bind_host = os.environ.get('NOTELY_BIND_HOST', '0.0.0.0')
+    tls_cert = os.environ.get('NOTELY_TLS_CERT') or os.path.join(BASE_DIR, 'certs', 'notely.crt')
+    tls_key = os.environ.get('NOTELY_TLS_KEY') or os.path.join(BASE_DIR, 'certs', 'notely.key')
+    if not os.path.exists(tls_cert) or not os.path.exists(tls_key):
+        sys.exit(
+            'NOTELY: HTTPS is required. Provide NOTELY_TLS_CERT and NOTELY_TLS_KEY, '
+            f'or place a cert/key at {tls_cert} and {tls_key}.'
+        )
+    print(f'NOTELY: HTTPS enabled ({tls_cert}).', flush=True)
     print('NOTELY: production use requires HTTPS reverse proxy + NOTELY_COOKIE_SECURE=1 '
           '(default Secure ON) + gunicorn (Werkzeug dev server is single-process).', flush=True)
-    app.run(host='127.0.0.1', port=port, threaded=True)
+    app.run(host=bind_host, port=port, threaded=True,
+            ssl_context=build_tls_context(tls_cert, tls_key))
