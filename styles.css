@@ -1385,6 +1385,7 @@ html:not([data-theme="light"]) .context-item.danger, html:not([data-theme="light
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
 .modal-head h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.03em; }
 .modal-head .icon-button { color: var(--ink-muted); }
+.modal-head-actions { display: flex; align-items: center; gap: 8px; }
 .modal-desc { margin: 0 0 16px; color: var(--ink-muted); font-size: 12px; line-height: 1.55; }
 .theme-options { display: flex; flex-direction: column; gap: 8px; }
 .theme-swatches { display: flex; gap: 0; }

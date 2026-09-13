@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev64') {
+  if (build !== 'dev65') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -931,6 +931,21 @@ const UI_VAULT_KEY = 'notely-ui-vault';
 
 // Locked-boot defaults: folder names stay unreadable until the vault unlocks.
 let collapsedFolders = new Set();
+// User-created tags that may not be attached to any note yet (Settings → Tags).
+let knownTags = [];
+function cleanTagList(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const out = [];
+  value.slice(0, 500).forEach((raw) => {
+    const tag = normalizeTagName(raw);
+    const key = tag.toLowerCase();
+    if (!tag || seen.has(key)) return;
+    seen.add(key);
+    out.push(tag);
+  });
+  return out;
+}
 // Sidebar sections: [{ id, name, folders: [...] }]. Notes point at
 // them via note.sections = { sectionId: folderPath }. All sections (including
 // the migrated former Collections) share the same implementation/value.
@@ -967,6 +982,7 @@ function uiSnapshot() {
     })),
     theme,
     avatar: profileAvatar || '',
+    tags: knownTags,
   };
 }
 
@@ -1009,8 +1025,12 @@ function cleanUiSnapshot(value) {
   if (typeof value.avatar === 'string' && cleanAvatarSrc(value.avatar)) {
     out.avatar = value.avatar.trim();
   }
+  if (Array.isArray(value.tags)) {
+    const tags = cleanTagList(value.tags);
+    if (tags.length) out.tags = tags;
+  }
   if (out.collapsed === null
-    && !out.customSections && !out.legacyCollections && !out.legacyCollectionsName && !out.deletedCustomSections && !out.theme && !out.avatar) return null;
+    && !out.customSections && !out.legacyCollections && !out.legacyCollectionsName && !out.deletedCustomSections && !out.theme && !out.avatar && !out.tags) return null;
   return out;
 }
 
@@ -1036,6 +1056,10 @@ function applyUiSnapshot(value) {
     adopted = true;
     try { applyProfile(); } catch (error) {}
   }
+  if (Array.isArray(clean.tags)) {
+    knownTags = cleanTagList(clean.tags);
+    adopted = true;
+  }
   return adopted;
 }
 
@@ -1053,6 +1077,7 @@ async function writeUiVaultLocal() {
     collapsed: [...collapsedFolders],
     customSections, deletedCustomSections, theme,
     avatar: profileAvatar || '',
+    tags: knownTags,
   });
   const iv = e2eeRandomBytes(12);
   const ct = await window.crypto.subtle.encrypt(
@@ -5116,6 +5141,7 @@ function removeNoteTag(note, name) {
   return true;
 }
 // Aggregate every tag with a note count (case-insensitive; first casing wins).
+// User-created tags with no notes yet are included with a count of 0.
 function allTagCounts() {
   const map = new Map();
   notes.forEach((note) => {
@@ -5125,6 +5151,10 @@ function allTagCounts() {
       if (entry) entry.count += 1;
       else map.set(key, { label: String(tag), count: 1 });
     });
+  });
+  knownTags.forEach((tag) => {
+    const key = String(tag).toLowerCase();
+    if (key && !map.has(key)) map.set(key, { label: String(tag), count: 0 });
   });
   return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
@@ -5159,7 +5189,10 @@ function renameTagEverywhere(oldName, rawNew) {
     });
   });
   if (changed) refreshTagsAcrossUi();
-  return changed > 0;
+  const hadKnown = knownTags.some((tag) => String(tag).toLowerCase() === from);
+  knownTags = cleanTagList(knownTags.map((tag) => (String(tag).toLowerCase() === from ? to : tag)));
+  if (changed || hadKnown) persistUiVault();
+  return changed > 0 || hadKnown;
 }
 // Delete a tag from every note.
 function deleteTagEverywhere(name) {
@@ -5171,8 +5204,26 @@ function deleteTagEverywhere(name) {
     note.tags = note.tags.filter((tag) => String(tag).toLowerCase() !== key);
     if (note.tags.length !== before) changed += 1;
   });
+  const hadKnown = knownTags.some((tag) => String(tag).toLowerCase() === key);
+  if (hadKnown) {
+    knownTags = knownTags.filter((tag) => String(tag).toLowerCase() !== key);
+    persistUiVault();
+  }
   if (changed) refreshTagsAcrossUi();
-  return changed > 0;
+  return changed > 0 || hadKnown;
+}
+// Create a standalone tag (available to every note's tag editor and to search).
+function addKnownTag(raw) {
+  const tag = normalizeTagName(raw);
+  if (!tag) return false;
+  if (knownTags.some((entry) => entry.toLowerCase() === tag.toLowerCase())) { showToast('Tag already exists'); return false; }
+  if (knownTags.length >= 500) { showToast('Tag limit reached (500)'); return false; }
+  knownTags.push(tag);
+  persistUiVault();
+  try { renderSettingsTags(); } catch (error) {}
+  try { renderTagEditor(); } catch (error) {}
+  showToast(`Tag “${tag}” added`);
+  return true;
 }
 
 // ---- Note tag editor (opened from the note right-click menu) --------------
@@ -8279,6 +8330,7 @@ async function enterWorkspace() {
   customSections = [];
   deletedCustomSections = [];
   activeCustom = null;
+  knownTags = [];
   await loadNotesFromServer();
   if (purgeExpiredBin()) persistNotes();
   await loadUiVault();
@@ -8400,6 +8452,7 @@ async function logout() {
   try { await apiFetch('/api/logout', { method: 'POST' }); } catch (error) {}
   cachedProfile = null;
   profileAvatar = '';
+  knownTags = [];
   e2eeLock();
   // Wipe decrypted workspace: memory, editor DOM and any legacy local copy.
   notes = [];
@@ -9941,8 +9994,20 @@ function setSettingsTab(name) {
   document.querySelectorAll('.settings-pane').forEach((pane) => {
     pane.hidden = pane.dataset.settingsPane !== name;
   });
+  const newTagBtn = document.getElementById('settings-new-tag');
+  if (newTagBtn) newTagBtn.hidden = name !== 'tags';
   if (name === 'tags') { try { renderSettingsTags(); } catch (error) {} }
 }
+const settingsNewTagBtn = document.getElementById('settings-new-tag');
+if (settingsNewTagBtn) settingsNewTagBtn.addEventListener('click', async () => {
+  const value = await askInput({
+    eyebrow: 'New tag', title: 'Create a tag',
+    desc: 'It becomes available in every note’s tag editor, and you can search it with “tag: <name>”.',
+    label: 'Tag name', password: false, placeholder: 'e.g. project', okText: 'Create tag',
+  });
+  if (value == null) return;
+  addKnownTag(value);
+});
 document.querySelectorAll('.settings-nav-item').forEach((item) => item.addEventListener('click', () => setSettingsTab(item.dataset.settingsTab)));
 document.getElementById('start-collapsed').addEventListener('change', (event) => {
   const collapsed = event.target.checked;
