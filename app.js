@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev30') {
+  if (build !== 'dev31') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -6754,22 +6754,17 @@ noteList.addEventListener('click', (event) => {
   const newBtn = event.target.closest('#shared-new');
   if (newBtn) { event.preventDefault(); collabCreate(); }
 });
-async function refreshCurrent() {
-  // Refresh the open shared note, the Shared inbox, or the current list.
-  if (collab.noteId) {
-    const id = collab.noteId;
-    closeCollabNote();
-    await openCollabNote(id);
-    return;
-  }
+function refreshCurrent() {
+  // Refresh only the workspace sidebar (the notes list / Shared inbox).
   if (activeView === 'shared') { renderSharedView(); return; }
+  if (activeView === 'vault') { renderVaultList(); return; }
   renderNoteList();
 }
 {
   const sharedNewBtn = document.getElementById('shared-new');
   if (sharedNewBtn) sharedNewBtn.addEventListener('click', collabCreate);
   const refreshBtn = document.getElementById('refresh-view');
-  if (refreshBtn) refreshBtn.addEventListener('click', () => { refreshCurrent().catch(() => {}); });
+  if (refreshBtn) refreshBtn.addEventListener('click', () => { try { refreshCurrent(); } catch (error) {} });
 }
 document.getElementById('close-collab').addEventListener('click', () => {
   closeCollabNote();
