@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev35') {
+  if (build !== 'dev36') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5338,7 +5338,7 @@ function sharedNoteRow(n, groupId) {
   const title = (n.title && n.title.trim()) ? n.title.trim() : 'Untitled note';
   // Indent the note under its folder (one notch deeper than the folder row).
   const indent = n.folder ? 8 + (folderDepth(n.folder) + 1) * 14 : 8;
-  return `<button class="tree-file shared-view-row" data-collab-open="${n.id}" data-collab-group="${groupId}" style="padding-left:${indent}px" title="${escapeHtml(title)}">
+  return `<button class="tree-file shared-view-row" draggable="true" data-collab-open="${n.id}" data-collab-group="${groupId}" style="padding-left:${indent}px" title="${escapeHtml(title)}">
       <span class="tree-file-icon">${icon('file')}</span>
       <span class="tree-file-name">${escapeHtml(title)}</span>
       <span class="tree-action" data-note-folder="${n.id}" data-note-group="${groupId}" role="button" title="Move to folder" aria-label="Move ${escapeHtml(title)} to a folder">${icon('folder-plus')}</span>
@@ -5346,25 +5346,43 @@ function sharedNoteRow(n, groupId) {
     </button>`;
 }
 
+const sharedCollapsed = new Set(); // `${groupId}::${folder}` collapsed folders
+function sharedFolderKey(groupId, folder) { return `${groupId}::${folder}`; }
+
 function sharedFolderTree(notesDec, groupId, folderList) {
   const set = new Set((folderList || []).filter(Boolean));
   notesDec.forEach((n) => { if (n.folder) set.add(n.folder); });
   const folders = new Set();
   set.forEach((f) => { let cur = f; while (cur) { folders.add(cur); cur = folderParent(cur); } });
-  const sorted = [...folders].sort((a, b) => a.localeCompare(b));
+  const childrenOf = new Map();
+  const roots = [];
+  folders.forEach((f) => {
+    const parent = folderParent(f);
+    if (parent && folders.has(parent)) {
+      if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+      childrenOf.get(parent).push(f);
+    } else roots.push(f);
+  });
+  roots.sort((a, b) => a.localeCompare(b));
+  childrenOf.forEach((arr) => arr.sort((a, b) => a.localeCompare(b)));
   const parts = [];
-  sorted.forEach((folder) => {
+  const emit = (folder) => {
     const depth = folderDepth(folder);
     const leaf = folderLeaf(folder);
-    parts.push(`<div class="shared-folder" style="padding-left:${8 + depth * 14}px">
+    const collapsed = sharedCollapsed.has(sharedFolderKey(groupId, folder));
+    parts.push(`<div class="shared-folder" draggable="true" data-shared-folder="${escapeHtml(folder)}" data-shared-group="${groupId}" style="padding-left:${8 + depth * 14}px">
+        <button type="button" class="shared-folder-toggle${collapsed ? ' is-collapsed' : ''}" data-shared-toggle="${escapeHtml(folder)}" data-shared-group="${groupId}" title="${collapsed ? 'Expand' : 'Collapse'}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(leaf)}">${icon('chevron-right')}</button>
         ${icon('folder')}<span class="shared-folder-name">${escapeHtml(leaf)}</span>
         <span class="shared-folder-actions">
           <button type="button" class="shared-folder-action" data-folder-note="${escapeHtml(folder)}" data-folder-group="${groupId}" title="New note in ${escapeHtml(leaf)}" aria-label="New note in ${escapeHtml(leaf)}">${icon('file-text')}</button>
           <button type="button" class="shared-folder-action" data-folder-sub="${escapeHtml(folder)}" data-folder-group="${groupId}" title="New subfolder in ${escapeHtml(leaf)}" aria-label="New subfolder in ${escapeHtml(leaf)}">${icon('folder-plus')}</button>
         </span>
       </div>`);
+    if (collapsed) return;
+    (childrenOf.get(folder) || []).forEach(emit);
     notesDec.filter((n) => n.folder === folder).forEach((n) => parts.push(sharedNoteRow(n, groupId)));
-  });
+  };
+  roots.forEach(emit);
   notesDec.filter((n) => !n.folder).forEach((n) => parts.push(sharedNoteRow(n, groupId)));
   return parts.join('') || '<p class="modal-desc" style="padding:2px 10px 6px">No notes yet — use + New note in this section.</p>';
 }
@@ -5483,6 +5501,42 @@ async function moveSharedNote(noteId, groupId) {
     showToast(folder ? `Moved to ${folder}` : 'Moved to the section root');
     renderSharedView();
   } catch (error) { showToast('Could not move the note'); }
+}
+
+// Drag-and-drop: move a note into a folder (no prompt).
+async function moveSharedNoteToFolder(noteId, groupId, folder) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  const entry = sharedNoteMeta.get(String(noteId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const target = folder || '';
+  if ((entry && entry.folder) === target) return;
+  await updateSharedNoteMeta(key, noteId, { title: (entry && entry.title) || '', folder: target });
+  if (String(collab.noteId) === String(noteId)) collab.folder = target;
+  renderSharedView();
+  showToast(target ? `Moved to ${target}` : 'Moved to the section root');
+}
+// Drag-and-drop: reparent a folder (with its subfolders and notes).
+async function reparentSharedFolder(groupId, folder, newParent) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const parent = newParent || '';
+  if (parent && (parent === folder || isFolderOrSub(parent, folder))) { showToast("Can't move a folder into itself"); return; }
+  const leaf = folderLeaf(folder);
+  const newPath = parent ? `${parent}${FOLDER_SEP}${leaf}` : leaf;
+  if (newPath === folder) return;
+  const prefix = `${folder}${FOLDER_SEP}`;
+  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
+  const nextFolders = existing.map((f) => (f === folder ? newPath : (f.startsWith(prefix) ? newPath + f.slice(folder.length) : f)));
+  for (const e of [...sharedNoteMeta.values()]) {
+    if (String(e.groupId) !== String(groupId) || !e.folder) continue;
+    if (e.folder === folder || e.folder.startsWith(prefix)) {
+      const nf = e.folder === folder ? newPath : newPath + e.folder.slice(folder.length);
+      await updateSharedNoteMeta(key, e.id, { title: e.title || '', folder: nf });
+    }
+  }
+  await saveGroupFolders(groupId, key, nextFolders);
+  renderSharedView();
+  showToast('Folder moved');
 }
 
 async function saveGroupFolders(groupId, key, folders) {
@@ -6857,6 +6911,14 @@ noteList.addEventListener('click', (event) => {
   if (iacc) { event.preventDefault(); acceptInvite(iacc.dataset.inviteAccept); return; }
   const idec = event.target.closest('[data-invite-decline]');
   if (idec) { event.preventDefault(); declineInvite(idec.dataset.inviteDecline); return; }
+  const stog = event.target.closest('[data-shared-toggle]');
+  if (stog) {
+    event.preventDefault(); event.stopPropagation();
+    const k = sharedFolderKey(stog.dataset.sharedGroup, stog.dataset.sharedToggle);
+    if (sharedCollapsed.has(k)) sharedCollapsed.delete(k); else sharedCollapsed.add(k);
+    renderSharedView();
+    return;
+  }
   const ndel = event.target.closest('[data-collab-note-delete]');
   if (ndel) { event.preventDefault(); event.stopPropagation(); collabDeleteNote(ndel.dataset.collabNoteDelete); return; }
   const nfol = event.target.closest('[data-note-folder]');
@@ -6918,6 +6980,57 @@ noteList.addEventListener('contextmenu', (event) => {
   window.addEventListener('resize', closeSharedContextMenu);
   noteList.addEventListener('scroll', closeSharedContextMenu, true);
 }
+// Drag-and-drop in the Shared tree: move notes into folders, reparent folders.
+function clearSharedDropTargets() {
+  noteList.querySelectorAll('.drop-target, .drop-before').forEach((el) => el.classList.remove('drop-target', 'drop-before'));
+}
+noteList.addEventListener('dragstart', (event) => {
+  if (activeView !== 'shared') return;
+  const folderRow = event.target.closest('.shared-folder');
+  const noteRow = event.target.closest('[data-collab-open]');
+  let payload = null;
+  if (folderRow && folderRow.dataset.sharedFolder != null) {
+    payload = { kind: 'folder', folder: folderRow.dataset.sharedFolder, groupId: folderRow.dataset.sharedGroup };
+  } else if (noteRow) {
+    payload = { kind: 'note', id: noteRow.dataset.collabOpen, groupId: noteRow.dataset.collabGroup };
+  }
+  if (!payload) return;
+  try { event.dataTransfer.setData('application/x-notely-shared', JSON.stringify(payload)); } catch (error) {}
+  event.dataTransfer.effectAllowed = 'move';
+});
+noteList.addEventListener('dragover', (event) => {
+  if (activeView !== 'shared') return;
+  const folderRow = event.target.closest('.shared-folder');
+  const noteRow = event.target.closest('[data-collab-open]');
+  const groupBlock = event.target.closest('.shared-group');
+  if (!folderRow && !noteRow && !groupBlock) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  clearSharedDropTargets();
+  if (folderRow) folderRow.classList.add('drop-target');
+  else if (noteRow) noteRow.classList.add('drop-before');
+  else groupBlock.classList.add('drop-target');
+});
+noteList.addEventListener('dragleave', (event) => {
+  if (!event.relatedTarget || !noteList.contains(event.relatedTarget)) clearSharedDropTargets();
+});
+noteList.addEventListener('drop', (event) => {
+  if (activeView !== 'shared') return;
+  let payload = null;
+  try { payload = JSON.parse(event.dataTransfer.getData('application/x-notely-shared') || 'null'); } catch (error) { payload = null; }
+  if (!payload || !payload.kind) return;
+  event.preventDefault();
+  const folderRow = event.target.closest('.shared-folder');
+  const noteRow = event.target.closest('[data-collab-open]');
+  let targetFolder = '';
+  if (folderRow) targetFolder = folderRow.dataset.sharedFolder || '';
+  else if (noteRow) targetFolder = (sharedNoteMeta.get(String(noteRow.dataset.collabOpen)) || {}).folder || '';
+  clearSharedDropTargets();
+  if (payload.kind === 'note') moveSharedNoteToFolder(payload.id, payload.groupId, targetFolder);
+  else if (payload.kind === 'folder') reparentSharedFolder(payload.groupId, payload.folder, targetFolder);
+});
+noteList.addEventListener('dragend', () => clearSharedDropTargets());
+
 function refreshCurrent() {
   // Refresh only the workspace sidebar (the notes list / Shared inbox).
   if (activeView === 'shared') { renderSharedView(); return; }
