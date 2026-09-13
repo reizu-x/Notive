@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev40') {
+  if (build !== 'dev41') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5373,7 +5373,7 @@ function sharedNoteRow(n, groupId) {
   const title = (n.title && n.title.trim()) ? n.title.trim() : 'Untitled note';
   // Align the note's icon under its folder's icon (folder rows carry a chevron).
   const indent = n.folder ? 8 + folderDepth(n.folder) * 14 + 23 : 8;
-  const glyph = n.template === 'recipe' ? 'cooking' : n.template === 'todo' ? 'check-square' : 'file';
+  const glyph = (n.template && NOTE_TEMPLATES[n.template] && NOTE_TEMPLATES[n.template].icon) ? NOTE_TEMPLATES[n.template].icon : 'file';
   return `<button class="tree-file shared-view-row" draggable="true" data-collab-open="${n.id}" data-collab-group="${groupId}" style="padding-left:${indent}px" title="${escapeHtml(title)}">
       <span class="tree-file-icon">${icon(glyph)}</span>
       <span class="tree-file-name">${escapeHtml(title)}</span>
@@ -6577,23 +6577,43 @@ function uniqueTitle(base) {
 const NOTE_TEMPLATES = {
   standard: {
     label: 'Standard note',
+    caption: 'Standard',
+    icon: 'file-text',
     titleBase: 'New Standard Note',
     tags: [],
     body: (title) => `# ${title}\n\nStart writing here...`
   },
   recipe: {
     label: 'Recipe',
+    caption: 'Recipe',
+    icon: 'cooking',
     titleBase: 'New Recipe',
     tags: ['recipe'],
     body: () => ``
   },
   todo: {
     label: 'To-do list',
+    caption: 'To-do',
+    icon: 'check-square',
     titleBase: 'New To-Do Note',
     tags: ['todo'],
     body: (title) => `# ${title}\n\n## Today\n\n- [ ] Most important task\n- [ ] Second task\n\n## Later\n\n- [ ] Someday task`
   }
 };
+// Single source of truth for the New-note chooser, shared by All Notes and the
+// Shared view so the two pickers are always identical.
+function renderTemplateOptions() {
+  const box = document.getElementById('template-options');
+  if (!box) return;
+  box.innerHTML = Object.keys(NOTE_TEMPLATES).map((key) => {
+    const template = NOTE_TEMPLATES[key];
+    const label = template.label || template.caption || key;
+    return `<button class="template-option template-square" data-template="${escapeHtml(key)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
+        <span class="template-icon">${icon(template.icon || 'file-text')}</span>
+        <span class="template-caption">${escapeHtml(template.caption || key)}</span>
+      </button>`;
+  }).join('');
+}
 
 // Create a note from a template (Standard/Recipe/To-Do) into the current view+collection and open it.
 function createNoteFromTemplate(templateKey) {
@@ -6688,6 +6708,7 @@ function addNote() {
 function openTemplatePicker() {
   const overlay = document.getElementById('template-overlay');
   if (!overlay) { addNote(); return; }
+  renderTemplateOptions();
   overlay.hidden = false;
   const first = overlay.querySelector('.template-option');
   if (first) first.focus();
@@ -7142,7 +7163,9 @@ document.getElementById('settings-tag-list').addEventListener('click', (event) =
     }
   }
 });
-document.querySelectorAll('#template-overlay .template-option').forEach((option) => option.addEventListener('click', () => {
+document.getElementById('template-overlay').addEventListener('click', (event) => {
+  const option = event.target.closest('#template-options .template-option[data-template]');
+  if (!option) return;
   const shared = pendingSharedTemplate;
   pendingSharedTemplate = null;
   const forVault = vaultTemplatePending;
@@ -7151,7 +7174,7 @@ document.querySelectorAll('#template-overlay .template-option').forEach((option)
   if (shared) { createSharedNoteWithTemplate(shared.groupId, shared.folder, option.dataset.template); return; }
   if (forVault) { createVaultNoteFromTemplate(option.dataset.template); return; }
   createNoteFromTemplate(option.dataset.template);
-}));
+});
 document.getElementById('close-delete').addEventListener('click', closeDeleteConfirm);
 document.getElementById('cancel-delete').addEventListener('click', closeDeleteConfirm);
 document.getElementById('confirm-delete').addEventListener('click', confirmPendingDelete);
