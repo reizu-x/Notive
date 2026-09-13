@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev26') {
+  if (build !== 'dev27') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5318,7 +5318,6 @@ async function renderSharedView() {
     </div>`;
   const box = document.getElementById('shared-view-list');
   if (!e2ee.masterKey) { if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Log in and unlock your notes first.</p>'; return; }
-  if (!(await sharingEnsureKeys())) { if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Could not unlock your sharing keys.</p>'; return; }
   let res;
   try { res = await apiFetch('/api/collab/groups'); } catch (error) { res = null; }
   if (!res || !res.ok) { if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Could not load shared sections.</p>'; return; }
@@ -5326,6 +5325,7 @@ async function renderSharedView() {
   const groups = Array.isArray(data.groups) ? data.groups : [];
   const invites = Array.isArray(data.invites) ? data.invites : [];
   const me = cachedProfile && cachedProfile.username;
+  // Invitations render first and independently of key handling.
   const invitesHtml = invites.length ? `<div class="list-section">
       <div class="list-section-head"><span class="list-section-title">Invitations</span><span class="shared-group-count">${invites.length}</span></div>
       ${invites.map((inv) => `<div class="shared-invite">
@@ -5334,8 +5334,12 @@ async function renderSharedView() {
         <button type="button" class="btn btn-secondary shared-action" data-invite-decline="${inv.id}">Decline</button>
       </div>`).join('')}
     </div>` : '';
-  if (!groups.length && !invites.length) {
-    box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">No shared sections yet. Click + New note and enter a username to start.</p>';
+  if (!groups.length) {
+    box.innerHTML = invitesHtml || '<p class="modal-desc" style="padding:6px 10px">No shared sections yet. Click + New note and enter a username to start.</p>';
+    return;
+  }
+  if (!(await sharingEnsureKeys())) {
+    box.innerHTML = invitesHtml + '<p class="modal-desc" style="padding:6px 10px">Could not unlock your sharing keys — reopen Shared to retry.</p>';
     return;
   }
   sharedGroupKeys.clear();
