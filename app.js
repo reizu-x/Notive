@@ -5081,6 +5081,8 @@ async function openCollabNote(id) {
   if (bodyEl) bodyEl.value = '';
   if (titleEl) titleEl.value = '';
   renderCollabMembers();
+  const delBtn = document.getElementById('collab-delete');
+  if (delBtn) delBtn.hidden = !(meta.owner === (cachedProfile && cachedProfile.username));
   setCollabStatus('Connecting…', false);
   if (overlay) overlay.hidden = false;
   collabConnect(id, keyRaw, Y, doc);
@@ -5358,6 +5360,7 @@ function confirmPendingDelete() {
   else if (mode === 'custom-section') deleteCustomSection(id);
   else if (mode === 'custom-folder') deleteCustomFolder(sectionId, id);
   else if (mode === 'tag') { if (pendingDeleteTag) { deleteTagEverywhere(pendingDeleteTag); renderSettingsTags(); } }
+  else if (mode === 'collab-note') { collabDelete(id); if (collab.id === Number(id) || String(collab.id) === String(id)) closeCollabNote(); }
   else deleteNoteById(id);
 }
 
@@ -6498,10 +6501,11 @@ document.getElementById('tag-editor-input').addEventListener('keydown', (event) 
 // Collaborative notes wiring.
 // Shared view wiring: rows open the live editor; + creates a new shared note.
 noteList.addEventListener('click', (event) => {
-  const open = event.target.closest('[data-collab-open]');
-  if (open) { event.preventDefault(); openCollabNote(open.dataset.collabOpen); return; }
+  // Delete must win over the row's open handler (the trash sits inside the row).
   const del = event.target.closest('[data-collab-delete]');
   if (del) { event.preventDefault(); event.stopPropagation(); collabDelete(del.dataset.collabDelete); return; }
+  const open = event.target.closest('[data-collab-open]');
+  if (open) { event.preventDefault(); openCollabNote(open.dataset.collabOpen); return; }
   const newBtn = event.target.closest('#shared-new');
   if (newBtn) { event.preventDefault(); collabCreate(); }
 });
@@ -6517,6 +6521,20 @@ document.getElementById('collab-new-members').addEventListener('keydown', (event
 });
 document.getElementById('collab-done').addEventListener('click', closeCollabNote);
 document.getElementById('collab-invite').addEventListener('click', collabInvite);
+document.getElementById('collab-delete').addEventListener('click', () => {
+  if (!collab.id) return;
+  const id = collab.id;
+  pendingDeleteId = String(id);
+  pendingDeleteMode = 'collab-note';
+  pendingDeleteTag = null;
+  setDeleteDialog({ eyebrow: 'Delete shared note', title: 'Delete this shared note?', name: `Shared note #${id}`, message: '” will be deleted for everyone. This cannot be undone.' });
+  const overlay = document.getElementById('delete-overlay');
+  if (overlay) {
+    overlay.hidden = false;
+    const confirmBtn = document.getElementById('confirm-delete');
+    if (confirmBtn) confirmBtn.focus();
+  }
+});
 document.getElementById('collab-members').addEventListener('click', (event) => {
   const remove = event.target.closest('[data-collab-remove]');
   if (remove) collabRemoveMember(remove.dataset.collabRemove);
