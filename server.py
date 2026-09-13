@@ -735,7 +735,7 @@ def parse_authenticator_data(auth_data):
 
 def cose_ec_p256_pubkey(cose_bytes):
     """Extract uncompressed 65B pubkey from COSE EC2 P-256 map. Requires alg -7."""
-    cose, pos = cbor_decode_minimal(bytes(cose_bytes), 0)
+    cose, _ = cbor_decode_minimal(bytes(cose_bytes), 0)
     if not isinstance(cose, dict):
         raise ValueError('Bad COSE key.')
     if cose.get(1) != 2 or cose.get(3) != -7 or cose.get(-1) != 1:
@@ -748,7 +748,6 @@ def cose_ec_p256_pubkey(cose_bytes):
 
 def verify_es256(uncompressed_pubkey, data, signature_der_or_raw):
     """Verify ES256. Accepts DER or raw 64B R||S signatures."""
-    from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
@@ -980,8 +979,12 @@ def init_db():
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_notes ('
         'id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, owner TEXT NOT NULL, '
-        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_state BLOB)'
+        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_state BLOB, enc_meta BLOB)'
     )
+    # enc_meta carries the note's title + folder, encrypted under the group key.
+    _ncols = {row['name'] for row in conn.execute('PRAGMA table_info(collab_notes)')}
+    if 'enc_meta' not in _ncols:
+        conn.execute('ALTER TABLE collab_notes ADD COLUMN enc_meta BLOB')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_updates ('
         'id INTEGER PRIMARY KEY AUTOINCREMENT, note_id INTEGER NOT NULL, '
@@ -1744,10 +1747,10 @@ def api_login():
         # Unencodable passwords (e.g. lone surrogates) fail closed too
         # instead of escaping as a 500.
         try:
-            dummy = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), _DUMMY_SALT, PBKDF2_ITERATIONS)
+            hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), _DUMMY_SALT, PBKDF2_ITERATIONS)
         except Exception:
-            dummy = _DUMMY_HASH
-        ok = hmac.compare_digest(dummy, _DUMMY_HASH) and False
+            pass
+        ok = False
     if not ok:
         rate_hit(conn, ip_bucket('login'))
         rate_hit(conn, user_bucket)
@@ -3189,8 +3192,9 @@ def api_group_list():
     out = []
     for g in groups:
         members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? AND accepted = 1 ORDER BY added_at', (g['id'],))]
-        notes = [{'id': r['id'], 'updatedAt': r['updated_at']} for r in conn.execute(
-            'SELECT id, updated_at FROM collab_notes WHERE group_id = ? ORDER BY id', (g['id'],))]
+        notes = [{'id': r['id'], 'updatedAt': r['updated_at'],
+                  'encMeta': base64.b64encode(bytes(r['enc_meta'])).decode('ascii') if r['enc_meta'] else ''}
+                 for r in conn.execute('SELECT id, updated_at, enc_meta FROM collab_notes WHERE group_id = ? ORDER BY id', (g['id'],))]
         out.append({'id': g['id'], 'owner': g['owner'], 'name': g['name'], 'updatedAt': g['updated_at'],
                     'members': members, 'notes': notes})
     # Pending invitations: sections shared with me that I have not accepted yet.
@@ -3328,18 +3332,52 @@ def api_group_note_create(group_id):
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    enc_meta = None
+    raw_meta = data.get('encMeta')
+    if isinstance(raw_meta, str) and raw_meta:
+        try:
+            enc_meta = base64.b64decode(raw_meta.encode('ascii'), validate=True)
+        except (ValueError, AttributeError, base64.binascii.Error):
+            return jsonify({'error': 'Invalid meta.'}), 400
+        if len(enc_meta) > 8192:
+            return jsonify({'error': 'Meta too large.'}), 413
     conn = get_db()
     if not _is_group_member(conn, group_id, user['username']):
         conn.close()
         return jsonify({'error': 'Not a member of this shared section.'}), 403
     now = int(time.time())
-    cur = conn.execute('INSERT INTO collab_notes (group_id, owner, created_at, updated_at, enc_state) VALUES (?, ?, ?, ?, NULL)',
-                       (group_id, user['username'], now, now))
+    cur = conn.execute('INSERT INTO collab_notes (group_id, owner, created_at, updated_at, enc_state, enc_meta) VALUES (?, ?, ?, ?, NULL, ?)',
+                       (group_id, user['username'], now, now, enc_meta))
     note_id = cur.lastrowid
     conn.execute('UPDATE collab_groups SET updated_at = ? WHERE id = ?', (now, group_id))
     conn.commit()
     conn.close()
     return jsonify({'ok': True, 'id': note_id})
+
+
+@app.route('/api/collab/notes/<int:note_id>/meta', methods=['POST'])
+def api_note_meta(note_id):
+    # Title + folder for a shared note, encrypted with the group key.
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        enc_meta = base64.b64decode(str(data.get('encMeta', '')).encode('ascii'), validate=True)
+    except (ValueError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid meta.'}), 400
+    if not (1 <= len(enc_meta) <= 8192):
+        return jsonify({'error': 'Meta too large.'}), 413
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    conn.execute('UPDATE collab_notes SET enc_meta = ? WHERE id = ?', (enc_meta, note_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route('/api/collab/notes/<int:note_id>', methods=['GET'])
@@ -3354,9 +3392,11 @@ def api_note_get(note_id):
         return jsonify({'error': 'Not found.'}), 404
     mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv FROM collab_members WHERE group_id = ? AND username = ?',
                         (note['group_id'], user['username'])).fetchone()
+    meta = conn.execute('SELECT enc_meta FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
     conn.close()
     return jsonify({
         'id': note_id, 'groupId': note['group_id'], 'owner': note['owner'], 'updatedAt': note['updated_at'],
+        'encMeta': base64.b64encode(bytes(meta['enc_meta'])).decode('ascii') if meta and meta['enc_meta'] else '',
         'myKey': {
             'wrappedKey': base64.b64encode(bytes(mine['wrapped_key'])).decode('ascii'),
             'ephPub': base64.b64encode(bytes(mine['eph_pub'])).decode('ascii'),
