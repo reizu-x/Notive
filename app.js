@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev53') {
+  if (build !== 'dev54') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -7827,6 +7827,7 @@ function stripMarkdown(text) {
 }
 
 if (typeBadge) typeBadge.addEventListener('click', () => {
+  if (collab.noteId) return; // shared notes are always Markdown
   const note = activeEditorNote();
   if (!note) return;
   if (note.deleted) { showToast('Restore this note to edit it'); return; }
