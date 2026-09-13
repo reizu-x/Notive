@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev68') {
+  if (build !== 'dev69') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5898,6 +5898,23 @@ function sharedFolderTree(notesDec, groupId, folderList) {
   return parts.join('') || '<p class="modal-desc" style="padding:2px 10px 6px">No notes yet — use + New note in this section.</p>';
 }
 
+// Sidebar Shared badge: number of connections (plus pending invitations).
+function setSharedNavCount(n) {
+  const el = document.getElementById('nav-shared-count');
+  if (el) el.textContent = String(Math.max(0, Number(n) || 0));
+}
+async function refreshSharedNavCount() {
+  if (!cachedProfile) { setSharedNavCount(0); return; }
+  try {
+    const res = await apiFetch('/api/collab/groups');
+    if (!res.ok) return;
+    const data = await res.json();
+    const groups = Array.isArray(data.groups) ? data.groups.length : 0;
+    const invites = Array.isArray(data.invites) ? data.invites.length : 0;
+    setSharedNavCount(groups + invites);
+  } catch (error) {}
+}
+
 async function renderSharedView() {
   updateBinUI();
   updateVaultUI();
@@ -5928,6 +5945,7 @@ async function renderSharedView() {
   const data = await res.json();
   const groups = Array.isArray(data.groups) ? data.groups : [];
   const invites = Array.isArray(data.invites) ? data.invites : [];
+  setSharedNavCount(groups.length + invites.length);
   const me = cachedProfile && cachedProfile.username;
   // Invitations render first and independently of key handling.
   const invitesHtml = invites.length ? `<div class="list-section">
@@ -8353,6 +8371,7 @@ async function enterWorkspace() {
   refreshEditorLock();
   restoreWorkspaceCollapsed();
   try { sharingEnsureKeys(); } catch (error) {}
+  try { refreshSharedNavCount(); } catch (error) {}
 }
 
 // Display name from an E2EE profile (first + last, falls back to username).
@@ -8453,6 +8472,7 @@ async function logout() {
   cachedProfile = null;
   profileAvatar = '';
   knownTags = [];
+  setSharedNavCount(0);
   e2eeLock();
   // Wipe decrypted workspace: memory, editor DOM and any legacy local copy.
   notes = [];
