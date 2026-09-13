@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev44') {
+  if (build !== 'dev45') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -358,7 +358,8 @@ read it, not even the server itself.
 - **Write** — the left pane is your editor, the right pane previews as you type.
 - **Organise** — every note can live in a folder. This workspace starts with
   two: **General** and **Personal**, inside the **Notes** section.
-- **Search** — the search bar at the top finds note titles, contents and folders instantly.
+- **Search** — the search bar finds note titles, contents and folders. To find a
+  tag, type \`tag: <name>\` (for example, \`tag: recipe\`).
 
 ## Sections and folders
 
@@ -3243,8 +3244,9 @@ function visibleNotes() {
   });
 }
 
-// Search over note titles, contents and folder names. Tags are not searchable
-// here — the sidebar searches files and folders only. Terms are AND-ed.
+// Sidebar search. Plain terms match file text (title + contents) and folder
+// names only — tags are excluded. A tag is matched solely via the explicit
+// `tag: <name>` keyword (`tag:name` also works). Terms are AND-ed.
 function noteMatchesSearch(note, query) {
   const q = String(query == null ? '' : query).trim().toLowerCase();
   if (!q) return true;
@@ -3253,8 +3255,27 @@ function noteMatchesSearch(note, query) {
   const folders = note.sections && typeof note.sections === 'object'
     ? Object.values(note.sections).filter((value) => typeof value === 'string').join(' ')
     : '';
+  const tags = (Array.isArray(note.tags) ? note.tags : []).filter((t) => typeof t === 'string').map((t) => t.toLowerCase());
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const tagTerms = [];
+  const textTerms = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token === 'tag:') {
+      const name = tokens[i + 1];
+      if (!name) return false; // a bare "tag:" matches nothing until a name is typed
+      tagTerms.push(name);
+      i += 1;
+    } else if (token.startsWith('tag:') && token.length > 4) {
+      tagTerms.push(token.slice(4));
+    } else {
+      textTerms.push(token);
+    }
+  }
+  const tagMatch = tagTerms.every((term) => tags.some((tag) => tag.includes(term)));
   const haystack = `${title} ${body} ${folders}`.toLowerCase();
-  return q.split(/\s+/).filter(Boolean).every((term) => haystack.includes(term));
+  const textMatch = textTerms.every((term) => haystack.includes(term));
+  return tagMatch && textMatch;
 }
 
 // Notes in the current view + selected folder, ignoring the search box and
