@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev46') {
+  if (build !== 'dev47') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -2588,6 +2588,13 @@ function renderTable(header, aligns, rows) {
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
+// Split a `::: recipe` block into its two columns at the first `---` rule.
+function splitRecipeColumns(lines) {
+  const at = lines.findIndex((line) => /^\s*---\s*$/.test(line));
+  if (at === -1) return [lines.join('\n'), ''];
+  return [lines.slice(0, at).join('\n'), lines.slice(at + 1).join('\n')];
+}
+
 // Line-based block renderer (headings, lists, tasks, quotes, code fences, hr) built only from escaped/sanitized pieces.
 function renderMarkdown(markdown) {
   const source = typeof markdown === 'string' ? markdown : String(markdown == null ? '' : markdown);
@@ -2619,6 +2626,19 @@ function renderMarkdown(markdown) {
     }
     if (inCode) {
       code.push(line);
+      continue;
+    }
+    // Two-column recipe block: `::: recipe` ... `:::`. The first `---` rule
+    // splits the left (Ingredients) and right (Method) columns.
+    if (/^:::\s*(recipe|columns)\s*$/i.test(line)) {
+      closeList();
+      const block = [];
+      let r = li + 1;
+      while (r < lines.length && !/^:::\s*$/.test(lines[r])) { block.push(lines[r]); r += 1; }
+      const [left, right] = splitRecipeColumns(block);
+      const renderCol = (text) => (text.trim() ? renderMarkdown(text) : '');
+      html += `<div class="recipe-cols"><div class="recipe-col">${renderCol(left)}</div><div class="recipe-col">${renderCol(right)}</div></div>`;
+      li = r;
       continue;
     }
     // GFM table: a header row immediately followed by a |---|---| delimiter row.
@@ -6743,7 +6763,17 @@ const NOTE_TEMPLATES = {
     icon: 'cooking',
     titleBase: 'New Recipe',
     tags: ['recipe'],
-    body: () => ``
+    body: () => `::: recipe
+## Ingredients
+- [ ] Ingredient one
+- [ ] Ingredient two
+
+---
+
+## Method
+1. Step one
+2. Step two
+:::`
   },
   todo: {
     label: 'To-do list',

@@ -100,6 +100,7 @@
   --divider-arrow: #b4aea5;
   --preview-ink: #514d46;
   --preview-head: #2d2c29;
+  --recipe-head: #7c2f2f;
   --preview-strong: #393732;
   --preview-em: #6f6a62;
   --code-ink: #527e6c;
@@ -231,6 +232,7 @@
   --divider-arrow: #5f594f;
   --preview-ink: #cfc9bd;
   --preview-head: #ece8e1;
+  --recipe-head: #e0a0a0;
   --preview-strong: #e6e1d7;
   --preview-em: #a39c92;
   --code-ink: #8fd8b8;
@@ -1274,6 +1276,22 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .markdown-preview th, .markdown-preview td { padding: 7px 10px; border: 1px solid var(--line); vertical-align: top; }
 .markdown-preview th { color: var(--preview-head); background: var(--code-bg); font-weight: 700; }
 .markdown-preview tbody tr:nth-child(even) { background: var(--tree-hover-bg); }
+/* Two-column recipe block (::: recipe): Ingredients left, Method right, with a
+   T-shaped divider — a rule under each column heading plus a middle stem. */
+.markdown-preview .recipe-cols { display: flex; align-items: stretch; margin: 18px 0; }
+.markdown-preview .recipe-col { flex: 1 1 0; min-width: 0; padding: 0 24px; }
+.markdown-preview .recipe-col:first-child { padding-left: 0; }
+.markdown-preview .recipe-col:last-child { padding-right: 0; }
+.markdown-preview .recipe-col + .recipe-col { border-left: 1px solid var(--line); }
+.markdown-preview .recipe-col h1,
+.markdown-preview .recipe-col h2,
+.markdown-preview .recipe-col h3 { margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line); color: var(--recipe-head); font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.markdown-preview .recipe-col ul, .markdown-preview .recipe-col ol { margin-top: 0; }
+@media (max-width: 640px) {
+  .markdown-preview .recipe-cols { flex-direction: column; }
+  .markdown-preview .recipe-col { padding: 0; }
+  .markdown-preview .recipe-col + .recipe-col { border-left: 0; border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
+}
 
 /* Fixed recipe hero (recipe-template notes only): meal photo on the left,
    editable description on the right, pinned between the meta row and the
