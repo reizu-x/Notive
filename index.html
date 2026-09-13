@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notely-build" content="dev67" />
+    <meta name="notely-build" content="dev68" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev67" />
+    <link rel="stylesheet" href="styles.css?v=dev68" />
   </head>
   <body>
     <div class="app-shell">
@@ -39,6 +39,9 @@
           <a href="#" class="nav-item active" data-view="notes" title="All Notes">
             <span class="nav-icon" data-icon="inbox"></span><span class="nav-label">All Notes</span><span class="nav-count" id="nav-all-count">12</span>
           </a>
+          <a href="#" class="nav-item" data-view="shared" title="Shared notes">
+            <span class="nav-icon" data-icon="share"></span><span class="nav-label">Shared</span>
+          </a>
           <a href="#" class="nav-item" data-view="favorites" title="Favorites">
             <span class="nav-icon" data-icon="star"></span><span class="nav-label">Favorites</span>
           </a>
@@ -50,9 +53,6 @@
           </a>
           <a href="#" class="nav-item" data-view="vault" title="Vault">
             <span class="nav-icon" data-icon="lock"></span><span class="nav-label">Vault</span>
-          </a>
-          <a href="#" class="nav-item" data-view="shared" title="Shared notes">
-            <span class="nav-icon" data-icon="share"></span><span class="nav-label">Shared</span>
           </a>
         </nav>
 
@@ -283,7 +283,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
           <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
         </div>
-        <p class="login-hint" id="build-tag">dev build dev67</p>
+        <p class="login-hint" id="build-tag">dev build dev68</p>
       </div>
       <div class="login-theme-float">
         <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
@@ -740,6 +740,6 @@
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
-    <script src="app.js?v=dev67"></script>
+    <script src="app.js?v=dev68"></script>
   </body>
 </html>
