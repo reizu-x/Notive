@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev63') {
+  if (build !== 'dev64') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5536,10 +5536,6 @@ async function openCollabNote(noteId) {
   collab.desc.observe(collabSyncDom);
   collab.assets.observe(collabAssetsChanged);
   collab.recipe.observe((event, transaction) => { if (transaction && transaction.origin === 'remote') renderRecipeBody(null); });
-  const me = cachedProfile && cachedProfile.username;
-  const displayName = collab.owner === me ? (collab.groupName || 'Shared') : collab.owner;
-  const label = document.getElementById('collab-group-label');
-  if (label) label.textContent = displayName;
   const delBtn = document.getElementById('collab-delete');
   if (delBtn) delBtn.hidden = false;
   // Bind the standard editor to the shared doc (title + Markdown body).
@@ -5559,8 +5555,8 @@ async function openCollabNote(noteId) {
   try { markdownInput.focus({ preventScroll: true }); } catch (error) {}
   renderCollabMembers();
   setCollabStatus('Connecting…', false);
-  const panel = document.getElementById('collab-panel');
-  if (panel) panel.hidden = false;
+  const collabTop = document.getElementById('collab-top');
+  if (collabTop) collabTop.hidden = false;
   const editorPanel = document.querySelector('.editor-panel');
   if (editorPanel) editorPanel.classList.add('collab-mode');
   trackTab(noteId, false, true);
@@ -5573,8 +5569,8 @@ function closeCollabNote() {
   const statusSep = document.getElementById('collab-status-sep');
   if (statusEl) statusEl.hidden = true;
   if (statusSep) statusSep.hidden = true;
-  const panel = document.getElementById('collab-panel');
-  if (panel) panel.hidden = true;
+  const collabTop = document.getElementById('collab-top');
+  if (collabTop) collabTop.hidden = true;
   const editorPanel = document.querySelector('.editor-panel');
   if (editorPanel) editorPanel.classList.remove('collab-mode');
   if (collab.es) { try { collab.es.close(); } catch (error) {} }

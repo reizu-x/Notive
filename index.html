@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notely-build" content="dev63" />
+    <meta name="notely-build" content="dev64" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev63" />
+    <link rel="stylesheet" href="styles.css?v=dev64" />
   </head>
   <body>
     <div class="app-shell">
@@ -127,24 +127,20 @@
         <header class="editor-topbar">
           <div class="breadcrumbs" id="breadcrumbs" hidden><span id="breadcrumb-trail"></span><span class="crumb-separator">/</span><strong id="breadcrumb-title">Designing a calmer inbox</strong></div>
           <div class="tab-bar" id="tab-bar" aria-label="Open notes"></div>
+          <!-- Shared note members + actions, shown in the tab row while a shared note is open -->
+          <div class="collab-top" id="collab-top" hidden>
+            <div class="collab-members" id="collab-members"></div>
+            <div class="collab-panel-actions">
+              <button class="icon-button" id="collab-invite" aria-label="Invite member" title="Invite member" data-icon="share"></button>
+              <button class="icon-button" id="collab-delete" aria-label="Delete shared note" title="Delete shared note" data-icon="trash" hidden></button>
+              <button class="icon-button" id="close-collab" aria-label="Close shared note" title="Close" data-icon="x"></button>
+            </div>
+          </div>
           <div class="editor-actions">
             <span class="save-state" hidden><span class="save-dot"></span><span id="save-label">Saved</span></span>
             <button class="icon-button" id="favorite-button" aria-label="Favorite note" data-icon="star"></button>
           </div>
         </header>
-
-        <!-- Shared note bar (the note itself edits in the standard editor below) -->
-        <div class="collab-panel" id="collab-panel" hidden>
-          <div class="collab-panel-titlewrap">
-            <p class="collab-group-label" id="collab-group-label"></p>
-          </div>
-          <div class="collab-members" id="collab-members"></div>
-          <div class="collab-panel-actions">
-            <button class="icon-button" id="collab-invite" aria-label="Invite member" title="Invite member" data-icon="share"></button>
-            <button class="icon-button" id="collab-delete" aria-label="Delete shared note" title="Delete shared note" data-icon="trash" hidden></button>
-            <button class="icon-button" id="close-collab" aria-label="Close shared note" title="Close" data-icon="x"></button>
-          </div>
-        </div>
 
         <div class="editor-scroll">
           <div class="cover-add-row">
@@ -287,7 +283,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
           <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
         </div>
-        <p class="login-hint" id="build-tag">dev build dev63</p>
+        <p class="login-hint" id="build-tag">dev build dev64</p>
       </div>
       <div class="login-theme-float">
         <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
@@ -741,6 +737,6 @@
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
-    <script src="app.js?v=dev63"></script>
+    <script src="app.js?v=dev64"></script>
   </body>
 </html>

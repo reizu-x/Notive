@@ -1018,15 +1018,13 @@ body.is-panel-resizing { cursor: col-resize; user-select: none; }
 .collab-member-remove:hover { color: #c0453e; background: var(--tree-hover-bg); }
 .collab-body { width: 100%; min-height: 52vh; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; outline: none; color: var(--ink); background: var(--input-bg); font-family: 'DM Mono', monospace; font-size: 13px; line-height: 1.7; resize: vertical; }
 .collab-body:focus { border-color: var(--search-focus-border); box-shadow: var(--search-focus-ring); }
-/* Shared note bar above the standard editor (no modal) */
-.collab-panel { display: none; }
+/* Shared note members + actions live in the tab row while a shared note is open */
+.collab-top { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; min-width: 0; max-width: 55%; }
+.collab-top[hidden] { display: none; }
+.collab-panel-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+.collab-top .collab-members { margin: 0; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
 .editor-panel.collab-mode .editor-topbar .breadcrumbs,
 .editor-panel.collab-mode .editor-topbar .editor-actions { display: none; }
-.editor-panel.collab-mode .collab-panel { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 37px 10px; border-bottom: 1px solid var(--line); }
-.collab-panel-titlewrap { flex: 1; min-width: 140px; }
-.collab-panel-titlewrap .eyebrow { margin: 0; }
-.collab-panel-actions { display: flex; align-items: center; gap: 4px; }
-.editor-panel.collab-mode .collab-members { margin: 0; }
 /* Shared view inbox rows */
 .shared-view-row .tree-file-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .shared-view-meta { color: var(--ink-muted); font-size: 10px; font-style: normal; }
