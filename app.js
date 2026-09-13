@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev37') {
+  if (build !== 'dev38') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5336,8 +5336,8 @@ const sharedNoteMeta = new Map();  // noteId -> { title, folder, groupId }
 
 function sharedNoteRow(n, groupId) {
   const title = (n.title && n.title.trim()) ? n.title.trim() : 'Untitled note';
-  // Indent the note under its folder (one notch deeper than the folder row).
-  const indent = n.folder ? 8 + (folderDepth(n.folder) + 1) * 14 : 8;
+  // Align the note's icon under its folder's icon (folder rows carry a chevron).
+  const indent = n.folder ? 8 + folderDepth(n.folder) * 14 + 23 : 8;
   return `<button class="tree-file shared-view-row" draggable="true" data-collab-open="${n.id}" data-collab-group="${groupId}" style="padding-left:${indent}px" title="${escapeHtml(title)}">
       <span class="tree-file-icon">${icon('file')}</span>
       <span class="tree-file-name">${escapeHtml(title)}</span>
