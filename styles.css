@@ -1008,6 +1008,16 @@ body.is-panel-resizing { cursor: col-resize; user-select: none; }
 .collab-member-remove:hover { color: #c0453e; background: var(--tree-hover-bg); }
 .collab-body { width: 100%; min-height: 52vh; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; outline: none; color: var(--ink); background: var(--input-bg); font-family: 'DM Mono', monospace; font-size: 13px; line-height: 1.7; resize: vertical; }
 .collab-body:focus { border-color: var(--search-focus-border); box-shadow: var(--search-focus-ring); }
+/* Inline collaborative editor (fills the editor panel; no modal) */
+.collab-panel { display: none; }
+.editor-panel.collab-mode .editor-topbar,
+.editor-panel.collab-mode .editor-scroll,
+.editor-panel.collab-mode .editor-bottom-fixed { display: none; }
+.editor-panel.collab-mode .collab-panel { display: flex; flex: 1; min-height: 0; flex-direction: column; padding: 20px 37px 14px; overflow: hidden; }
+.collab-panel-head { display: flex; align-items: flex-start; gap: 8px; }
+.collab-panel-titlewrap { flex: 1; min-width: 0; }
+.editor-panel.collab-mode .collab-body { flex: 1; min-height: 0; resize: none; }
+.editor-panel.collab-mode #collab-hint { margin: 10px 0 0; }
 /* Shared view inbox rows */
 .shared-view-row .tree-file-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .shared-view-meta { color: var(--ink-muted); font-size: 10px; font-style: normal; }

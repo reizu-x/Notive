@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev23') {
+  if (build !== 'dev24') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -572,13 +572,6 @@ async function e2eeKekFromPassword(password, saltBytes, iterations) {
     { name: 'PBKDF2', salt: saltBytes, iterations, hash: 'SHA-256' },
     base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
-// Wrap the 32-byte master key under the password KEK. Returns an {iv, data} base64 packet for the server.
-async function e2eeWrapMasterKey(password, saltEncBytes, iterations, masterKeyRaw) {
-  const kek = await e2eeKekFromPassword(password, saltEncBytes, iterations);
-  const iv = e2eeRandomBytes(12);
-  const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, masterKeyRaw);
-  return { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) };
-}
 // Unwrap the account master key with the password KEK. Throws (locked vault) on wrong password or corrupt wrap.
 async function e2eeUnwrapMasterKey(password, saltEncBytes, iterations, wrapped) {
   const kek = await e2eeKekFromPassword(password, saltEncBytes, iterations);
@@ -1028,12 +1021,6 @@ function persistUiVault() {
   }, 150);
 }
 
-// Flush a pending UI-vault write immediately (logout/unload path).
-async function flushUiVault() {
-  clearTimeout(uiVaultTimer);
-  await writeUiVaultLocal();
-}
-
 // Section icon picker set (order shown in the picker). First entry is the
 // default for sections without a chosen icon.
 const SECTION_ICONS = ['layers', 'folder', 'book', 'briefcase', 'tag', 'bookmark',
@@ -1207,10 +1194,6 @@ async function loadUiVault() {
 // Persist binned custom-section records {id, name, folders, deletedAt}.
 function persistDeletedCustomSections() {
   persistUiVault();
-}
-// True when a custom section id currently sits in Bin.
-function isCustomSectionDeleted(id) {
-  return (deletedCustomSections || []).some((entry) => entry.id === id);
 }
 // Drop section Bin records with no binned notes left (or past retention).
 function pruneDeletedCustomSections() {
@@ -2187,18 +2170,16 @@ function createSubfolder(ns, parentPath, sectionId) {
     });
     return;
   }
-  if (true) {
-    const section = customSections.find((entry) => entry.id === sectionId);
-    if (!section) return;
-    const name = uniqueCustomFolderName(sectionId, `${parentPath}${FOLDER_SEP}New folder`);
-    insertFolderAfterParent(section.folders, parentPath, name);
-    persistCustomSections();
-    renderCustomSections();
-    renderNoteList();
-    showToast('Folder added — name it');
-    startCustomFolderRename(sectionId, name);
-    return;
-  }
+  const section = customSections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  const name = uniqueCustomFolderName(sectionId, `${parentPath}${FOLDER_SEP}New folder`);
+  insertFolderAfterParent(section.folders, parentPath, name);
+  persistCustomSections();
+  renderCustomSections();
+  renderNoteList();
+  showToast('Folder added — name it');
+  startCustomFolderRename(sectionId, name);
+  return;
 }
 
 function bindFolderContextMenu() {
@@ -2632,11 +2613,6 @@ function firstFilingOf(note) {
   return null;
 }
 
-// True when a note has no folder filing in any section.
-function isUnfiled(note) {
-  if (!note || !note.sections || typeof note.sections !== 'object') return true;
-  return !Object.values(note.sections).some((value) => typeof value === 'string' && value);
-}
 
 // ---- Folder-required invariant: a note never lives outside the sections ----
 // Every entry path funnels through here. A note with no valid filing is
@@ -4391,6 +4367,7 @@ function updateMeta(note) {
 // Every note opens in PREVIEW mode (edit mode never carries over between
 // notes); clicking/focusing the preview switches that note to edit mode.
 function selectNote(id) {
+  if (collab.noteId) closeCollabNote();
   exitCoverRepos(true);
   const note = notes.find((item) => item.id === id);
   if (!note) return;
@@ -4875,7 +4852,16 @@ function renderSettingsTags() {
 // (ECIES). The server relays only ciphertext and can never read a note.
 const sharing = { privateKey: null, ready: false };
 
-async function sharingEnsureKeys() {
+let sharingKeyPromise = null;
+function sharingEnsureKeys() {
+  // Single-flight: concurrent callers must never generate two different
+  // keypairs (the published public key could stop matching the in-memory key).
+  if (sharing.ready && sharing.privateKey) return Promise.resolve(true);
+  if (sharingKeyPromise) return sharingKeyPromise;
+  sharingKeyPromise = sharingEnsureKeysOnce().finally(() => { sharingKeyPromise = null; });
+  return sharingKeyPromise;
+}
+async function sharingEnsureKeysOnce() {
   if (sharing.ready && sharing.privateKey) return true;
   if (!e2ee.masterKey) return false;
   try {
@@ -5085,14 +5071,18 @@ async function openCollabNote(noteId) {
   if (titleEl) titleEl.value = '';
   renderCollabMembers();
   setCollabStatus('Connecting…', false);
-  const overlay = document.getElementById('collab-overlay');
-  if (overlay) overlay.hidden = false;
+  const panel = document.getElementById('collab-panel');
+  if (panel) panel.hidden = false;
+  const editorPanel = document.querySelector('.editor-panel');
+  if (editorPanel) editorPanel.classList.add('collab-mode');
   collabConnect(noteId, keyRaw, Y, doc);
 }
 function closeCollabNote() {
   if (collab.reconnect) { clearTimeout(collab.reconnect); collab.reconnect = null; }
-  const overlay = document.getElementById('collab-overlay');
-  if (overlay) overlay.hidden = true;
+  const panel = document.getElementById('collab-panel');
+  if (panel) panel.hidden = true;
+  const editorPanel = document.querySelector('.editor-panel');
+  if (editorPanel) editorPanel.classList.remove('collab-mode');
   if (collab.es) { try { collab.es.close(); } catch (error) {} }
   if (collab.doc) { try { collab.doc.destroy(); } catch (error) {} }
   collab.noteId = null; collab.groupId = null; collab.doc = null; collab.title = null; collab.body = null;
@@ -6587,7 +6577,6 @@ document.getElementById('collab-new-overlay').addEventListener('click', (event) 
 document.getElementById('collab-new-members').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') { event.preventDefault(); confirmCollabNew(); }
 });
-document.getElementById('collab-done').addEventListener('click', closeCollabNote);
 document.getElementById('collab-invite').addEventListener('click', collabInvite);
 document.getElementById('collab-delete').addEventListener('click', () => {
   if (!collab.noteId) return;
@@ -6799,6 +6788,7 @@ document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('
   const view = item.dataset.view;
   if (typeof view !== 'string' || !/^(notes|favorites|archive|bin|vault|shared)$/.test(view)) return;
   if (view === 'vault' && !vault.unlocked) { openVaultModal(); return; }
+  if (collab.noteId) closeCollabNote();
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav === item));
   clearSectionSelection();
   activeView = view;
@@ -8474,7 +8464,7 @@ if (acctRecBtn) acctRecBtn.addEventListener('click', async () => {
       acctRecBtn.disabled = false;
       await refreshAcctRecStatus();
     } catch (error) {
-      try { acctRecBtn.textContent = 'Generate recovery codes'; } catch (error2) {}
+      try { acctRecBtn.textContent = 'Generate recovery codes'; } catch {}
     }
   }
 });
@@ -8798,10 +8788,6 @@ if (deviceOnlyBox) {
   };
   document.getElementById('open-settings').addEventListener('click', openSettingsDeviceOnly);
 }
-function bindSideMenuSectionToggle(id, kind) {
-  const box = document.getElementById(id);
-  if (!box) return;
-}
 // Hide the settings modal.
 function closeSettings() {
   if (!settingsOverlay) return;
@@ -8877,8 +8863,7 @@ document.addEventListener('keydown', (event) => {
     if (tagEditorOverlay && !tagEditorOverlay.hidden) { closeTagEditor(); return; }
     const collabNewOverlay = document.getElementById('collab-new-overlay');
     if (collabNewOverlay && !collabNewOverlay.hidden) { closeCollabNewDialog(); return; }
-    const collabOverlay = document.getElementById('collab-overlay');
-    if (collabOverlay && !collabOverlay.hidden) { closeCollabNote(); return; }
+    if (collab.noteId) { closeCollabNote(); return; }
     if (settingsOverlay && !settingsOverlay.hidden) { closeSettings(); return; }
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
@@ -8989,7 +8974,7 @@ async function boot() {
       setAuthTab('recover');
       openRecoverModal('token');
     }
-  } catch (error) {}
+  } catch {}
   refreshEditorLock();
   syncCustomSections();
   renderCustomSections();
