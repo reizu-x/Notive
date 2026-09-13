@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev29') {
+  if (build !== 'dev30') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -269,6 +269,7 @@ function migrateNote(note) {
   } else if ('deletedAt' in migrated) delete migrated.deletedAt;
   if (typeof migrated.favorite !== 'boolean') migrated.favorite = false;
   if (typeof migrated.date !== 'string') migrated.date = 'Now';
+  if (typeof migrated.updatedAt !== 'number' || !Number.isFinite(migrated.updatedAt)) migrated.updatedAt = null;
   // Template markers: preserved only when 'recipe' or 'todo'. The recipe
   // marker also carries an optional description (fixed hero under the meta
   // row, max 2000 chars). Anything else is dropped so the envelope stays clean.
@@ -4366,11 +4367,30 @@ function currentNote() {
 }
 
 // Refresh word count, tag chips and the favorite button for the open note.
+// Human "last edited" label from a note's timestamp (falls back to its date text).
+function relativeEditedLabel(note) {
+  const ts = note && typeof note.updatedAt === 'number' && Number.isFinite(note.updatedAt) ? note.updatedAt : null;
+  if (!ts) {
+    const fallback = note && typeof note.date === 'string' && note.date.trim() ? note.date.trim() : 'recently';
+    return `Edited ${fallback}`;
+  }
+  const diff = Math.max(0, Date.now() - ts);
+  const minute = 60000, hour = 3600000, day = 86400000;
+  if (diff < minute) return 'Edited just now';
+  if (diff < hour) return `Edited ${Math.floor(diff / minute)}m ago`;
+  if (diff < day) return `Edited ${Math.floor(diff / hour)}h ago`;
+  if (diff < 2 * day) return 'Edited yesterday';
+  if (diff < 7 * day) return `Edited ${Math.floor(diff / day)}d ago`;
+  return `Edited ${new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+}
+
 function updateMeta(note) {
   renderRecipeHero(note);
   const body = typeof note.body === 'string' ? note.body : '';
   const words = body.trim() ? body.trim().split(/\s+/).length : 0;
   wordCount.textContent = `${words} word${words === 1 ? '' : 's'}`;
+  const editedEl = document.getElementById('edited-label');
+  if (editedEl) editedEl.textContent = relativeEditedLabel(note);
   const tags = Array.isArray(note.tags) ? note.tags.filter((tag) => typeof tag === 'string').slice(0, 20) : [];
   tagList.innerHTML = tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('');
   document.getElementById('favorite-button').classList.toggle('is-favorite', Boolean(note.favorite));
@@ -4517,6 +4537,7 @@ function duplicateNoteById(id) {
     id: newNoteId(),
     title,
     date: 'Now',
+    updatedAt: Date.now(),
     favorite: false,
     archived: false,
     deleted: false,
@@ -5724,6 +5745,7 @@ function saveVaultNote() {
   note.title = (typeof titleInput.value === 'string' ? titleInput.value : '').trim().slice(0, 200) || 'Untitled note';
   note.body = typeof markdownInput.value === 'string' ? markdownInput.value.slice(0, 500000) : '';
   note.date = 'Now';
+  note.updatedAt = Date.now();
   breadcrumbTitle.textContent = note.title;
   renderPreview(note);
   updateMeta(note);
@@ -6321,6 +6343,7 @@ function saveCurrentNote() {
     note.description = descEl && typeof descEl.value === 'string' ? descEl.value.slice(0, 2000) : '';
   } else if ('description' in note) delete note.description;
   note.date = 'Now';
+  note.updatedAt = Date.now();
   breadcrumbTitle.textContent = note.title;
   renderPreview(note);
   updateMeta(note);
@@ -6426,7 +6449,7 @@ function createNoteFromTemplate(templateKey) {
     }
     return null;
   }
-  const note = { id, title, date: 'Now', tags, favorite: false, archived: false, deleted: false, ext: normalizeExt(template.ext), sections: filedSections, body: template.body(title) };
+  const note = { id, title, date: 'Now', updatedAt: Date.now(), tags, favorite: false, archived: false, deleted: false, ext: normalizeExt(template.ext), sections: filedSections, body: template.body(title) };
   if (templateKey === 'recipe' || templateKey === 'todo') note.template = templateKey;
   notes.unshift(note);
   activeFilter = 'all';
@@ -7149,6 +7172,7 @@ importInput.addEventListener('change', async (event) => {
         id: newNoteId(),
         title: uniqueTitle(base),
         date: 'Now',
+        updatedAt: Date.now(),
         tags: [],
         favorite: false,
         archived: false,
