@@ -643,8 +643,8 @@ function refreshEditorLock() {
   markdownInput.disabled = readOnly;
   const newNoteBtn = document.getElementById('new-note');
   const importBtn = document.getElementById('import-notes');
-  if (newNoteBtn) newNoteBtn.hidden = locked || activeView === 'bin' || activeView === 'vault';
-  if (importBtn) importBtn.hidden = locked || activeView === 'bin' || activeView === 'vault';
+  if (newNoteBtn) newNoteBtn.hidden = locked || activeView === 'bin' || activeView === 'vault' || activeView === 'shared';
+  if (importBtn) importBtn.hidden = locked || activeView === 'bin' || activeView === 'vault' || activeView === 'shared';
   const coverAddBtn = document.getElementById('cover-add');
   if (coverAddBtn) setCoverAddHidden(readOnly || activeView === 'vault' || !note || Boolean(note.cover) || note.template === 'recipe');
   const coverChangeBtn = document.getElementById('cover-change');
@@ -2756,6 +2756,7 @@ function updateListHeading() {
   const suffix = activeFilter === 'favorites' ? ' · Starred' : activeFilter === 'recent' ? ' · Recent' : '';
   if (activeView === 'bin') listHeading.textContent = `Bin${suffix}`;
   else if (activeView === 'vault') listHeading.textContent = `Vault${suffix}`;
+  else if (activeView === 'shared') listHeading.textContent = 'Shared';
   else if (activeView === 'archive') listHeading.textContent = `Archive${suffix}`;
   else if (activeView === 'favorites') listHeading.textContent = 'Starred notes';
   else if (activeCustom) listHeading.textContent = `${activeCustom.folder ? folderLeaf(activeCustom.folder) : sectionDisplayName('custom', activeCustom.section)}${suffix}`;
@@ -3020,7 +3021,7 @@ function renderStripItems() {
   // Back button sits under the collapse toggle, over the folder name —
   // visible only inside a subfolder.
   const backBtn = document.getElementById('workspace-strip-back');
-  if (activeView === 'vault') {
+  if (activeView === 'vault' || activeView === 'shared') {
     box.innerHTML = '';
     if (backBtn) {
       backBtn.hidden = true;
@@ -3235,7 +3236,7 @@ document.getElementById('breadcrumbs').addEventListener('click', (event) => {
 
 // Master list filter: Bin vs live, archive rules, search text, chip filter, selected collection.
 function visibleNotes() {
-  if (activeView === 'vault') return [];
+  if (activeView === 'vault' || activeView === 'shared') return [];
   return notes.filter((note) => {
     const isDeleted = Boolean(note.deleted);
     const isArchived = Boolean(note.archived);
@@ -3284,6 +3285,7 @@ function noteMatchesSearch(note, query) {
 // the All/Recent/Starred chip — so the chips mirror the selected folder.
 function scopeNotes() {
   if (activeView === 'vault') return vault.unlocked ? [...vault.notes] : [];
+  if (activeView === 'shared') return [];
   return notes.filter((note) => {
     const isDeleted = Boolean(note.deleted);
     const isArchived = Boolean(note.archived);
@@ -4142,6 +4144,7 @@ function enableNoteDragDrop() {
 // Render the grouped note tree: folder ordering, collapse, Bin actions vs rename pencil, scoped counters, and per-row event wiring.
 function renderNoteList() {
   if (activeView === 'vault') { renderVaultList(); renderTabs(); renderStripItems(); return; }
+  if (activeView === 'shared') { renderSharedView(); renderTabs(); renderStripItems(); return; }
   const visible = visibleNotes();
   const searching = searchQuery.trim() !== '';
   // Grouping follows the active folder namespace: custom-section paths when one
@@ -5047,7 +5050,6 @@ function collabConnect(id, keyRaw, Y, doc) {
   ws.onerror = () => setCollabStatus('Connection error', true);
 }
 async function openCollabNote(id) {
-  closeSharedNotes();
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
   if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
   let res;
@@ -5095,6 +5097,7 @@ async function collabCreate() {
   if (!res.ok) { showToast('Could not create the shared note'); return; }
   const data = await res.json();
   await openCollabNote(data.id);
+  if (activeView === 'shared') renderSharedView();
 }
 function closeCollabNote() {
   if (collab.reconnect) { clearTimeout(collab.reconnect); collab.reconnect = null; }
@@ -5127,41 +5130,54 @@ async function collabRemoveMember(name) {
   if (res.ok) { collab.members = collab.members.filter((m) => m !== name); renderCollabMembers(); showToast(`Removed ${name}`); }
   else showToast('Could not remove member');
 }
-async function openSharedNotes() {
-  const overlay = document.getElementById('shared-overlay');
-  if (!overlay) return;
-  overlay.hidden = false;
-  refreshSharedList();
-}
-function closeSharedNotes() {
-  const overlay = document.getElementById('shared-overlay');
-  if (overlay) overlay.hidden = true;
-}
-async function refreshSharedList() {
-  const list = document.getElementById('shared-list');
-  if (!list) return;
-  if (!e2ee.masterKey) { list.innerHTML = '<p class="modal-desc">Log in and unlock your notes first.</p>'; return; }
-  list.innerHTML = '<p class="modal-desc">Loading…</p>';
+// The Shared view has its own inbox list (rendered into the notes panel),
+// mirroring the Vault view. Rows open the live editor.
+async function renderSharedView() {
+  updateBinUI();
+  updateVaultUI();
+  updateBreadcrumbs();
+  const emptyTitle = listEmpty.querySelector('strong');
+  const emptySub = listEmpty.querySelector('span:last-child');
+  noteList.hidden = false;
+  listEmpty.hidden = true;
+  if (totalCount) totalCount.textContent = 'Shared notes';
+  if (allCount) allCount.textContent = '0';
+  if (recentCountEl) recentCountEl.textContent = '0';
+  if (starredCountEl) starredCountEl.textContent = '0';
+  noteList.innerHTML = `<div class="list-section">
+      <div class="list-section-head">
+        <span class="list-section-title">Shared with you</span>
+        <button type="button" class="list-section-add" id="shared-new" title="New shared note" aria-label="New shared note">${icon('folder-plus')}</button>
+      </div>
+      <div id="shared-view-list"><p class="modal-desc" style="padding:6px 10px">Loading…</p></div>
+    </div>`;
+  if (!e2ee.masterKey) {
+    const box = document.getElementById('shared-view-list');
+    if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Log in and unlock your notes first.</p>';
+    return;
+  }
   let res;
   try { res = await apiFetch('/api/collab'); } catch (error) { res = null; }
-  if (!res || !res.ok) { list.innerHTML = '<p class="modal-desc">Could not load shared notes.</p>'; return; }
+  const box = document.getElementById('shared-view-list');
+  if (!box) return;
+  if (!res || !res.ok) { box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Could not load shared notes.</p>'; return; }
   const data = await res.json();
   const items = Array.isArray(data.notes) ? data.notes : [];
-  if (!items.length) { list.innerHTML = '<p class="modal-desc">No shared notes yet. Create one to start collaborating.</p>'; return; }
+  if (!items.length) { box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">No shared notes yet. Click + to create one and invite people.</p>'; return; }
   const me = cachedProfile && cachedProfile.username;
-  list.innerHTML = items.map((n) => {
+  box.innerHTML = items.map((n) => {
     const when = n.updatedAt ? new Date(n.updatedAt * 1000).toLocaleDateString() : '';
     const isOwner = n.owner === me;
-    return `<div class="shared-row">
-      <div class="shared-row-main"><strong>Shared note #${n.id}</strong><span>${escapeHtml(isOwner ? 'you' : n.owner)} · ${n.members} member${n.members === 1 ? '' : 's'}${when ? ' · ' + escapeHtml(when) : ''}</span></div>
-      <button type="button" class="btn btn-secondary shared-action" data-collab-open="${n.id}">Open</button>
-      ${isOwner ? `<button type="button" class="shared-icon danger" data-collab-delete="${n.id}" title="Delete" aria-label="Delete">${icon('trash')}</button>` : ''}
-    </div>`;
+    return `<button class="tree-file shared-view-row" data-collab-open="${n.id}" title="Open shared note">
+        <span class="tree-file-icon">${icon('share')}</span>
+        <span class="tree-file-name">Shared note #${n.id} <em class="shared-view-meta">${escapeHtml(isOwner ? 'you' : n.owner)} · ${n.members} member${n.members === 1 ? '' : 's'}${when ? ' · ' + escapeHtml(when) : ''}</em></span>
+        ${isOwner ? `<span class="tree-action danger" data-collab-delete="${n.id}" title="Delete shared note" role="button" aria-label="Delete shared note">${icon('trash')}</span>` : ''}
+      </button>`;
   }).join('');
 }
 async function collabDelete(id) {
   const res = await apiFetch(`/api/collab/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (res.ok) { showToast('Shared note deleted'); refreshSharedList(); }
+  if (res.ok) { showToast('Shared note deleted'); if (activeView === 'shared') renderSharedView(); }
   else showToast('Could not delete the shared note');
 }
 
@@ -6422,17 +6438,14 @@ document.getElementById('tag-editor-input').addEventListener('keydown', (event) 
   }
 });
 // Collaborative notes wiring.
-document.getElementById('nav-shared').addEventListener('click', (event) => { event.preventDefault(); openSharedNotes(); });
-document.getElementById('close-shared').addEventListener('click', closeSharedNotes);
-document.getElementById('shared-overlay').addEventListener('click', (event) => {
-  if (event.target.id === 'shared-overlay') closeSharedNotes();
-});
-document.getElementById('collab-new').addEventListener('click', collabCreate);
-document.getElementById('shared-list').addEventListener('click', (event) => {
+// Shared view wiring: rows open the live editor; + creates a new shared note.
+noteList.addEventListener('click', (event) => {
   const open = event.target.closest('[data-collab-open]');
-  if (open) { openCollabNote(open.dataset.collabOpen); return; }
+  if (open) { event.preventDefault(); openCollabNote(open.dataset.collabOpen); return; }
   const del = event.target.closest('[data-collab-delete]');
-  if (del) collabDelete(del.dataset.collabDelete);
+  if (del) { event.preventDefault(); event.stopPropagation(); collabDelete(del.dataset.collabDelete); return; }
+  const newBtn = event.target.closest('#shared-new');
+  if (newBtn) { event.preventDefault(); collabCreate(); }
 });
 document.getElementById('close-collab').addEventListener('click', closeCollabNote);
 document.getElementById('collab-done').addEventListener('click', closeCollabNote);
@@ -6631,7 +6644,7 @@ function clearSectionSelection() {
 document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('click', (event) => {
   event.preventDefault();
   const view = item.dataset.view;
-  if (typeof view !== 'string' || !/^(notes|favorites|archive|bin|vault)$/.test(view)) return;
+  if (typeof view !== 'string' || !/^(notes|favorites|archive|bin|vault|shared)$/.test(view)) return;
   if (view === 'vault' && !vault.unlocked) { openVaultModal(); return; }
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav === item));
   clearSectionSelection();
@@ -6645,6 +6658,9 @@ document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('
     activeFilter = 'all';
     listHeading.textContent = 'Bin';
   } else if (view === 'vault') {
+    activeFilter = 'all';
+    updateListHeading();
+  } else if (view === 'shared') {
     activeFilter = 'all';
     updateListHeading();
   } else {
@@ -7130,12 +7146,10 @@ function loginFail(message) {
 
 // Client-side password rules (12+ chars, upper, lower, digit, special). The server never sees passwords, so this is the enforcement point for new ones.
 function passwordPolicyCheck(password) {
+  // NIST SP 800-63B: length-based, no composition rules; long passwords allowed.
   const failures = [];
-  if (typeof password !== 'string' || password.length < 12) failures.push('at least 12 characters');
-  if (!/[A-Z]/.test(password || '')) failures.push('1 capital letter');
-  if (!/[a-z]/.test(password || '')) failures.push('1 small letter');
-  if (!/[0-9]/.test(password || '')) failures.push('1 number');
-  if (!/[^A-Za-z0-9]/.test(password || '')) failures.push('1 special character');
+  if (typeof password !== 'string' || password.length < 15) failures.push('at least 15 characters');
+  if (typeof password === 'string' && password.length > 256) failures.push('at most 256 characters');
   return failures;
 }
 
@@ -8710,8 +8724,6 @@ document.addEventListener('keydown', (event) => {
     if (tagEditorOverlay && !tagEditorOverlay.hidden) { closeTagEditor(); return; }
     const collabOverlay = document.getElementById('collab-overlay');
     if (collabOverlay && !collabOverlay.hidden) { closeCollabNote(); return; }
-    const sharedOverlay = document.getElementById('shared-overlay');
-    if (sharedOverlay && !sharedOverlay.hidden) { closeSharedNotes(); return; }
     if (settingsOverlay && !settingsOverlay.hidden) { closeSettings(); return; }
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {

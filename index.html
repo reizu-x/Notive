@@ -51,7 +51,7 @@
           <a href="#" class="nav-item" data-view="vault" title="Vault">
             <span class="nav-icon" data-icon="lock"></span><span class="nav-label">Vault</span>
           </a>
-          <a href="#" class="nav-item" id="nav-shared" title="Shared notes">
+          <a href="#" class="nav-item" data-view="shared" title="Shared notes">
             <span class="nav-icon" data-icon="share"></span><span class="nav-label">Shared</span>
           </a>
         </nav>
@@ -243,11 +243,8 @@
           <label class="login-field"><span>Password</span><input id="register-password" name="new-password" type="password" autocomplete="new-password" maxlength="256" required aria-describedby="password-policy" /></label>
           <label class="login-field"><span>Confirm password</span><input id="register-confirm" type="password" autocomplete="new-password" maxlength="256" required /></label>
           <ul class="password-policy" id="password-policy">
-            <li>At least 12 characters</li>
-            <li>At least 1 capital letter (A-Z)</li>
-            <li>At least 1 small letter (a-z)</li>
-            <li>At least 1 number (0-9)</li>
-            <li>At least 1 special character (e.g. !@#$%)</li>
+            <li>At least 15 characters (long passphrases welcome)</li>
+            <li>No forced mix of character types</li>
           </ul>
           <p class="login-error" id="register-error" hidden></p>
           <button class="btn btn-primary login-submit" type="submit">Create account</button>
@@ -356,7 +353,7 @@
           </div>
           <div class="settings-pane" data-settings-pane="security" hidden>
             <h3 class="settings-pane-title">Change password</h3>
-            <p class="modal-desc">Min 12 chars with 1 capital, 1 small, 1 number, 1 special character.</p>
+            <p class="modal-desc">Min 15 characters. Long passphrases are welcome; no character-type rules are imposed.</p>
             <label class="login-field"><span>Current password</span><input id="change-current" type="password" autocomplete="current-password" maxlength="256" /></label>
             <label class="login-field"><span>New password</span><input id="change-new" type="password" autocomplete="new-password" maxlength="256" /></label>
             <p class="login-error" id="change-error" hidden></p>
@@ -474,23 +471,6 @@
         </div>
         <div class="tag-editor-suggest" id="tag-editor-suggest"></div>
         <div class="modal-actions"><button class="btn btn-primary" id="tag-editor-done" type="button">Done</button></div>
-      </div>
-    </div>
-    <!-- Shared notes: list of live collaborative notes (E2EE) -->
-    <div class="modal-overlay" id="shared-overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="shared-title">
-        <div class="modal-head">
-          <div>
-            <p class="eyebrow">Sharing</p>
-            <h2 id="shared-title">Shared notes</h2>
-          </div>
-          <button class="icon-button" id="close-shared" aria-label="Close shared notes" data-icon="x"></button>
-        </div>
-        <p class="modal-desc">Live notes several people can write at the same time. Edits are end-to-end encrypted — the server only relays ciphertext.</p>
-        <div class="modal-actions" style="justify-content:flex-start;margin-top:0">
-          <button class="btn btn-primary" id="collab-new" type="button">New shared note</button>
-        </div>
-        <div class="shared-list" id="shared-list"></div>
       </div>
     </div>
     <!-- Live collaborative editor -->
@@ -656,7 +636,7 @@
         <div id="vault-setup-block" hidden>
           <label class="login-field"><span>Vault password</span><input id="vault-new-password" type="password" autocomplete="new-password" maxlength="256" /></label>
           <label class="login-field"><span>Confirm vault password</span><input id="vault-confirm-password" type="password" autocomplete="new-password" maxlength="256" /></label>
-          <p class="login-hint">Min 12 characters with 1 capital, 1 small, 1 number and 1 special character. This password is separate from your login — lose it and the vault cannot be recovered.</p>
+          <p class="login-hint">Min 15 characters. This password is separate from your login — lose it and the vault cannot be recovered.</p>
         </div>
         <div id="vault-unlock-block" hidden>
           <label class="login-field"><span>Vault password</span><input id="vault-password" type="password" autocomplete="current-password" maxlength="256" /></label>
