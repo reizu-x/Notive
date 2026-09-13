@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev24') {
+  if (build !== 'dev25') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -623,6 +623,12 @@ function activeEditorNote() {
 }
 // Central lock switch: disables editor inputs and hides New/Import while logged out or locked; otherwise defers to the note deleted/archived state. Runs after every list/selection render.
 function refreshEditorLock() {
+  // A shared note is always editable while it is open in the standard editor.
+  if (collab.noteId) {
+    titleInput.disabled = false;
+    markdownInput.disabled = false;
+    return;
+  }
   let note = null;
   let locked = !isUnlocked();
   if (activeView === 'vault') {
@@ -3483,6 +3489,11 @@ function applyBeautify() {
 
 // Swap the writing area between Markdown source and rendered preview; non-Markdown notes never preview.
 function renderPreview(note) {
+  if (collab.noteId && collab.body) {
+    note = { id: collab.noteId, title: collab.title ? collab.title.toString() : '',
+             body: collab.body.toString(), ext: 'md', tags: [], favorite: false,
+             archived: false, deleted: false };
+  }
   const bottomHint = document.querySelector('.editor-bottom-fixed span:first-child');
   const isMd = note.ext === 'md';
   const plainLabel = note.ext === 'txt' ? 'Plain text' : (EXT_LABELS[note.ext] || 'MD');
@@ -4977,16 +4988,15 @@ function applyTextDiff(ytext, oldStr, newStr) {
 }
 function collabSyncDom() {
   if (!collab.doc) return;
-  const bodyEl = document.getElementById('collab-body');
-  const bodyStr = collab.body ? collab.body.toString() : '';
-  if (bodyEl && bodyEl.value !== bodyStr) {
-    const start = bodyEl.selectionStart;
-    bodyEl.value = bodyStr;
-    try { bodyEl.setSelectionRange(Math.min(start, bodyStr.length), Math.min(start, bodyStr.length)); } catch (error) {}
-  }
-  const titleEl = document.getElementById('collab-title');
   const titleStr = collab.title ? collab.title.toString() : '';
-  if (titleEl && titleEl.value !== titleStr && document.activeElement !== titleEl) titleEl.value = titleStr;
+  if (titleInput && titleInput.value !== titleStr && document.activeElement !== titleInput) titleInput.value = titleStr;
+  const bodyStr = collab.body ? collab.body.toString() : '';
+  if (markdownInput && markdownInput.value !== bodyStr) {
+    const start = markdownInput.selectionStart;
+    markdownInput.value = bodyStr;
+    try { markdownInput.setSelectionRange(Math.min(start, bodyStr.length), Math.min(start, bodyStr.length)); } catch (error) {}
+    if (writeMode === 'preview') { try { preview.innerHTML = renderMarkdown(bodyStr); } catch (error) {} }
+  }
 }
 function renderCollabMembers() {
   const box = document.getElementById('collab-members');
@@ -5065,10 +5075,13 @@ async function openCollabNote(noteId) {
   if (label) label.textContent = displayName;
   const delBtn = document.getElementById('collab-delete');
   if (delBtn) delBtn.hidden = false;
-  const bodyEl = document.getElementById('collab-body');
-  const titleEl = document.getElementById('collab-title');
-  if (bodyEl) bodyEl.value = '';
-  if (titleEl) titleEl.value = '';
+  // Bind the standard editor to the shared doc (title + Markdown body).
+  writeMode = 'edit';
+  if (titleInput) titleInput.value = collab.title.toString();
+  if (markdownInput) markdownInput.value = collab.body.toString();
+  try { refreshEditorLock(); } catch (error) {}
+  try { renderPreview(null); } catch (error) {}
+  try { markdownInput.focus({ preventScroll: true }); } catch (error) {}
   renderCollabMembers();
   setCollabStatus('Connecting…', false);
   const panel = document.getElementById('collab-panel');
@@ -6146,6 +6159,12 @@ function parseTitleExtension(rawTitle, note) {
 
 // Persist title/body from the editor (debounced server sync); refuses deleted/archived notes.
 function saveCurrentNote() {
+  // Shared (collaborative) note: edits go to the Yjs doc, not to a local note.
+  if (collab.noteId && collab.title && collab.body) {
+    applyTextDiff(collab.title, collab.title.toString(), String(titleInput.value || '').slice(0, 200));
+    applyTextDiff(collab.body, collab.body.toString(), String(markdownInput.value || ''));
+    return;
+  }
   if (activeView === 'vault') { saveVaultNote(); return; }
   const note = currentNote();
   if (!note || note.deleted || note.archived) return;
@@ -6567,7 +6586,12 @@ noteList.addEventListener('click', (event) => {
   const newBtn = event.target.closest('#shared-new');
   if (newBtn) { event.preventDefault(); collabCreate(); }
 });
-document.getElementById('close-collab').addEventListener('click', closeCollabNote);
+document.getElementById('close-collab').addEventListener('click', () => {
+  closeCollabNote();
+  // Return the standard editor to the previously open note (or empty state).
+  if (currentId && notes.some((n) => n.id === currentId)) selectNote(currentId);
+  else clearEditor();
+});
 document.getElementById('close-collab-new').addEventListener('click', closeCollabNewDialog);
 document.getElementById('collab-new-cancel').addEventListener('click', closeCollabNewDialog);
 document.getElementById('collab-new-create').addEventListener('click', confirmCollabNew);
@@ -6595,14 +6619,6 @@ document.getElementById('collab-delete').addEventListener('click', () => {
 document.getElementById('collab-members').addEventListener('click', (event) => {
   const remove = event.target.closest('[data-collab-remove]');
   if (remove) collabRemoveMember(remove.dataset.collabRemove);
-});
-document.getElementById('collab-title').addEventListener('input', (event) => {
-  if (!collab.title) return;
-  applyTextDiff(collab.title, collab.title.toString(), String(event.target.value || '').slice(0, 200));
-});
-document.getElementById('collab-body').addEventListener('input', (event) => {
-  if (!collab.body) return;
-  applyTextDiff(collab.body, collab.body.toString(), String(event.target.value || ''));
 });
 // Settings → Tags: rename / delete across all notes.
 document.getElementById('settings-tag-list').addEventListener('click', (event) => {

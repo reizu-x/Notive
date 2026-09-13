@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notely-build" content="dev24" />
+    <meta name="notely-build" content="dev25" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev24" />
+    <link rel="stylesheet" href="styles.css?v=dev25" />
   </head>
   <body>
     <div class="app-shell">
@@ -131,21 +131,18 @@
           </div>
         </header>
 
-        <!-- Live collaborative note (inline in the editor panel, not a popup) -->
+        <!-- Shared note bar (the note itself edits in the standard editor below) -->
         <div class="collab-panel" id="collab-panel" hidden>
-          <div class="collab-panel-head">
-            <div class="collab-panel-titlewrap">
-              <p class="eyebrow" id="collab-status">Live · connected</p>
-              <input id="collab-title" class="collab-title-input" type="text" maxlength="200" placeholder="Untitled note" aria-label="Note title" />
-              <p class="collab-group-label" id="collab-group-label"></p>
-            </div>
+          <div class="collab-panel-titlewrap">
+            <p class="eyebrow" id="collab-status">Live · connected</p>
+            <p class="collab-group-label" id="collab-group-label"></p>
+          </div>
+          <div class="collab-members" id="collab-members"></div>
+          <div class="collab-panel-actions">
             <button class="icon-button" id="collab-invite" aria-label="Invite member" title="Invite member" data-icon="share"></button>
             <button class="icon-button" id="collab-delete" aria-label="Delete shared note" title="Delete shared note" data-icon="trash" hidden></button>
             <button class="icon-button" id="close-collab" aria-label="Close shared note" title="Close" data-icon="x"></button>
           </div>
-          <div class="collab-members" id="collab-members"></div>
-          <textarea id="collab-body" class="collab-body" placeholder="Start writing…" aria-label="Shared note body"></textarea>
-          <p class="modal-desc" id="collab-hint">Anyone in the members list can edit this note at the same time. Changes sync live and stay end-to-end encrypted.</p>
         </div>
 
         <div class="editor-scroll">
@@ -269,7 +266,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
           <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
         </div>
-        <p class="login-hint" id="build-tag">dev build dev24</p>
+        <p class="login-hint" id="build-tag">dev build dev25</p>
       </div>
       <div class="login-theme-float">
         <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
@@ -704,6 +701,6 @@
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
-    <script src="app.js?v=dev24"></script>
+    <script src="app.js?v=dev25"></script>
   </body>
 </html>
