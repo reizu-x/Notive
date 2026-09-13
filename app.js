@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev45') {
+  if (build !== 'dev46') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -2546,6 +2546,48 @@ function inlineMarkdown(value) {
   return safe;
 }
 
+// Split a Markdown table row into trimmed cells. Handles optional leading/
+// trailing pipes and escaped (\|) pipes inside a cell.
+function splitTableRow(line) {
+  let s = String(line == null ? '' : line).trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+  const cells = [];
+  let cur = '';
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch === '\\' && s[i + 1] === '|') { cur += '|'; i += 1; continue; }
+    if (ch === '|') { cells.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+// Recognise a GFM delimiter row ("| --- | :--: |") and return per-column
+// alignment ('left'|'center'|'right'|''), or null when it is not one.
+function tableAligns(line) {
+  const cells = splitTableRow(line);
+  if (!cells.length) return null;
+  const aligns = [];
+  for (const cell of cells) {
+    if (!/^:?-+:?$/.test(cell)) return null;
+    const left = cell.startsWith(':');
+    const right = cell.endsWith(':');
+    aligns.push(left && right ? 'center' : right ? 'right' : left ? 'left' : '');
+  }
+  return aligns;
+}
+
+function renderTable(header, aligns, rows) {
+  const alignAttr = (i) => (aligns[i] ? ` style="text-align:${aligns[i]}"` : '');
+  const head = header.map((cell, i) => `<th${alignAttr(i)}>${inlineMarkdown(cell)}</th>`).join('');
+  const body = rows.map((row) => `<tr>${header
+    .map((_, i) => `<td${alignAttr(i)}>${inlineMarkdown(row[i] == null ? '' : row[i])}</td>`)
+    .join('')}</tr>`).join('');
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
 // Line-based block renderer (headings, lists, tasks, quotes, code fences, hr) built only from escaped/sanitized pieces.
 function renderMarkdown(markdown) {
   const source = typeof markdown === 'string' ? markdown : String(markdown == null ? '' : markdown);
@@ -2564,7 +2606,8 @@ function renderMarkdown(markdown) {
     }
   };
 
-  lines.forEach((line) => {
+  for (let li = 0; li < lines.length; li += 1) {
+    const line = lines[li];
     if (line.trim().startsWith('```')) {
       closeList();
       if (inCode) {
@@ -2572,40 +2615,57 @@ function renderMarkdown(markdown) {
         code = [];
       }
       inCode = !inCode;
-      return;
+      continue;
     }
     if (inCode) {
       code.push(line);
-      return;
+      continue;
     }
-    if (/^###\s+/.test(line)) { closeList(); html += `<h3>${inlineMarkdown(line.replace(/^###\s+/, ''))}</h3>`; return; }
-    if (/^##\s+/.test(line)) { closeList(); html += `<h2>${inlineMarkdown(line.replace(/^##\s+/, ''))}</h2>`; return; }
-    if (/^#\s+/.test(line)) { closeList(); html += `<h1>${inlineMarkdown(line.replace(/^#\s+/, ''))}</h1>`; return; }
-    if (/^[-*_]{3,}\s*$/.test(line)) { closeList(); html += '<hr>'; return; }
+    // GFM table: a header row immediately followed by a |---|---| delimiter row.
+    if (line.includes('|') && li + 1 < lines.length) {
+      const aligns = tableAligns(lines[li + 1]);
+      const header = aligns ? splitTableRow(line) : null;
+      if (aligns && header && header.length === aligns.length) {
+        closeList();
+        const rows = [];
+        let r = li + 2;
+        while (r < lines.length && lines[r].trim() !== '' && lines[r].includes('|')) {
+          rows.push(splitTableRow(lines[r]));
+          r += 1;
+        }
+        html += renderTable(header, aligns, rows);
+        li = r - 1;
+        continue;
+      }
+    }
+    if (/^###\s+/.test(line)) { closeList(); html += `<h3>${inlineMarkdown(line.replace(/^###\s+/, ''))}</h3>`; continue; }
+    if (/^##\s+/.test(line)) { closeList(); html += `<h2>${inlineMarkdown(line.replace(/^##\s+/, ''))}</h2>`; continue; }
+    if (/^#\s+/.test(line)) { closeList(); html += `<h1>${inlineMarkdown(line.replace(/^#\s+/, ''))}</h1>`; continue; }
+    if (/^[-*_]{3,}\s*$/.test(line)) { closeList(); html += '<hr>'; continue; }
     const taskMatch = line.match(/^[-*]\s+\[([ xX])\]\s+(.*)$/);
     if (taskMatch) {
       if (!inList || listType !== 'ul') { closeList(); html += '<ul>'; inList = true; listType = 'ul'; }
       const checked = taskMatch[1].toLowerCase() === 'x';
       html += `<li class="task"><span class="task-box${checked ? ' checked' : ''}" aria-hidden="true"></span>${inlineMarkdown(taskMatch[2])}</li>`;
-      return;
+      continue;
     }
     const unorderedMatch = line.match(/^[-*]\s+(.*)$/);
     if (unorderedMatch) {
       if (!inList || listType !== 'ul') { closeList(); html += '<ul>'; inList = true; listType = 'ul'; }
       html += `<li>${inlineMarkdown(unorderedMatch[1])}</li>`;
-      return;
+      continue;
     }
     const orderedMatch = line.match(/^\d+\.\s+(.*)$/);
     if (orderedMatch) {
       if (!inList || listType !== 'ol') { closeList(); html += '<ol>'; inList = true; listType = 'ol'; }
       html += `<li>${inlineMarkdown(orderedMatch[1])}</li>`;
-      return;
+      continue;
     }
-    if (/^>\s?/.test(line)) { closeList(); html += `<blockquote>${inlineMarkdown(line.replace(/^>\s?/, ''))}</blockquote>`; return; }
-    if (!line.trim()) { closeList(); return; }
+    if (/^>\s?/.test(line)) { closeList(); html += `<blockquote>${inlineMarkdown(line.replace(/^>\s?/, ''))}</blockquote>`; continue; }
+    if (!line.trim()) { closeList(); continue; }
     closeList();
     html += `<p>${inlineMarkdown(line)}</p>`;
-  });
+  }
   closeList();
   if (inCode) html += `<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`;
   return html || '<p class="preview-placeholder">Start writing to see your note here.</p>';

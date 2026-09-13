@@ -1270,6 +1270,10 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .markdown-preview blockquote { margin: 15px 0; padding: 5px 0 5px 14px; border-left: 2px solid var(--quote-border); color: var(--quote-ink); font-style: italic; }
 .markdown-preview hr { margin: 21px 0; border: 0; border-top: 1px solid var(--line); }
 .markdown-preview a { color: var(--plink); text-decoration: underline; text-underline-offset: 2px; }
+.markdown-preview table { width: 100%; margin: 15px 0; border-collapse: collapse; font-size: 12px; }
+.markdown-preview th, .markdown-preview td { padding: 7px 10px; border: 1px solid var(--line); vertical-align: top; }
+.markdown-preview th { color: var(--preview-head); background: var(--code-bg); font-weight: 700; }
+.markdown-preview tbody tr:nth-child(even) { background: var(--tree-hover-bg); }
 
 /* Fixed recipe hero (recipe-template notes only): meal photo on the left,
    editable description on the right, pinned between the meta row and the
