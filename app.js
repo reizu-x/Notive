@@ -5253,9 +5253,21 @@ async function renderSharedView() {
   if (!res || !res.ok) { if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Could not load shared sections.</p>'; return; }
   const data = await res.json();
   const groups = Array.isArray(data.groups) ? data.groups : [];
-  if (!groups.length) { box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">No shared sections yet. Click + New note and enter a username to start.</p>'; return; }
+  const invites = Array.isArray(data.invites) ? data.invites : [];
   const me = cachedProfile && cachedProfile.username;
-  box.innerHTML = groups.map((g) => {
+  const invitesHtml = invites.length ? `<div class="list-section">
+      <div class="list-section-head"><span class="list-section-title">Invitations</span><span class="shared-group-count">${invites.length}</span></div>
+      ${invites.map((inv) => `<div class="shared-invite">
+        <span class="shared-invite-text"><strong>${escapeHtml(inv.owner)}</strong> shared a section with you</span>
+        <button type="button" class="btn btn-primary shared-action" data-invite-accept="${inv.id}">Accept</button>
+        <button type="button" class="btn btn-secondary shared-action" data-invite-decline="${inv.id}">Decline</button>
+      </div>`).join('')}
+    </div>` : '';
+  if (!groups.length && !invites.length) {
+    box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">No shared sections yet. Click + New note and enter a username to start.</p>';
+    return;
+  }
+  const groupsHtml = groups.map((g) => {
     const isOwner = g.owner === me;
     const displayName = isOwner ? (g.name || 'Shared') : g.owner;
     const notes = Array.isArray(g.notes) ? g.notes : [];
@@ -5276,6 +5288,18 @@ async function renderSharedView() {
       ${noteRows}
     </div>`;
   }).join('');
+  box.innerHTML = invitesHtml + groupsHtml;
+}
+async function acceptInvite(id) {
+  const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(id)}/accept`, { method: 'POST', body: '{}' });
+  if (res.ok) { showToast('Invitation accepted'); renderSharedView(); }
+  else showToast('Could not accept the invitation');
+}
+async function declineInvite(id) {
+  const me = cachedProfile && cachedProfile.username;
+  const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(me)}`, { method: 'DELETE' });
+  if (res.ok) { showToast('Invitation declined'); renderSharedView(); }
+  else showToast('Could not decline the invitation');
 }
 
 // Keyboard-accessible delete: mirrors the context-menu rules exactly —
@@ -6538,6 +6562,10 @@ document.getElementById('tag-editor-input').addEventListener('keydown', (event) 
 });
 // Shared view wiring: sections create notes; rows open the live editor.
 noteList.addEventListener('click', (event) => {
+  const iacc = event.target.closest('[data-invite-accept]');
+  if (iacc) { event.preventDefault(); acceptInvite(iacc.dataset.inviteAccept); return; }
+  const idec = event.target.closest('[data-invite-decline]');
+  if (idec) { event.preventDefault(); declineInvite(idec.dataset.inviteDecline); return; }
   const ndel = event.target.closest('[data-collab-note-delete]');
   if (ndel) { event.preventDefault(); event.stopPropagation(); collabDeleteNote(ndel.dataset.collabNoteDelete); return; }
   const gdel = event.target.closest('[data-group-delete]');

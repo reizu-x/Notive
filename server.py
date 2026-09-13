@@ -969,8 +969,14 @@ def init_db():
         'CREATE TABLE IF NOT EXISTS collab_members ('
         'group_id INTEGER NOT NULL, username TEXT NOT NULL, wrapped_key BLOB NOT NULL, '
         'eph_pub BLOB NOT NULL, wrap_iv BLOB NOT NULL, added_at INTEGER NOT NULL, '
+        'accepted INTEGER NOT NULL DEFAULT 0, '
         'PRIMARY KEY (group_id, username))'
     )
+    # Invites must be accepted by the recipient before the section appears.
+    _cmcols = {row['name'] for row in conn.execute('PRAGMA table_info(collab_members)')}
+    if 'accepted' not in _cmcols:
+        conn.execute('ALTER TABLE collab_members ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0')
+        conn.execute('UPDATE collab_members SET accepted = 1')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_notes ('
         'id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, owner TEXT NOT NULL, '
@@ -3106,9 +3112,11 @@ def api_keys_lookup():
 collab_streams = {}  # note_id -> list of queue.Queue (SSE subscribers)
 
 
-def _is_group_member(conn, group_id, username):
-    return conn.execute('SELECT 1 FROM collab_members WHERE group_id = ? AND username = ?',
-                        (group_id, username)).fetchone() is not None
+def _is_group_member(conn, group_id, username, require_accepted=True):
+    sql = 'SELECT 1 FROM collab_members WHERE group_id = ? AND username = ?'
+    if require_accepted:
+        sql += ' AND accepted = 1'
+    return conn.execute(sql, (group_id, username)).fetchone() is not None
 
 
 def _note_group(conn, note_id):
@@ -3158,8 +3166,8 @@ def api_group_create():
     cur = conn.execute('INSERT INTO collab_groups (owner, name, created_at, updated_at) VALUES (?, ?, ?, ?)',
                        (user['username'], name, now, now))
     group_id = cur.lastrowid
-    conn.execute('INSERT OR REPLACE INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, added_at)'
-                 ' VALUES (?, ?, ?, ?, ?, ?)',
+    conn.execute('INSERT OR REPLACE INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, added_at, accepted)'
+                 ' VALUES (?, ?, ?, ?, ?, ?, 1)',
                  (group_id, user['username'], wrapped_key, eph_pub, wrap_iv, now))
     conn.commit()
     conn.close()
@@ -3174,18 +3182,44 @@ def api_group_list():
     conn = get_db()
     groups = conn.execute(
         'SELECT g.id, g.owner, g.name, g.updated_at FROM collab_groups g'
-        ' JOIN collab_members m ON m.group_id = g.id WHERE m.username = ? ORDER BY g.updated_at DESC LIMIT 200',
+        ' JOIN collab_members m ON m.group_id = g.id'
+        ' WHERE m.username = ? AND m.accepted = 1 ORDER BY g.updated_at DESC LIMIT 200',
         (user['username'],),
     ).fetchall()
     out = []
     for g in groups:
-        members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? ORDER BY added_at', (g['id'],))]
+        members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? AND accepted = 1 ORDER BY added_at', (g['id'],))]
         notes = [{'id': r['id'], 'updatedAt': r['updated_at']} for r in conn.execute(
             'SELECT id, updated_at FROM collab_notes WHERE group_id = ? ORDER BY id', (g['id'],))]
         out.append({'id': g['id'], 'owner': g['owner'], 'name': g['name'], 'updatedAt': g['updated_at'],
                     'members': members, 'notes': notes})
+    # Pending invitations: sections shared with me that I have not accepted yet.
+    invites = [{'id': r['id'], 'owner': r['owner'], 'name': r['name'], 'createdAt': r['created_at']}
+               for r in conn.execute(
+                   'SELECT g.id, g.owner, g.name, g.created_at FROM collab_groups g'
+                   ' JOIN collab_members m ON m.group_id = g.id'
+                   ' WHERE m.username = ? AND m.accepted = 0 ORDER BY g.created_at DESC LIMIT 200',
+                   (user['username'],))]
     conn.close()
-    return jsonify({'groups': out})
+    return jsonify({'groups': out, 'invites': invites})
+
+
+@app.route('/api/collab/groups/<int:group_id>/accept', methods=['POST'])
+def api_group_accept(group_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    row = conn.execute('SELECT accepted FROM collab_members WHERE group_id = ? AND username = ?',
+                       (group_id, user['username'])).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'No invitation for this account.'}), 404
+    conn.execute('UPDATE collab_members SET accepted = 1 WHERE group_id = ? AND username = ?',
+                 (group_id, user['username']))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route('/api/collab/groups/<int:group_id>', methods=['GET'])
@@ -3234,8 +3268,10 @@ def api_group_add_member(group_id):
     if not conn.execute('SELECT 1 FROM users WHERE username = ?', (target,)).fetchone():
         conn.close()
         return jsonify({'error': 'No such account.'}), 404
-    conn.execute('INSERT OR REPLACE INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, added_at)'
-                 ' VALUES (?, ?, ?, ?, ?, ?)',
+    conn.execute('INSERT INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, added_at, accepted)'
+                 ' VALUES (?, ?, ?, ?, ?, ?, 0)'
+                 ' ON CONFLICT(group_id, username) DO UPDATE SET wrapped_key = excluded.wrapped_key,'
+                 ' eph_pub = excluded.eph_pub, wrap_iv = excluded.wrap_iv',
                  (group_id, target, wrapped_key, eph_pub, wrap_iv, int(time.time())))
     conn.commit()
     conn.close()

@@ -1020,6 +1020,9 @@ body.is-panel-resizing { cursor: col-resize; user-select: none; }
 .shared-group-add:hover { color: var(--ink); background: var(--tree-hover-bg); }
 .shared-group-add svg { width: 14px; height: 14px; }
 .collab-group-label { margin: 2px 0 0; color: var(--ink-muted); font-size: 11px; }
+/* Pending invitations in the Shared view */
+.shared-invite { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-bg); }
+.shared-invite-text { flex: 1; min-width: 0; overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .beautify-btn { margin-left: auto; margin-right: 8px; padding: 3px 9px; border: 1px solid var(--badge-border); border-radius: 4px; color: var(--badge-ink); background: transparent; font-family: 'DM Mono', monospace; font-size: 9px; font-weight: 500; letter-spacing: .04em; cursor: pointer; transition: background .18s ease, color .18s ease, border-color .18s ease; }
 .beautify-btn:hover { color: var(--badge-hover-ink); background: var(--badge-hover-bg); border-color: var(--btn-hover-border); }
 .beautify-btn[hidden] { display: none; }
