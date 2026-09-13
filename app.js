@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev60') {
+  if (build !== 'dev61') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -2921,31 +2921,44 @@ function noteGlyphFor(note) {
   if (ext === 'yaml') return 'type-yaml';
   return 'type-md';
 }
-function findTabbedNote(id, isVault) {
+function findTabbedNote(id, isVault, isShared) {
+  if (isShared) {
+    const meta = sharedNoteMeta.get(String(id)) || sharedNoteMeta.get(id);
+    return { id, title: (meta && meta.title) || 'Shared note', template: (meta && meta.template) || '', shared: true, deleted: false };
+  }
   if (isVault) return vault.unlocked ? vault.notes.find((entry) => entry.id === id) || null : null;
   return notes.find((entry) => entry.id === id) || null;
 }
 // Remember an opened note; selecting a tab never moves it — order is fixed
 // by opening time. Evict oldest non-active past the cap.
-function trackTab(id, isVault) {
-  if (!isValidNoteId(id)) return;
+function trackTab(id, isVault, isShared) {
+  const shared = Boolean(isShared);
+  let tabId = id;
+  if (shared) {
+    tabId = Number(id);
+    if (!Number.isInteger(tabId) || tabId <= 0) return;
+  } else if (!isValidNoteId(id)) return;
   const wasVault = Boolean(isVault);
-  if (!openTabs.some((tab) => tab.id === id && tab.vault === wasVault)) {
-    openTabs.push({ id, vault: wasVault });
+  if (!openTabs.some((tab) => String(tab.id) === String(tabId) && tab.vault === wasVault && Boolean(tab.shared) === shared)) {
+    openTabs.push({ id: tabId, vault: wasVault, shared });
   }
   while (openTabs.length > MAX_OPEN_TABS) {
     const dropAt = openTabs.findIndex((tab) => !(tab.id === currentId && !tab.vault)
-      && !(tab.id === currentVaultId && tab.vault));
+      && !(tab.id === currentVaultId && tab.vault)
+      && !(tab.shared && collab.noteId != null && String(tab.id) === String(collab.noteId)));
     openTabs.splice(dropAt === -1 ? 0 : dropAt, 1);
   }
 }
 // Close one tab; when it was active, fall back to the nearest surviving
 // neighbor (next, then previous, then outward) so selection stays put.
-function closeTab(id, isVault) {
+function closeTab(id, isVault, isShared) {
   const wasVault = Boolean(isVault);
-  const wasActive = (!wasVault && id === currentId) || (wasVault && id === currentVaultId);
-  const closedAt = openTabs.findIndex((tab) => tab.id === id && tab.vault === wasVault);
-  openTabs = openTabs.filter((tab) => !(tab.id === id && tab.vault === wasVault));
+  const wasShared = Boolean(isShared);
+  const wasActive = wasShared
+    ? (collab.noteId != null && String(collab.noteId) === String(id))
+    : (!wasVault && id === currentId) || (wasVault && id === currentVaultId);
+  const closedAt = openTabs.findIndex((tab) => String(tab.id) === String(id) && tab.vault === wasVault && Boolean(tab.shared) === wasShared);
+  openTabs = openTabs.filter((tab) => !(String(tab.id) === String(id) && tab.vault === wasVault && Boolean(tab.shared) === wasShared));
   if (wasActive) {
     const order = [];
     const at = closedAt === -1 ? openTabs.length : closedAt;
@@ -2955,13 +2968,15 @@ function closeTab(id, isVault) {
       if (at + d < openTabs.length) order.push(at + d);
     }
     for (const i of order) {
-      if (findTabbedNote(openTabs[i].id, openTabs[i].vault)) {
-        if (openTabs[i].vault) selectVaultNote(openTabs[i].id);
+      if (findTabbedNote(openTabs[i].id, openTabs[i].vault, openTabs[i].shared)) {
+        if (openTabs[i].shared) openCollabNote(openTabs[i].id);
+        else if (openTabs[i].vault) selectVaultNote(openTabs[i].id);
         else selectNote(openTabs[i].id);
         renderTabs();
         return;
       }
     }
+    if (collab.noteId != null) closeCollabNote();
     currentId = null;
     currentVaultId = null;
     clearEditor();
@@ -2983,28 +2998,33 @@ function renderTabs() {
     if (collapseBtn) collapseBtn.hidden = openTabs.length === 0;
   } catch (error) {}
   const activeAlive = (currentId && notes.some((entry) => entry.id === currentId))
-    || (currentVaultId && vault.unlocked && vault.notes.some((entry) => entry.id === currentVaultId));
-  if ((currentId || currentVaultId) && !activeAlive) {
-    const fallback = [...openTabs].reverse().find((tab) => findTabbedNote(tab.id, tab.vault));
+    || (currentVaultId && vault.unlocked && vault.notes.some((entry) => entry.id === currentVaultId))
+    || (collab.noteId != null && openTabs.some((tab) => tab.shared && String(tab.id) === String(collab.noteId)));
+  if ((currentId || currentVaultId || collab.noteId != null) && !activeAlive) {
+    const fallback = [...openTabs].reverse().find((tab) => findTabbedNote(tab.id, tab.vault, tab.shared));
     if (fallback) {
-      if (fallback.vault) selectVaultNote(fallback.id);
+      if (fallback.shared) openCollabNote(fallback.id);
+      else if (fallback.vault) selectVaultNote(fallback.id);
       else selectNote(fallback.id);
       return; // selecting re-renders the strip
     }
     currentId = null;
     currentVaultId = null;
+    if (collab.noteId != null) closeCollabNote();
     clearEditor();
     return; // clearing re-renders the strip
   }
   bar.innerHTML = `<button type="button" class="tab-home" data-tab-home title="All Notes" aria-label="All Notes">${icon('inbox')}</button>`
     + openTabs.map((tab) => {
-      const note = findTabbedNote(tab.id, tab.vault);
+      const note = findTabbedNote(tab.id, tab.vault, tab.shared);
       const title = (note && note.title) || 'Untitled note';
-      const active = (!tab.vault && tab.id === currentId) || (tab.vault && tab.id === currentVaultId);
-      return `<button type="button" class="tab-item${active ? ' active' : ''}" data-tab-id="${escapeHtml(tab.id)}" data-tab-vault="${tab.vault ? '1' : ''}" title="${escapeHtml(title)}">`
-        + `<span class="tab-glyph">${icon(noteGlyphFor(note))}</span>`
+      const active = tab.shared
+        ? (collab.noteId != null && String(tab.id) === String(collab.noteId))
+        : ((!tab.vault && tab.id === currentId) || (tab.vault && tab.id === currentVaultId));
+      return `<button type="button" class="tab-item${active ? ' active' : ''}" data-tab-id="${escapeHtml(String(tab.id))}" data-tab-vault="${tab.vault ? '1' : ''}" data-tab-shared="${tab.shared ? '1' : ''}" title="${escapeHtml(title)}">`
+        + `<span class="tab-glyph">${icon(tab.shared ? 'share' : noteGlyphFor(note))}</span>`
         + `<span class="tab-label">${escapeHtml(title)}</span>`
-        + `<span class="tab-close" data-tab-close="${escapeHtml(tab.id)}" data-tab-close-vault="${tab.vault ? '1' : ''}" role="button" aria-label="Close ${escapeHtml(title)}">×</span>`
+        + `<span class="tab-close" data-tab-close="${escapeHtml(String(tab.id))}" data-tab-close-vault="${tab.vault ? '1' : ''}" data-tab-close-shared="${tab.shared ? '1' : ''}" role="button" aria-label="Close ${escapeHtml(title)}">×</span>`
         + `</button>`;
     }).join('')
     + `<button type="button" class="tab-overflow" data-tab-overflow title="More tabs" aria-label="More tabs" hidden><span data-overflow-count></span>${icon('chevron-down')}</button>`;
@@ -3055,7 +3075,7 @@ function fitTabStrip(bar) {
   tabs.forEach((tab) => {
     const hide = !visible.has(tab);
     tab.hidden = hide;
-    if (hide) hidden.push({ id: tab.dataset.tabId, vault: tab.dataset.tabVault === '1', title: tab.title });
+    if (hide) hidden.push({ id: tab.dataset.tabId, vault: tab.dataset.tabVault === '1', shared: tab.dataset.tabShared === '1', title: tab.title });
   });
   lastOverflowTabs = hidden;
   const countEl = btn.querySelector('[data-overflow-count]');
@@ -3068,12 +3088,12 @@ function paintTabOverflow() {
   const menu = document.getElementById('tab-overflow-menu');
   if (!menu) return;
   menu.innerHTML = lastOverflowTabs.map((tab) => {
-    const note = findTabbedNote(tab.id, tab.vault);
+    const note = findTabbedNote(tab.id, tab.vault, tab.shared);
     const title = (note && note.title) || tab.title || 'Untitled note';
-    return `<button type="button" class="context-item" data-otab-id="${escapeHtml(tab.id)}" data-otab-vault="${tab.vault ? '1' : ''}" title="${escapeHtml(title)}">`
-      + `<span class="tab-glyph">${icon(noteGlyphFor(note))}</span>`
+    return `<button type="button" class="context-item" data-otab-id="${escapeHtml(String(tab.id))}" data-otab-vault="${tab.vault ? '1' : ''}" data-otab-shared="${tab.shared ? '1' : ''}" title="${escapeHtml(title)}">`
+      + `<span class="tab-glyph">${icon(tab.shared ? 'share' : noteGlyphFor(note))}</span>`
       + `<span class="tab-label">${escapeHtml(title)}</span>`
-      + `<span class="tab-close" data-otab-close="${escapeHtml(tab.id)}" data-otab-close-vault="${tab.vault ? '1' : ''}" role="button" aria-label="Close ${escapeHtml(title)}">×</span>`
+      + `<span class="tab-close" data-otab-close="${escapeHtml(String(tab.id))}" data-otab-close-vault="${tab.vault ? '1' : ''}" data-otab-close-shared="${tab.shared ? '1' : ''}" role="button" aria-label="Close ${escapeHtml(title)}">×</span>`
       + `</button>`;
   }).join('');
 }
@@ -3102,14 +3122,15 @@ if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
   const closer = event.target.closest('[data-tab-close]');
   if (closer) {
     event.stopPropagation();
-    closeTab(closer.dataset.tabClose, closer.dataset.tabCloseVault === '1');
+    closeTab(closer.dataset.tabClose, closer.dataset.tabCloseVault === '1', closer.dataset.tabCloseShared === '1');
     return;
   }
   if (event.target.closest('[data-tab-overflow]')) { toggleTabOverflow(); return; }
   if (event.target.closest('[data-tab-home]')) { goAllNotes(); return; }
   const tab = event.target.closest('[data-tab-id]');
   if (!tab) return;
-  if (tab.dataset.tabVault === '1') selectVaultNote(tab.dataset.tabId);
+  if (tab.dataset.tabShared === '1') openCollabNote(tab.dataset.tabId);
+  else if (tab.dataset.tabVault === '1') selectVaultNote(tab.dataset.tabId);
   else selectNote(tab.dataset.tabId);
 });
 const tabOverflowMenuEl = document.getElementById('tab-overflow-menu');
@@ -3117,12 +3138,13 @@ if (tabOverflowMenuEl) tabOverflowMenuEl.addEventListener('click', (event) => {
   const closer = event.target.closest('[data-otab-close]');
   if (closer) {
     event.stopPropagation();
-    closeTab(closer.dataset.otabClose, closer.dataset.otabCloseVault === '1');
+    closeTab(closer.dataset.otabClose, closer.dataset.otabCloseVault === '1', closer.dataset.otabCloseShared === '1');
     return;
   }
   const row = event.target.closest('[data-otab-id]');
   if (!row) return;
-  if (row.dataset.otabVault === '1') selectVaultNote(row.dataset.otabId);
+  if (row.dataset.otabShared === '1') openCollabNote(row.dataset.otabId);
+  else if (row.dataset.otabVault === '1') selectVaultNote(row.dataset.otabId);
   else selectNote(row.dataset.otabId);
   closeTabOverflow();
 });
@@ -5486,6 +5508,8 @@ async function openCollabNote(noteId) {
   if (panel) panel.hidden = false;
   const editorPanel = document.querySelector('.editor-panel');
   if (editorPanel) editorPanel.classList.add('collab-mode');
+  trackTab(noteId, false, true);
+  try { renderTabs(); } catch (error) {}
   collabConnect(noteId, keyRaw, Y, doc);
 }
 function closeCollabNote() {
@@ -5631,8 +5655,12 @@ async function collabRemoveMember(name) {
 }
 async function collabDeleteNote(noteId) {
   const res = await apiFetch(`/api/collab/notes/${encodeURIComponent(noteId)}`, { method: 'DELETE' });
-  if (res.ok) { if (collab.noteId === Number(noteId) || String(collab.noteId) === String(noteId)) closeCollabNote(); if (activeView === 'shared') renderSharedView(); }
-  else showToast('Could not delete the note');
+  if (res.ok) {
+    if (collab.noteId === Number(noteId) || String(collab.noteId) === String(noteId)) closeCollabNote();
+    openTabs = openTabs.filter((tab) => !(tab.shared && String(tab.id) === String(noteId)));
+    try { renderTabs(); } catch (error) {}
+    if (activeView === 'shared') renderSharedView();
+  } else showToast('Could not delete the note');
 }
 async function collabDeleteGroup(groupId) {
   const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' });
@@ -5854,6 +5882,7 @@ async function renderSharedView() {
   }
   box.innerHTML = invitesHtml + groupBlocks.join('');
   updateFoldToggle();
+  try { renderTabs(); } catch (error) {}
 }
 
 async function addSharedFolder(groupId) {
@@ -7475,7 +7504,12 @@ function refreshCurrent() {
   if (refreshBtn) refreshBtn.addEventListener('click', () => { try { refreshCurrent(); } catch (error) {} });
 }
 document.getElementById('close-collab').addEventListener('click', () => {
+  const closedId = collab.noteId;
   closeCollabNote();
+  if (closedId != null) {
+    openTabs = openTabs.filter((tab) => !(tab.shared && String(tab.id) === String(closedId)));
+    try { renderTabs(); } catch (error) {}
+  }
   // Return the standard editor to the previously open note (or empty state).
   if (currentId && notes.some((n) => n.id === currentId)) selectNote(currentId);
   else clearEditor();
