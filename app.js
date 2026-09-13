@@ -5085,19 +5085,77 @@ async function openCollabNote(id) {
   if (overlay) overlay.hidden = false;
   collabConnect(id, keyRaw, Y, doc);
 }
-async function collabCreate() {
-  if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
-  if (!(await sharingEnsureKeys())) { showToast('Could not set up sharing keys'); return; }
+async function collabCreateWithMembers(members) {
+  const names = Array.isArray(members) ? members : [];
   const keyRaw = e2eeRandomBytes(32);
   let selfPub;
   try { selfPub = await sharingRecipientPublicKey(cachedProfile.username); }
-  catch (error) { showToast('Could not load your public key'); return; }
+  catch (error) { showToast('Could not load your public key'); return null; }
   const wrap = await wrapRawKeyFor(selfPub, keyRaw);
   const res = await apiFetch('/api/collab', { method: 'POST', body: JSON.stringify(wrap) });
-  if (!res.ok) { showToast('Could not create the shared note'); return; }
+  if (!res.ok) { showToast('Could not create the shared note'); return null; }
   const data = await res.json();
+  const failed = [];
+  for (const name of names) {
+    try { await collabAddMemberById(data.id, keyRaw, name); }
+    catch (error) { failed.push(`${name}: ${error && error.message ? error.message : 'failed'}`); }
+  }
   await openCollabNote(data.id);
   if (activeView === 'shared') renderSharedView();
+  if (failed.length) showToast(`Note created. Some invites failed — ${failed[0]}`);
+  return data.id;
+}
+async function collabAddMemberById(id, keyRaw, name) {
+  const pub = await sharingRecipientPublicKey(name);
+  const wrap = await wrapRawKeyFor(pub, keyRaw);
+  const res = await apiFetch(`/api/collab/${id}/members`, { method: 'POST', body: JSON.stringify({ username: name, ...wrap }) });
+  if (!res.ok) {
+    let message = 'Could not add member';
+    try { const d = await res.json(); if (d && d.error) message = d.error; } catch (error) {}
+    throw new Error(message);
+  }
+}
+// Popup: ask who to share the new note with, then create it.
+function parseUsernames(raw) {
+  return String(raw || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean).slice(0, 20);
+}
+function openCollabNewDialog() {
+  const overlay = document.getElementById('collab-new-overlay');
+  if (!overlay) return;
+  const input = document.getElementById('collab-new-members');
+  if (input) input.value = '';
+  const status = document.getElementById('collab-new-status');
+  if (status) { status.hidden = true; status.textContent = ''; }
+  overlay.hidden = false;
+  if (input) { try { input.focus(); } catch (error) {} }
+}
+function closeCollabNewDialog() {
+  const overlay = document.getElementById('collab-new-overlay');
+  if (overlay) overlay.hidden = true;
+}
+function setCollabNewStatus(message) {
+  const status = document.getElementById('collab-new-status');
+  if (status) { status.textContent = message; status.hidden = false; }
+}
+async function confirmCollabNew() {
+  const input = document.getElementById('collab-new-members');
+  const names = parseUsernames(input ? input.value : '').filter((n) => /^[A-Za-z0-9_-]{3,32}$/.test(n) && n !== (cachedProfile && cachedProfile.username));
+  if (!names.length) { setCollabNewStatus('Enter at least one valid username (not your own).'); return; }
+  if (!(await sharingEnsureKeys())) { setCollabNewStatus('Could not set up sharing keys.'); return; }
+  const btn = document.getElementById('collab-new-create');
+  if (btn) btn.disabled = true;
+  setCollabNewStatus('Creating…');
+  try {
+    await collabCreateWithMembers(names);
+    closeCollabNewDialog();
+  } catch (error) {
+    setCollabNewStatus(error && error.message ? error.message : 'Could not create the note.');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+async function collabCreate() {
+  openCollabNewDialog();
 }
 function closeCollabNote() {
   if (collab.reconnect) { clearTimeout(collab.reconnect); collab.reconnect = null; }
@@ -5147,7 +5205,7 @@ async function renderSharedView() {
   noteList.innerHTML = `<div class="list-section">
       <div class="list-section-head">
         <span class="list-section-title">Shared with you</span>
-        <button type="button" class="list-section-add" id="shared-new" title="New shared note" aria-label="New shared note">${icon('folder-plus')}</button>
+        <button type="button" class="new-note-button" id="shared-new"><span>+</span> New note</button>
       </div>
       <div id="shared-view-list"><p class="modal-desc" style="padding:6px 10px">Loading…</p></div>
     </div>`;
@@ -6448,6 +6506,15 @@ noteList.addEventListener('click', (event) => {
   if (newBtn) { event.preventDefault(); collabCreate(); }
 });
 document.getElementById('close-collab').addEventListener('click', closeCollabNote);
+document.getElementById('close-collab-new').addEventListener('click', closeCollabNewDialog);
+document.getElementById('collab-new-cancel').addEventListener('click', closeCollabNewDialog);
+document.getElementById('collab-new-create').addEventListener('click', confirmCollabNew);
+document.getElementById('collab-new-overlay').addEventListener('click', (event) => {
+  if (event.target.id === 'collab-new-overlay') closeCollabNewDialog();
+});
+document.getElementById('collab-new-members').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') { event.preventDefault(); confirmCollabNew(); }
+});
 document.getElementById('collab-done').addEventListener('click', closeCollabNote);
 document.getElementById('collab-invite').addEventListener('click', collabInvite);
 document.getElementById('collab-members').addEventListener('click', (event) => {
@@ -8722,6 +8789,8 @@ document.addEventListener('keydown', (event) => {
     if (sectionIconOverlay && !sectionIconOverlay.hidden) { closeSectionIconPicker(); return; }
     const tagEditorOverlay = document.getElementById('tag-editor-overlay');
     if (tagEditorOverlay && !tagEditorOverlay.hidden) { closeTagEditor(); return; }
+    const collabNewOverlay = document.getElementById('collab-new-overlay');
+    if (collabNewOverlay && !collabNewOverlay.hidden) { closeCollabNewDialog(); return; }
     const collabOverlay = document.getElementById('collab-overlay');
     if (collabOverlay && !collabOverlay.hidden) { closeCollabNote(); return; }
     if (settingsOverlay && !settingsOverlay.hidden) { closeSettings(); return; }

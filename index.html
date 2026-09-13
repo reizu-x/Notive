@@ -473,6 +473,25 @@
         <div class="modal-actions"><button class="btn btn-primary" id="tag-editor-done" type="button">Done</button></div>
       </div>
     </div>
+    <!-- New shared note: choose who to share it with -->
+    <div class="modal-overlay" id="collab-new-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="collab-new-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Shared note</p>
+            <h2 id="collab-new-title">Who are you sharing with?</h2>
+          </div>
+          <button class="icon-button" id="close-collab-new" aria-label="Close" data-icon="x"></button>
+        </div>
+        <p class="modal-desc">Add one or more usernames (comma or space separated). They can edit this note with you in real time. You can add more later.</p>
+        <label class="login-field"><span>Usernames</span><input id="collab-new-members" type="text" placeholder="alex, sam, jordan" autocomplete="off" /></label>
+        <p class="login-error" id="collab-new-status" hidden></p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="collab-new-cancel" type="button">Cancel</button>
+          <button class="btn btn-primary" id="collab-new-create" type="button">Create &amp; share</button>
+        </div>
+      </div>
+    </div>
     <!-- Live collaborative editor -->
     <div class="modal-overlay" id="collab-overlay" hidden>
       <div class="modal collab-modal" role="dialog" aria-modal="true" aria-labelledby="collab-title-lbl">
