@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev65') {
+  if (build !== 'dev66') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -9994,8 +9994,6 @@ function setSettingsTab(name) {
   document.querySelectorAll('.settings-pane').forEach((pane) => {
     pane.hidden = pane.dataset.settingsPane !== name;
   });
-  const newTagBtn = document.getElementById('settings-new-tag');
-  if (newTagBtn) newTagBtn.hidden = name !== 'tags';
   if (name === 'tags') { try { renderSettingsTags(); } catch (error) {} }
 }
 const settingsNewTagBtn = document.getElementById('settings-new-tag');
