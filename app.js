@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev32') {
+  if (build !== 'dev33') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5188,7 +5188,8 @@ async function collabAddGroupMember(groupId, keyRaw, name) {
     throw new Error(message);
   }
 }
-// Create a shared section (group) named after the first member, then its first note.
+// Start a connection: create a shared section for the person (no note yet).
+// They receive a "<you> wants to connect with you" request to accept.
 async function collabCreateSection(members) {
   const names = Array.isArray(members) ? members : [];
   const keyRaw = e2eeRandomBytes(32);
@@ -5196,22 +5197,18 @@ async function collabCreateSection(members) {
   try { selfPub = await sharingRecipientPublicKey(cachedProfile.username); }
   catch (error) { showToast('Could not load your public key'); return null; }
   const wrap = await wrapRawKeyFor(selfPub, keyRaw);
-  const name = names[0] || 'Shared';
+  const name = names[0] || 'Connection';
   const res = await apiFetch('/api/collab/groups', { method: 'POST', body: JSON.stringify({ name, ...wrap }) });
-  if (!res.ok) { showToast('Could not create the shared section'); return null; }
+  if (!res.ok) { showToast('Could not start the connection'); return null; }
   const data = await res.json();
   const failed = [];
   for (const who of names) {
     try { await collabAddGroupMember(data.id, keyRaw, who); }
     catch (error) { failed.push(`${who}: ${error && error.message ? error.message : 'failed'}`); }
   }
-  const encMeta = await collabEncryptMeta(keyRaw, { title: '', folder: '' });
-  const noteRes = await apiFetch(`/api/collab/groups/${data.id}/notes`, { method: 'POST', body: JSON.stringify({ encMeta }) });
-  if (!noteRes.ok) { showToast('Section created, but could not add a note'); if (activeView === 'shared') renderSharedView(); return null; }
-  const note = await noteRes.json();
-  await openCollabNote(note.id);
   if (activeView === 'shared') renderSharedView();
-  if (failed.length) showToast(`Created. Some invites failed — ${failed[0]}`);
+  if (failed.length) showToast(`Connection started, but some requests failed — ${failed[0]}`);
+  else showToast(`Connection request sent to ${names.join(', ')}`);
   return data.id;
 }
 async function createNoteInGroup(groupId, folder) {
@@ -5317,7 +5314,7 @@ async function confirmCollabNew() {
   if (!(await sharingEnsureKeys())) { setCollabNewStatus('Could not set up sharing keys.'); return; }
   const btn = document.getElementById('collab-new-create');
   if (btn) btn.disabled = true;
-  setCollabNewStatus('Creating…');
+  setCollabNewStatus('Sending…');
   try {
     await collabCreateSection(names);
     closeCollabNewDialog();
@@ -5401,13 +5398,13 @@ async function renderSharedView() {
   const invitesHtml = invites.length ? `<div class="list-section">
       <div class="list-section-head"><span class="list-section-title">Invitations</span><span class="shared-group-count">${invites.length}</span></div>
       ${invites.map((inv) => `<div class="shared-invite">
-        <span class="shared-invite-text"><strong>${escapeHtml(inv.owner)}</strong> shared a section with you</span>
+        <span class="shared-invite-text"><strong>${escapeHtml(inv.owner)}</strong> wants to connect with you</span>
         <button type="button" class="btn btn-primary shared-action" data-invite-accept="${inv.id}">Accept</button>
         <button type="button" class="btn btn-secondary shared-action" data-invite-decline="${inv.id}">Decline</button>
       </div>`).join('')}
     </div>` : '';
   if (!groups.length) {
-    box.innerHTML = invitesHtml || '<p class="modal-desc" style="padding:6px 10px">No shared sections yet. Click + New note and enter a username to start.</p>';
+    box.innerHTML = invitesHtml || '<p class="modal-desc" style="padding:6px 10px">No connections yet. Click + New connection and enter a username to start.</p>';
     return;
   }
   if (!(await sharingEnsureKeys())) {
