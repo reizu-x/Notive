@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev59') {
+  if (build !== 'dev60') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -966,6 +966,7 @@ function uiSnapshot() {
       folders: [...(entry.folders || [])], deletedAt: entry.deletedAt,
     })),
     theme,
+    avatar: profileAvatar || '',
   };
 }
 
@@ -1005,8 +1006,11 @@ function cleanUiSnapshot(value) {
   if (typeof value.theme === 'string' && THEMES.includes(value.theme)) {
     out.theme = value.theme;
   }
+  if (typeof value.avatar === 'string' && cleanAvatarSrc(value.avatar)) {
+    out.avatar = value.avatar.trim();
+  }
   if (out.collapsed === null
-    && !out.customSections && !out.legacyCollections && !out.legacyCollectionsName && !out.deletedCustomSections && !out.theme) return null;
+    && !out.customSections && !out.legacyCollections && !out.legacyCollectionsName && !out.deletedCustomSections && !out.theme && !out.avatar) return null;
   return out;
 }
 
@@ -1027,6 +1031,11 @@ function applyUiSnapshot(value) {
     try { applyTheme(clean.theme, false); } catch (error) {}
     adopted = true;
   }
+  if (typeof clean.avatar === 'string') {
+    profileAvatar = clean.avatar;
+    adopted = true;
+    try { applyProfile(); } catch (error) {}
+  }
   return adopted;
 }
 
@@ -1043,6 +1052,7 @@ async function writeUiVaultLocal() {
   const snapshot = JSON.stringify({
     collapsed: [...collapsedFolders],
     customSections, deletedCustomSections, theme,
+    avatar: profileAvatar || '',
   });
   const iv = e2eeRandomBytes(12);
   const ct = await window.crypto.subtle.encrypt(
@@ -8224,6 +8234,32 @@ function initialsFor(name) {
   return String(name || '').trim().split(/\s+/).map((word) => word[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?';
 }
 
+// --- Profile avatar --------------------------------------------------------
+// Optional user picture. Stored inside the E2EE UI vault (never plaintext on
+// disk/server), rendered as an image in place of the initials.
+let profileAvatar = '';
+const AVATAR_MAX_CHARS = 400000;
+function cleanAvatarSrc(raw) {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (s.length > AVATAR_MAX_CHARS) return null;
+  return /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(s) ? s : null;
+}
+// Paint a round avatar element with the picture when set, else its initials.
+function paintAvatar(el, fallbackInitials) {
+  if (!el) return;
+  el.textContent = '';
+  const src = cleanAvatarSrc(profileAvatar);
+  if (src) {
+    const img = document.createElement('img');
+    img.alt = '';
+    img.src = src;
+    el.appendChild(img);
+  } else {
+    el.textContent = fallbackInitials;
+  }
+}
+
 // Display profile (name + subtitle) or null when signed out.
 function currentProfile() {
   const sessionUser = getSessionUser();
@@ -8237,10 +8273,10 @@ function applyProfile() {
   if (!profile) return;
   const nameEl = document.querySelector('.profile-copy strong');
   const subEl = document.querySelector('.profile-copy span');
-  const avatarEl = document.querySelector('.profile-card .avatar');
+  paintAvatar(document.querySelector('.profile-card .avatar'), initialsFor(profile.name));
   if (nameEl) nameEl.textContent = profile.name;
   if (subEl) subEl.textContent = profile.subtitle;
-  if (avatarEl) avatarEl.textContent = initialsFor(profile.name);
+  refreshProfilePopup();
 }
 
 // Show the login gate and focus the username field.
@@ -8278,6 +8314,7 @@ async function logout() {
   } catch (error) {}
   try { await apiFetch('/api/logout', { method: 'POST' }); } catch (error) {}
   cachedProfile = null;
+  profileAvatar = '';
   e2eeLock();
   // Wipe decrypted workspace: memory, editor DOM and any legacy local copy.
   notes = [];
@@ -9185,6 +9222,10 @@ function refreshAccountPane() {
   try {
     const u = document.getElementById('account-username');
     if (u) u.value = (cachedProfile && cachedProfile.username) || '';
+    const f = document.getElementById('account-first');
+    if (f && document.activeElement !== f) f.value = (cachedProfile && cachedProfile.firstName) || '';
+    const l = document.getElementById('account-last');
+    if (l && document.activeElement !== l) l.value = (cachedProfile && cachedProfile.lastName) || '';
     const e = document.getElementById('account-email');
     if (e && document.activeElement !== e) e.value = (cachedProfile && cachedProfile.email) || '';
   } catch (error) {}
@@ -9254,6 +9295,133 @@ if (accountDeleteBtn) accountDeleteBtn.addEventListener('click', async () => {
     if (errEl) { errEl.textContent = error.message; errEl.hidden = false; }
   }
 });
+// --- Name editing (stored inside the server-encrypted profile) ---
+async function saveAccountName() {
+  const errEl = document.getElementById('account-error');
+  const first = String(document.getElementById('account-first').value || '').trim().slice(0, 60);
+  const last = String(document.getElementById('account-last').value || '').trim().slice(0, 60);
+  try {
+    const r = await apiFetch('/api/account/profile', { method: 'POST', body: JSON.stringify({ firstName: first, lastName: last }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'Could not save name.');
+    if (cachedProfile) { cachedProfile.firstName = data.firstName || first; cachedProfile.lastName = data.lastName || last; }
+    if (errEl) errEl.hidden = true;
+    applyProfile();
+    showToast('Name saved');
+  } catch (error) {
+    if (errEl) { errEl.textContent = error.message; errEl.hidden = false; }
+  }
+}
+const accountSaveNameBtn = document.getElementById('account-save-name-btn');
+if (accountSaveNameBtn) accountSaveNameBtn.addEventListener('click', saveAccountName);
+
+// --- Profile popup + avatar picture ---------------------------------------
+const profileOverlay = document.getElementById('profile-overlay');
+function openProfilePopup() {
+  if (!profileOverlay) return;
+  refreshProfilePopup();
+  profileOverlay.hidden = false;
+  document.getElementById('sidebar').classList.remove('open');
+  const btn = document.getElementById('profile-edit-btn');
+  if (btn) { try { btn.focus(); } catch (error) {} }
+}
+function closeProfilePopup() {
+  if (profileOverlay) profileOverlay.hidden = true;
+}
+function refreshProfilePopup() {
+  const name = cachedProfile ? fullNameOf(cachedProfile) : '';
+  const nameEl = document.getElementById('profile-modal-name');
+  if (nameEl) nameEl.textContent = name || 'Not signed in';
+  const userEl = document.getElementById('profile-view-username');
+  if (userEl) userEl.textContent = cachedProfile ? `@${cachedProfile.username}` : '';
+  const emailEl = document.getElementById('profile-view-email');
+  if (emailEl) emailEl.textContent = cachedProfile && cachedProfile.email ? cachedProfile.email : 'No recovery email set';
+  paintAvatar(document.getElementById('profile-avatar-large'), initialsFor(name));
+  const removeBtn = document.getElementById('profile-photo-remove');
+  if (removeBtn) removeBtn.hidden = !cleanAvatarSrc(profileAvatar);
+}
+// Center-crop to a square 256px JPEG for a compact avatar.
+function downscaleAvatar(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onerror = () => reject(new Error('decode'));
+    img.onload = () => {
+      try {
+        const size = 256;
+        const w = img.naturalWidth || size;
+        const h = img.naturalHeight || size;
+        const side = Math.min(w, h);
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('canvas')); return; }
+        ctx.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size);
+        canvas.toBlob((blob) => {
+          if (!blob) { reject(new Error('encode')); return; }
+          const reader = new FileReader();
+          reader.onerror = () => reject(new Error('read'));
+          reader.onload = () => resolve(String(reader.result || ''));
+          reader.readAsDataURL(blob);
+        }, 'image/jpeg', 0.85);
+      } catch (error) { reject(error); }
+    };
+    img.src = dataUrl;
+  });
+}
+async function handleAvatarFile(file) {
+  if (!file) return;
+  if (!e2ee.masterKey) { showToast('Log in and unlock your notes to change your photo'); return; }
+  if (!isImageFile(file)) { showToast('Use a PNG, JPEG, WebP, GIF, AVIF or BMP image'); return; }
+  if (file.size > 5 * 1024 * 1024) { showToast('Image too large (5 MB max)'); return; }
+  showToast('Loading picture…');
+  try {
+    const raw = await readFileAsDataUrl(file);
+    const scaled = await downscaleAvatar(raw).catch(() => raw);
+    const clean = cleanAvatarSrc(scaled) || cleanAvatarSrc(raw);
+    if (!clean) { showToast('Could not use that image — try a smaller one'); return; }
+    profileAvatar = clean;
+    paintAvatar(document.querySelector('.profile-card .avatar'), initialsFor(cachedProfile ? fullNameOf(cachedProfile) : ''));
+    refreshProfilePopup();
+    persistUiVault();
+    showToast('Profile photo updated');
+  } catch (error) { showToast('Could not read that image'); }
+}
+const profileCardEl = document.querySelector('.profile-card');
+if (profileCardEl) profileCardEl.addEventListener('click', (event) => {
+  if (event.target.closest('#logout-button')) return;
+  openProfilePopup();
+});
+const closeProfileBtn = document.getElementById('close-profile');
+if (closeProfileBtn) closeProfileBtn.addEventListener('click', closeProfilePopup);
+if (profileOverlay) profileOverlay.addEventListener('click', (event) => { if (event.target === profileOverlay) closeProfilePopup(); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && profileOverlay && !profileOverlay.hidden) closeProfilePopup(); });
+const profileEditBtn = document.getElementById('profile-edit-btn');
+if (profileEditBtn) profileEditBtn.addEventListener('click', () => {
+  closeProfilePopup();
+  openSettings();
+  setSettingsTab('profile');
+  refreshAccountPane();
+});
+const profilePhotoBtn = document.getElementById('profile-photo-btn');
+if (profilePhotoBtn) profilePhotoBtn.addEventListener('click', () => {
+  const input = document.getElementById('avatar-input');
+  if (input) { input.value = ''; input.click(); }
+});
+const profilePhotoRemove = document.getElementById('profile-photo-remove');
+if (profilePhotoRemove) profilePhotoRemove.addEventListener('click', () => {
+  profileAvatar = '';
+  paintAvatar(document.querySelector('.profile-card .avatar'), initialsFor(cachedProfile ? fullNameOf(cachedProfile) : ''));
+  refreshProfilePopup();
+  persistUiVault();
+  showToast('Profile photo removed');
+});
+const avatarInputEl = document.getElementById('avatar-input');
+if (avatarInputEl) avatarInputEl.addEventListener('change', (event) => {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = '';
+  if (file) handleAvatarFile(file);
+});
+
 // --- Password-loss recovery codes (E2EE-safe wraps, server stores hashes only) ---
 async function sha256Hex(text) {
   const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text)));

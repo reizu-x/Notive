@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notely-build" content="dev59" />
+    <meta name="notely-build" content="dev60" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev59" />
+    <link rel="stylesheet" href="styles.css?v=dev60" />
   </head>
   <body>
     <div class="app-shell">
@@ -287,7 +287,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
           <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
         </div>
-        <p class="login-hint" id="build-tag">dev build dev59</p>
+        <p class="login-hint" id="build-tag">dev build dev60</p>
       </div>
       <div class="login-theme-float">
         <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
@@ -378,6 +378,11 @@
             <h3 class="settings-pane-title">Profile</h3>
             <p class="modal-desc">Your Notely account details.</p>
             <label class="login-field"><span>Username</span><input id="account-username" type="text" readonly autocomplete="username" /></label>
+            <label class="login-field"><span>First name</span><input id="account-first" type="text" autocomplete="given-name" maxlength="60" placeholder="First name" /></label>
+            <label class="login-field"><span>Last name</span><input id="account-last" type="text" autocomplete="family-name" maxlength="60" placeholder="Last name" /></label>
+            <button class="btn btn-secondary" id="account-save-name-btn" type="button">Save name</button>
+            <hr />
+            <h3 class="settings-pane-title">Recovery email</h3>
             <label class="login-field"><span>Email</span><input id="account-email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" /></label>
             <p class="login-error" id="account-error" hidden></p>
             <button class="btn btn-secondary" id="account-save-btn" type="button">Save email</button>
@@ -433,6 +438,30 @@
         </div>
       </div>
     </div>
+    <!-- Profile popup: opened from the sidebar profile card (collapsed or expanded) -->
+    <div class="modal-overlay" id="profile-overlay" hidden>
+      <div class="modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-modal-name">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Account</p>
+            <h2 id="profile-modal-title">Profile</h2>
+          </div>
+          <button class="icon-button" id="close-profile" aria-label="Close profile" data-icon="x"></button>
+        </div>
+        <div class="profile-view">
+          <div class="profile-avatar-large" id="profile-avatar-large">?</div>
+          <h3 class="profile-view-name" id="profile-modal-name">Name</h3>
+          <p class="profile-view-line" id="profile-view-username">@username</p>
+          <p class="profile-view-line" id="profile-view-email">you@example.com</p>
+          <div class="profile-view-actions">
+            <button class="btn btn-primary" id="profile-edit-btn" type="button">Edit profile</button>
+            <button class="btn btn-secondary" id="profile-photo-btn" type="button">Change photo</button>
+            <button class="btn btn-secondary" id="profile-photo-remove" type="button" hidden>Remove photo</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,image/bmp,.png,.jpg,.jpeg,.jfif,.webp,.gif,.avif,.bmp" hidden />
     <!-- New-note template chooser: Standard / Recipe / To-Do -->
     <div class="modal-overlay" id="template-overlay" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="template-title">
@@ -712,6 +741,6 @@
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
-    <script src="app.js?v=dev59"></script>
+    <script src="app.js?v=dev60"></script>
   </body>
 </html>

@@ -2979,6 +2979,38 @@ def api_account_email():
     return jsonify({'ok': True, 'email': email})
 
 
+@app.route('/api/account/profile', methods=['POST'])
+def api_account_profile():
+    """Set the display first/last name (stored inside the server-encrypted
+    profile). Session-authenticated: a display name is not credential-adjacent,
+    unlike the recovery email."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    first = ' '.join(str(data.get('firstName', '')).split())[:60]
+    last = ' '.join(str(data.get('lastName', '')).split())[:60]
+    conn = get_db()
+    row = conn.execute('SELECT enc_profile FROM users WHERE username = ?', (user['username'],)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'Not signed in.'}), 401
+    try:
+        profile = decrypt_profile(row['enc_profile'])
+    except Exception:
+        profile = {}
+    conn.execute('UPDATE users SET enc_profile = ? WHERE username = ?',
+                 (encrypt_profile({
+                     'firstName': first,
+                     'lastName': last,
+                     'subtitle': profile.get('subtitle', 'Personal space'),
+                     'email': profile.get('email', ''),
+                 }), user['username']))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'firstName': first, 'lastName': last})
+
+
 @app.route('/api/account', methods=['DELETE'])
 def api_account_delete():
     """Delete account + all data. Requires verifier proof + username confirm."""
