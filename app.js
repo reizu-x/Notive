@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev39') {
+  if (build !== 'dev40') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5035,6 +5035,7 @@ function scheduleCollabMeta() {
       const encMeta = await collabEncryptMeta(collab.key, {
         title: collab.title ? collab.title.toString().slice(0, 200) : '',
         folder: collab.folder || '',
+        template: collab.template || '',
       });
       await apiFetch(`/api/collab/notes/${collab.noteId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
     } catch (error) {}
@@ -5042,7 +5043,7 @@ function scheduleCollabMeta() {
 }
 
 const collab = { noteId: null, groupId: null, doc: null, title: null, body: null, es: null, key: null,
-  members: [], owner: null, groupName: '', folder: '', updates: 0, reconnect: null, metaTimer: null };
+  members: [], owner: null, groupName: '', folder: '', template: '', updates: 0, reconnect: null, metaTimer: null };
 
 function setCollabStatus(text, offline) {
   const el = document.getElementById('collab-status');
@@ -5138,7 +5139,7 @@ async function openCollabNote(noteId) {
     noteId, groupId: meta.groupId, doc,
     title: doc.getText('title'), body: doc.getText('body'),
     es: null, key: keyRaw, members: group.members || [], owner: meta.owner, groupName: group.name || '',
-    folder: noteMeta.folder || '', updates: 0,
+    folder: noteMeta.folder || '', template: noteMeta.template || '', updates: 0,
   });
   doc.on('update', (update, origin) => {
     if (origin === 'remote') return;
@@ -5182,7 +5183,7 @@ function closeCollabNote() {
   if (collab.es) { try { collab.es.close(); } catch (error) {} }
   if (collab.doc) { try { collab.doc.destroy(); } catch (error) {} }
   collab.noteId = null; collab.groupId = null; collab.doc = null; collab.title = null; collab.body = null;
-  collab.es = null; collab.key = null; collab.members = []; collab.owner = null; collab.groupName = '';
+  collab.es = null; collab.key = null; collab.members = []; collab.owner = null; collab.groupName = ''; collab.template = '';
 }
 async function collabAddGroupMember(groupId, keyRaw, name) {
   const pub = await sharingRecipientPublicKey(name);
@@ -5223,26 +5224,40 @@ function openSharedNewNote(groupId, folder) {
   pendingSharedTemplate = { groupId, folder: folder || '' };
   openTemplatePicker();
 }
-function sharedTemplateBody(templateKey) {
-  if (templateKey === 'recipe') return '## Ingredients\n\n- \n\n## Method\n\n1. \n';
-  if (templateKey === 'todo') return '## Today\n\n- [ ] Most important task\n- [ ] Second task\n\n## Later\n\n- [ ] Someday task';
-  return 'Start writing here...';
+function sharedUniqueTitle(base, groupId) {
+  const used = new Set();
+  sharedNoteMeta.forEach((m) => {
+    if (String(m.groupId) === String(groupId)) {
+      const t = (m.title || '').trim().toLowerCase();
+      if (t) used.add(t);
+    }
+  });
+  if (!used.has(base.toLowerCase())) return base;
+  let i = 2;
+  while (used.has(`${base} ${i}`.toLowerCase())) i += 1;
+  return `${base} ${i}`;
 }
+// Start a shared note from the same templates used by All Notes.
 async function createSharedNoteWithTemplate(groupId, folder, templateKey) {
-  const template = (templateKey === 'recipe' || templateKey === 'todo') ? templateKey : '';
+  const key0 = NOTE_TEMPLATES[templateKey] ? templateKey : 'standard';
+  const template = NOTE_TEMPLATES[key0];
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
   if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
   let key;
   try { key = (await collabGroupKey(groupId)).key; }
   catch (error) { showToast('You no longer have access to this section'); return; }
-  const encMeta = await collabEncryptMeta(key, { title: '', folder: folder || '', template });
+  const title = sharedUniqueTitle(template.titleBase, groupId);
+  const encMeta = await collabEncryptMeta(key, { title, folder: folder || '', template: key0 });
   const res = await apiFetch(`/api/collab/groups/${groupId}/notes`, { method: 'POST', body: JSON.stringify({ encMeta }) });
   if (!res.ok) { showToast('Could not create the note'); return; }
   const note = await res.json();
   await openCollabNote(note.id);
-  const body = sharedTemplateBody(templateKey);
-  if (body && collab.body && collab.body.length === 0) {
-    try { collab.body.insert(0, body); } catch (error) {}
+  if (collab.body && collab.body.length === 0) {
+    const body = typeof template.body === 'function' ? template.body(title) : '';
+    if (body) { try { collab.body.insert(0, body); } catch (error) {} }
+  }
+  if (collab.title && collab.title.length === 0) {
+    try { collab.title.insert(0, title); } catch (error) {}
   }
   if (activeView === 'shared') renderSharedView();
 }
