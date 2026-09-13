@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev42') {
+  if (build !== 'dev43') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -3577,10 +3577,24 @@ function renderCover(note) {
 function renderRecipeHero(note) {
   const hero = document.getElementById('recipe-hero');
   if (!hero) return;
-  const show = Boolean(note && note.template === 'recipe' && activeView !== 'vault');
+  // A shared recipe note keeps its meal photo (Y.Map 'assets') and description
+  // (Y.Text 'desc') in the collaborative doc; a local note uses its own fields.
+  let template;
+  let cover;
+  let description;
+  if (collab.noteId) {
+    template = collab.template;
+    cover = collab.cover;
+    description = collab.desc ? collab.desc.toString() : '';
+  } else {
+    template = note && note.template;
+    cover = note && note.cover;
+    description = note && note.description;
+  }
+  const show = Boolean(template === 'recipe' && activeView !== 'vault');
   hero.hidden = !show;
   if (!show) return;
-  const usable = cleanCoverSrc(note.cover);
+  const usable = cleanCoverSrc(cover);
   const img = document.getElementById('recipe-photo-img');
   const empty = document.getElementById('recipe-photo-empty');
   if (img) {
@@ -3595,7 +3609,7 @@ function renderRecipeHero(note) {
   if (empty) empty.hidden = Boolean(usable);
   const descEl = document.getElementById('recipe-desc');
   if (descEl) {
-    const next = typeof note.description === 'string' ? note.description : '';
+    const next = typeof description === 'string' ? description : '';
     if (document.activeElement !== descEl && descEl.value !== next) descEl.value = next;
   }
 }
@@ -3667,6 +3681,37 @@ async function handleCoverFile(file) {
     renderCover(note);
     persistNotes();
     showToast(wasOptimized ? 'Cover added (optimized) — Reposition to adjust' : 'Cover added — Reposition to adjust');
+  } catch (error) {
+    showToast('Could not read that image');
+  }
+}
+
+// Shared recipe notes keep their meal photo in the collaborative doc
+// (Y.Map 'assets'), so every member sees the same picture.
+function requestCollabCoverUpload() {
+  exitCoverRepos(true);
+  if (!collab.noteId || !isUnlocked()) return;
+  const input = document.getElementById('cover-input');
+  if (input) { input.value = ''; input.click(); }
+}
+
+async function handleCollabCoverFile(file) {
+  if (!collab.noteId || !collab.assets) return;
+  if (!file) return;
+  if (!isImageFile(file)) { showToast('Use a PNG, JPEG, WebP, GIF, AVIF or BMP image'); return; }
+  if (file.size > 5 * 1024 * 1024) { showToast('Image too large (5 MB max)'); return; }
+  const wasOptimized = file.size > 300000;
+  showToast('Loading picture…');
+  try {
+    const raw = await readFileAsDataUrl(file);
+    const dataUrl = wasOptimized ? await downscaleCover(raw) : raw;
+    const clean = cleanCoverSrc(dataUrl) || (!wasOptimized ? await downscaleCover(raw).then(cleanCoverSrc) : null);
+    if (!clean) { showToast('Could not use that image — try a smaller file'); return; }
+    if (!collab.noteId || !collab.assets) return; // moved on mid-upload
+    collab.assets.set('cover', clean);
+    collab.cover = clean;
+    renderRecipeHero(null);
+    showToast(wasOptimized ? 'Meal photo added (optimized)' : 'Meal photo added');
   } catch (error) {
     showToast('Could not read that image');
   }
@@ -5042,7 +5087,8 @@ function scheduleCollabMeta() {
   }, 700);
 }
 
-const collab = { noteId: null, groupId: null, doc: null, title: null, body: null, es: null, key: null,
+const collab = { noteId: null, groupId: null, doc: null, title: null, body: null, desc: null, assets: null,
+  cover: '', description: '', es: null, key: null,
   members: [], owner: null, groupName: '', folder: '', template: '', updates: 0, reconnect: null, metaTimer: null };
 
 function setCollabStatus(text, offline) {
@@ -5075,6 +5121,19 @@ function collabSyncDom() {
     try { markdownInput.setSelectionRange(Math.min(start, bodyStr.length), Math.min(start, bodyStr.length)); } catch (error) {}
     if (writeMode === 'preview') { try { preview.innerHTML = renderMarkdown(bodyStr); } catch (error) {} }
   }
+  const descEl = document.getElementById('recipe-desc');
+  if (descEl && collab.desc) {
+    const descStr = collab.desc.toString();
+    if (document.activeElement !== descEl && descEl.value !== descStr) descEl.value = descStr;
+  }
+}
+// Keep the shared recipe hero in step with the collaborative cover asset.
+function collabAssetsChanged() {
+  if (!collab.noteId) return;
+  const raw = collab.assets ? collab.assets.get('cover') : '';
+  collab.cover = cleanCoverSrc(raw) || '';
+  collab.description = collab.desc ? collab.desc.toString() : '';
+  renderRecipeHero(null);
 }
 function renderCollabMembers() {
   const box = document.getElementById('collab-members');
@@ -5133,11 +5192,12 @@ async function openCollabNote(noteId) {
   const Y = await loadYjs();
   closeCollabNote();
   const doc = new Y.Doc();
-  let noteMeta = { title: '', folder: '' };
+  let noteMeta = { title: '', folder: '', template: '' };
   try { noteMeta = await collabDecryptMeta(keyRaw, meta.encMeta || ''); } catch (error) {}
   Object.assign(collab, {
     noteId, groupId: meta.groupId, doc,
-    title: doc.getText('title'), body: doc.getText('body'),
+    title: doc.getText('title'), body: doc.getText('body'), desc: doc.getText('desc'),
+    assets: doc.getMap('assets'), cover: '', description: '',
     es: null, key: keyRaw, members: group.members || [], owner: meta.owner, groupName: group.name || '',
     folder: noteMeta.folder || '', template: noteMeta.template || '', updates: 0,
   });
@@ -5149,6 +5209,8 @@ async function openCollabNote(noteId) {
   });
   collab.title.observe(collabSyncDom);
   collab.body.observe(collabSyncDom);
+  collab.desc.observe(collabSyncDom);
+  collab.assets.observe(collabAssetsChanged);
   const me = cachedProfile && cachedProfile.username;
   const displayName = collab.owner === me ? (collab.groupName || 'Shared') : collab.owner;
   const label = document.getElementById('collab-group-label');
@@ -5160,6 +5222,14 @@ async function openCollabNote(noteId) {
   if (titleInput) titleInput.value = collab.title.toString();
   if (markdownInput) markdownInput.value = collab.body.toString();
   try { refreshEditorLock(); } catch (error) {}
+  // refreshEditorLock bails out for shared notes, so enable the recipe hero
+  // controls here (a shared recipe is always editable while it is open).
+  const recipeDesc = document.getElementById('recipe-desc');
+  if (recipeDesc) recipeDesc.disabled = false;
+  const recipePhotoBtn = document.getElementById('recipe-photo-btn');
+  if (recipePhotoBtn) recipePhotoBtn.disabled = false;
+  try { renderRecipeHero(null); } catch (error) {}
+  try { collabAssetsChanged(); } catch (error) {}
   try { renderPreview(null); } catch (error) {}
   try { markdownInput.focus({ preventScroll: true }); } catch (error) {}
   renderCollabMembers();
@@ -5183,7 +5253,9 @@ function closeCollabNote() {
   if (collab.es) { try { collab.es.close(); } catch (error) {} }
   if (collab.doc) { try { collab.doc.destroy(); } catch (error) {} }
   collab.noteId = null; collab.groupId = null; collab.doc = null; collab.title = null; collab.body = null;
+  collab.desc = null; collab.assets = null; collab.cover = ''; collab.description = '';
   collab.es = null; collab.key = null; collab.members = []; collab.owner = null; collab.groupName = ''; collab.template = '';
+  try { renderRecipeHero(null); } catch (error) {}
 }
 async function collabAddGroupMember(groupId, keyRaw, name) {
   const pub = await sharingRecipientPublicKey(name);
@@ -6539,6 +6611,10 @@ function saveCurrentNote() {
   if (collab.noteId && collab.title && collab.body) {
     applyTextDiff(collab.title, collab.title.toString(), String(titleInput.value || '').slice(0, 200));
     applyTextDiff(collab.body, collab.body.toString(), String(markdownInput.value || ''));
+    if (collab.desc && collab.template === 'recipe') {
+      const descEl = document.getElementById('recipe-desc');
+      applyTextDiff(collab.desc, collab.desc.toString(), descEl && typeof descEl.value === 'string' ? descEl.value.slice(0, 2000) : '');
+    }
     scheduleCollabMeta();
     return;
   }
@@ -7219,7 +7295,7 @@ document.getElementById('delete-overlay').addEventListener('click', (event) => {
 titleInput.addEventListener('input', saveCurrentNote);
 markdownInput.addEventListener('input', saveCurrentNote);
 document.getElementById('recipe-desc').addEventListener('input', saveCurrentNote);
-document.getElementById('recipe-photo-btn').addEventListener('click', () => { requestCoverUpload(); });
+document.getElementById('recipe-photo-btn').addEventListener('click', () => { if (collab.noteId) requestCollabCoverUpload(); else requestCoverUpload(); });
 
 document.getElementById('search-input').addEventListener('input', (event) => {
   searchQuery = String(event.target.value || '').slice(0, 200);
@@ -7470,7 +7546,7 @@ document.getElementById('cover-done').addEventListener('click', () => exitCoverR
 document.getElementById('cover-input').addEventListener('change', (event) => {
   const file = event.target.files && event.target.files[0];
   event.target.value = '';
-  if (file) handleCoverFile(file);
+  if (file) { if (collab.noteId) handleCollabCoverFile(file); else handleCoverFile(file); }
 });
 // Reposition by dragging the banner on the note itself (buttons opt out).
 function coverDragStart(event, clientY) {
