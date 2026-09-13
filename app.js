@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev43') {
+  if (build !== 'dev44') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -358,7 +358,7 @@ read it, not even the server itself.
 - **Write** — the left pane is your editor, the right pane previews as you type.
 - **Organise** — every note can live in a folder. This workspace starts with
   two: **General** and **Personal**, inside the **Notes** section.
-- **Search** — the search bar at the top finds titles and text instantly.
+- **Search** — the search bar at the top finds note titles, contents and folders instantly.
 
 ## Sections and folders
 
@@ -3243,26 +3243,18 @@ function visibleNotes() {
   });
 }
 
-// Search over title, body and tags. `#tag` / `tag:tag` terms match tags only;
-// other terms match any text (tags included). Multiple terms are AND-ed.
+// Search over note titles, contents and folder names. Tags are not searchable
+// here — the sidebar searches files and folders only. Terms are AND-ed.
 function noteMatchesSearch(note, query) {
   const q = String(query == null ? '' : query).trim().toLowerCase();
   if (!q) return true;
   const title = typeof note.title === 'string' ? note.title : '';
   const body = typeof note.body === 'string' ? note.body : '';
-  const tags = (Array.isArray(note.tags) ? note.tags : []).filter((t) => typeof t === 'string').map((t) => t.toLowerCase());
-  const tagTerms = [];
-  const textTerms = [];
-  q.split(/\s+/).filter(Boolean).forEach((token) => {
-    if (token.startsWith('#')) tagTerms.push(token.slice(1));
-    else if (token.startsWith('tag:')) tagTerms.push(token.slice(4));
-    else textTerms.push(token);
-  });
-  if (tagTerms.some((term) => !term)) return false; // a bare "#" matches nothing
-  const tagMatch = tagTerms.every((term) => tags.some((tag) => tag.includes(term)));
-  const haystack = `${title} ${body} ${tags.join(' ')}`.toLowerCase();
-  const textMatch = textTerms.every((term) => haystack.includes(term));
-  return tagMatch && textMatch;
+  const folders = note.sections && typeof note.sections === 'object'
+    ? Object.values(note.sections).filter((value) => typeof value === 'string').join(' ')
+    : '';
+  const haystack = `${title} ${body} ${folders}`.toLowerCase();
+  return q.split(/\s+/).filter(Boolean).every((term) => haystack.includes(term));
 }
 
 // Notes in the current view + selected folder, ignoring the search box and
