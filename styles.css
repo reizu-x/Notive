@@ -1030,7 +1030,13 @@ body.is-panel-resizing { cursor: col-resize; user-select: none; }
 .shared-group-add svg { width: 14px; height: 14px; }
 /* Folder rows in the Shared inbox tree */
 .shared-folder { display: flex; align-items: center; gap: 7px; padding: 5px 9px; color: var(--tree-folder-ink); font-size: 11px; font-weight: 700; letter-spacing: .03em; }
-.shared-folder svg { width: 13px; height: 13px; color: var(--tree-folder-icon); }
+.shared-folder > svg { width: 13px; height: 13px; color: var(--tree-folder-icon); }
+.shared-folder-name { overflow: hidden; flex: 1; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.shared-folder-actions { display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity .15s ease; }
+.shared-folder:hover .shared-folder-actions { opacity: 1; }
+.shared-folder-action { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; color: var(--ink-muted); background: transparent; cursor: pointer; }
+.shared-folder-action:hover { color: var(--ink); background: var(--tree-hover-bg); }
+.shared-folder-action svg { width: 13px; height: 13px; }
 .collab-group-label { margin: 2px 0 0; color: var(--ink-muted); font-size: 11px; }
 /* Live status sits inline in the note meta, before "Edited today". */
 .collab-status-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-muted); font-size: 11px; }

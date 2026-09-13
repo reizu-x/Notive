@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev31') {
+  if (build !== 'dev32') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5214,18 +5214,37 @@ async function collabCreateSection(members) {
   if (failed.length) showToast(`Created. Some invites failed — ${failed[0]}`);
   return data.id;
 }
-async function createNoteInGroup(groupId) {
+async function createNoteInGroup(groupId, folder) {
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
   if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
   let key;
   try { key = (await collabGroupKey(groupId)).key; }
   catch (error) { showToast('You no longer have access to this section'); return; }
-  const encMeta = await collabEncryptMeta(key, { title: '', folder: '' });
+  const encMeta = await collabEncryptMeta(key, { title: '', folder: folder || '' });
   const res = await apiFetch(`/api/collab/groups/${groupId}/notes`, { method: 'POST', body: JSON.stringify({ encMeta }) });
   if (!res.ok) { showToast('Could not create the note'); return; }
   const note = await res.json();
   await openCollabNote(note.id);
   if (activeView === 'shared') renderSharedView();
+}
+// Add a subfolder under an existing shared folder (persisted in group meta).
+async function addSubfolder(groupId, parentFolder) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const value = await askInput({ eyebrow: 'Subfolder', title: 'Add a subfolder', desc: `Under ${parentFolder}`, label: 'Name', password: false, placeholder: 'e.g. Notes', okText: 'Add' });
+  if (value == null) return;
+  const name = String(value).trim().replace(/[\/\\]+/g, ' ').replace(/\s+/g, ' ').slice(0, 120);
+  if (!name) return;
+  const folder = `${parentFolder}${FOLDER_SEP}${name}`;
+  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
+  if (existing.some((f) => f.toLowerCase() === folder.toLowerCase())) { showToast('That subfolder already exists'); return; }
+  try {
+    const encMeta = await collabEncryptGroupMeta(key, [...existing, folder]);
+    const res = await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
+    if (!res.ok) { showToast('Could not add the subfolder'); return; }
+    showToast(`Subfolder \u201c${name}\u201d added`);
+    renderSharedView();
+  } catch (error) { showToast('Could not add the subfolder'); }
 }
 async function collabInvite() {
   if (!collab.groupId || !collab.key) return;
@@ -5335,7 +5354,14 @@ function sharedFolderTree(notesDec, groupId, folderList) {
   const parts = [];
   sorted.forEach((folder) => {
     const depth = folderDepth(folder);
-    parts.push(`<div class="shared-folder" style="padding-left:${8 + depth * 14}px">${icon('folder')}<span>${escapeHtml(folderLeaf(folder))}</span></div>`);
+    const leaf = folderLeaf(folder);
+    parts.push(`<div class="shared-folder" style="padding-left:${8 + depth * 14}px">
+        ${icon('folder')}<span class="shared-folder-name">${escapeHtml(leaf)}</span>
+        <span class="shared-folder-actions">
+          <button type="button" class="shared-folder-action" data-folder-note="${escapeHtml(folder)}" data-folder-group="${groupId}" title="New note in ${escapeHtml(leaf)}" aria-label="New note in ${escapeHtml(leaf)}">${icon('file-text')}</button>
+          <button type="button" class="shared-folder-action" data-folder-sub="${escapeHtml(folder)}" data-folder-group="${groupId}" title="New subfolder in ${escapeHtml(leaf)}" aria-label="New subfolder in ${escapeHtml(leaf)}">${icon('folder-plus')}</button>
+        </span>
+      </div>`);
     notesDec.filter((n) => n.folder === folder).forEach((n) => parts.push(sharedNoteRow(n, groupId)));
   });
   notesDec.filter((n) => !n.folder).forEach((n) => parts.push(sharedNoteRow(n, groupId)));
@@ -6749,6 +6775,10 @@ noteList.addEventListener('click', (event) => {
   if (gdel) { event.preventDefault(); event.stopPropagation(); confirmDeleteGroup(gdel.dataset.groupDelete); return; }
   const gadd = event.target.closest('[data-group-addfolder]');
   if (gadd) { event.preventDefault(); event.stopPropagation(); addSharedFolder(gadd.dataset.groupAddfolder); return; }
+  const fnote = event.target.closest('[data-folder-note]');
+  if (fnote) { event.preventDefault(); event.stopPropagation(); createNoteInGroup(fnote.dataset.folderGroup, fnote.dataset.folderNote); return; }
+  const fsub = event.target.closest('[data-folder-sub]');
+  if (fsub) { event.preventDefault(); event.stopPropagation(); addSubfolder(fsub.dataset.folderGroup, fsub.dataset.folderSub); return; }
   const open = event.target.closest('[data-collab-open]');
   if (open) { event.preventDefault(); openCollabNote(open.dataset.collabOpen); return; }
   const newBtn = event.target.closest('#shared-new');
