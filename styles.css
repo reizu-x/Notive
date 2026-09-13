@@ -802,7 +802,7 @@ a { color: inherit; text-decoration: none; }
 .icon-button.tiny { width: 25px; height: 25px; color: var(--navy-muted); }
 .icon-button.tiny svg { width: 14px; height: 14px; }
 .sidebar-close { display: none; }
-.profile-card { display: flex; align-items: center; gap: 10px; margin: 12px 2px 8px; padding: 11px 10px; border: 1px solid rgba(255,255,255,.09); border-radius: 12px; background: rgba(255,255,255,.045); }
+.profile-card { display: flex; align-items: center; gap: 10px; margin: 33px 2px 26px; padding: 11px 10px; border: 1px solid rgba(255,255,255,.09); border-radius: 12px; background: rgba(255,255,255,.045); }
 .avatar { display: grid; flex: 0 0 29px; width: 29px; height: 29px; place-items: center; border-radius: 9px; color: var(--avatar-ink); background: var(--avatar-bg); font-size: 10px; font-weight: 700; letter-spacing: .02em; }
 .profile-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .profile-copy strong { overflow: hidden; color: var(--side-profile-strong); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -915,7 +915,7 @@ at the bottom, only the nav + folder lists scroll. */
   .sidebar.collapsed { flex-basis: 68px; padding-right: 10px; padding-left: 10px; overflow: hidden; }
   .sidebar.collapsed .brand-row { flex-direction: column; gap: 12px; justify-content: center; padding: 0; }
   .sidebar.collapsed .brand-name { display: none; }
-  .sidebar.collapsed .profile-card { justify-content: center; margin-right: 0; margin-left: 0; padding-right: 0; padding-left: 0; border-color: transparent; background: transparent; }
+  .sidebar.collapsed .profile-card { justify-content: center; margin: 12px 0 8px; padding-right: 0; padding-left: 0; border-color: transparent; background: transparent; }
   .sidebar.collapsed .profile-copy, .sidebar.collapsed .profile-card .tiny { display: none; }
   .sidebar.collapsed .nav-item { justify-content: center; padding-right: 0; padding-left: 0; gap: 0; }
   .sidebar.collapsed .nav-item.active { box-shadow: none; }
