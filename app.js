@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev54') {
+  if (build !== 'dev55') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -4416,7 +4416,7 @@ function renderNoteList() {
   const refreshBtnTop = document.getElementById('refresh-view');
   if (refreshBtnTop) refreshBtnTop.hidden = true; // Refresh lives only in Shared.
   if (activeView === 'vault') { renderVaultList(); renderTabs(); renderStripItems(); return; }
-  if (activeView === 'shared') { renderSharedView(); renderTabs(); renderStripItems(); return; }
+  if (activeView === 'shared') { renderSharedView(); renderTabs(); renderStripItems(); updateFoldToggle(); return; }
   const visible = visibleNotes();
   const searching = searchQuery.trim() !== '';
   // Grouping follows the active folder namespace: custom-section paths when one
@@ -5704,6 +5704,20 @@ function sharedNoteRow(n, groupId) {
 
 const sharedCollapsed = new Set(); // `${groupId}::${folder}` collapsed folders
 function sharedFolderKey(groupId, folder) { return `${groupId}::${folder}`; }
+// Every folder key (including ancestors) across all shared sections, for the
+// sidebar's collapse-all/expand-all control in the Shared view.
+function sharedAllFolderKeys() {
+  const keys = new Set();
+  const addPath = (groupId, path) => {
+    let cur = path;
+    while (cur) { keys.add(sharedFolderKey(groupId, cur)); cur = folderParent(cur); }
+  };
+  sharedGroupFolders.forEach((folders, groupId) => {
+    (folders || []).forEach((folder) => { if (folder) addPath(groupId, folder); });
+  });
+  sharedNoteMeta.forEach((meta) => { if (meta && meta.folder) addPath(meta.groupId, meta.folder); });
+  return [...keys];
+}
 
 function sharedFolderTree(notesDec, groupId, folderList) {
   const set = new Set((folderList || []).filter(Boolean));
@@ -5785,14 +5799,19 @@ async function renderSharedView() {
       </div>`).join('')}
     </div>` : '';
   if (!groups.length) {
+    sharedGroupFolders.clear();
+    sharedNoteMeta.clear();
     box.innerHTML = invitesHtml || '<p class="modal-desc" style="padding:6px 10px">No connections yet. Click + New connection and enter a username to start.</p>';
+    updateFoldToggle();
     return;
   }
   if (!(await sharingEnsureKeys())) {
     box.innerHTML = invitesHtml + '<p class="modal-desc" style="padding:6px 10px">Could not unlock your sharing keys — reopen Shared to retry.</p>';
+    updateFoldToggle();
     return;
   }
   sharedGroupKeys.clear();
+  sharedGroupFolders.clear();
   sharedNoteMeta.clear();
   const groupBlocks = [];
   for (const g of groups) {
@@ -5824,6 +5843,7 @@ async function renderSharedView() {
     </div>`);
   }
   box.innerHTML = invitesHtml + groupBlocks.join('');
+  updateFoldToggle();
 }
 
 async function addSharedFolder(groupId) {
@@ -7317,6 +7337,7 @@ noteList.addEventListener('click', (event) => {
     const k = sharedFolderKey(stog.dataset.sharedGroup, stog.dataset.sharedToggle);
     if (sharedCollapsed.has(k)) sharedCollapsed.delete(k); else sharedCollapsed.add(k);
     renderSharedView();
+    updateFoldToggle();
     return;
   }
   const ndel = event.target.closest('[data-collab-note-delete]');
@@ -7650,7 +7671,10 @@ function visibleFolderPaths() {
 }
 function updateFoldToggle() {
   if (!foldToggle) return;
-  const anyOpen = visibleFolderPaths().some((folder) => !collapsedFolders.has(folder));
+  const inShared = activeView === 'shared';
+  const paths = inShared ? sharedAllFolderKeys() : visibleFolderPaths();
+  const collapsed = inShared ? sharedCollapsed : collapsedFolders;
+  const anyOpen = paths.some((folder) => !collapsed.has(folder));
   foldToggle.classList.toggle('is-expanded', anyOpen);
   const label = anyOpen ? 'Collapse all folders' : 'Expand all folders';
   foldToggle.setAttribute('aria-label', label);
@@ -7658,6 +7682,15 @@ function updateFoldToggle() {
 }
 if (foldToggle) {
   foldToggle.addEventListener('click', () => {
+    if (activeView === 'shared') {
+      const keys = sharedAllFolderKeys();
+      const anyOpen = keys.some((key) => !sharedCollapsed.has(key));
+      if (anyOpen) keys.forEach((key) => sharedCollapsed.add(key));
+      else keys.forEach((key) => sharedCollapsed.delete(key));
+      renderSharedView();
+      updateFoldToggle();
+      return;
+    }
     const anyOpen = visibleFolderPaths().some((folder) => !collapsedFolders.has(folder));
     if (anyOpen) visibleFolderPaths().forEach((folder) => collapsedFolders.add(folder));
     else visibleFolderPaths().forEach((folder) => collapsedFolders.delete(folder));
