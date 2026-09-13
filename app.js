@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev38') {
+  if (build !== 'dev39') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -4994,14 +4994,18 @@ async function collabDecrypt(keyRaw, packedB64) {
 // Note "meta" (title + folder) is encrypted under the group key so the server
 // still sees nothing. It powers the Shared inbox list without loading the doc.
 async function collabEncryptMeta(keyRaw, meta) {
-  return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({ t: meta.title || '', f: meta.folder || '' })));
+  return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({ t: meta.title || '', f: meta.folder || '', tp: meta.template || '' })));
 }
 async function collabDecryptMeta(keyRaw, encB64) {
-  if (!encB64) return { title: '', folder: '' };
+  if (!encB64) return { title: '', folder: '', template: '' };
   try {
     const obj = JSON.parse(new TextDecoder().decode(await collabDecrypt(keyRaw, encB64)));
-    return { title: typeof obj.t === 'string' ? obj.t : '', folder: typeof obj.f === 'string' ? obj.f : '' };
-  } catch (error) { return { title: '', folder: '' }; }
+    return {
+      title: typeof obj.t === 'string' ? obj.t : '',
+      folder: typeof obj.f === 'string' ? obj.f : '',
+      template: typeof obj.tp === 'string' ? obj.tp : ''
+    };
+  } catch (error) { return { title: '', folder: '', template: '' }; }
 }
 async function collabEncryptGroupMeta(keyRaw, folders) {
   return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({ folders: Array.isArray(folders) ? folders : [] })));
@@ -5213,17 +5217,33 @@ async function collabCreateSection(members) {
   else showToast(`Connection request sent to ${names.join(', ')}`);
   return data.id;
 }
-async function createNoteInGroup(groupId, folder) {
+// New-note entry in the Shared tree: ask which template to start from first.
+let pendingSharedTemplate = null; // { groupId, folder } | null
+function openSharedNewNote(groupId, folder) {
+  pendingSharedTemplate = { groupId, folder: folder || '' };
+  openTemplatePicker();
+}
+function sharedTemplateBody(templateKey) {
+  if (templateKey === 'recipe') return '## Ingredients\n\n- \n\n## Method\n\n1. \n';
+  if (templateKey === 'todo') return '## Today\n\n- [ ] Most important task\n- [ ] Second task\n\n## Later\n\n- [ ] Someday task';
+  return 'Start writing here...';
+}
+async function createSharedNoteWithTemplate(groupId, folder, templateKey) {
+  const template = (templateKey === 'recipe' || templateKey === 'todo') ? templateKey : '';
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
   if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
   let key;
   try { key = (await collabGroupKey(groupId)).key; }
   catch (error) { showToast('You no longer have access to this section'); return; }
-  const encMeta = await collabEncryptMeta(key, { title: '', folder: folder || '' });
+  const encMeta = await collabEncryptMeta(key, { title: '', folder: folder || '', template });
   const res = await apiFetch(`/api/collab/groups/${groupId}/notes`, { method: 'POST', body: JSON.stringify({ encMeta }) });
   if (!res.ok) { showToast('Could not create the note'); return; }
   const note = await res.json();
   await openCollabNote(note.id);
+  const body = sharedTemplateBody(templateKey);
+  if (body && collab.body && collab.body.length === 0) {
+    try { collab.body.insert(0, body); } catch (error) {}
+  }
   if (activeView === 'shared') renderSharedView();
 }
 // Add a subfolder under an existing shared folder (persisted in group meta).
@@ -5338,8 +5358,9 @@ function sharedNoteRow(n, groupId) {
   const title = (n.title && n.title.trim()) ? n.title.trim() : 'Untitled note';
   // Align the note's icon under its folder's icon (folder rows carry a chevron).
   const indent = n.folder ? 8 + folderDepth(n.folder) * 14 + 23 : 8;
+  const glyph = n.template === 'recipe' ? 'cooking' : n.template === 'todo' ? 'check-square' : 'file';
   return `<button class="tree-file shared-view-row" draggable="true" data-collab-open="${n.id}" data-collab-group="${groupId}" style="padding-left:${indent}px" title="${escapeHtml(title)}">
-      <span class="tree-file-icon">${icon('file')}</span>
+      <span class="tree-file-icon">${icon(glyph)}</span>
       <span class="tree-file-name">${escapeHtml(title)}</span>
       <span class="tree-action" data-note-folder="${n.id}" data-note-group="${groupId}" role="button" title="Move to folder" aria-label="Move ${escapeHtml(title)} to a folder">${icon('folder-plus')}</span>
       <span class="tree-action danger" data-collab-note-delete="${n.id}" role="button" title="Delete note" aria-label="Delete ${escapeHtml(title)}">${icon('trash')}</span>
@@ -5451,9 +5472,9 @@ async function renderSharedView() {
     const rawNotes = Array.isArray(g.notes) ? g.notes : [];
     const decoded = [];
     for (const n of rawNotes) {
-      let meta = { title: '', folder: '' };
+      let meta = { title: '', folder: '', template: '' };
       if (key) { try { meta = await collabDecryptMeta(key, n.encMeta || ''); } catch (error) {} }
-      const entry = { id: n.id, title: meta.title, folder: meta.folder, groupId: g.id };
+      const entry = { id: n.id, title: meta.title, folder: meta.folder, template: meta.template, groupId: g.id };
       sharedNoteMeta.set(String(n.id), entry);
       decoded.push(entry);
     }
@@ -6660,6 +6681,7 @@ function openTemplatePicker() {
 // Hide the template chooser popup.
 function closeTemplatePicker() {
   vaultTemplatePending = false;
+  pendingSharedTemplate = null;
   const overlay = document.getElementById('template-overlay');
   if (overlay) overlay.hidden = true;
 }
@@ -6929,7 +6951,7 @@ noteList.addEventListener('click', (event) => {
   const gadd = event.target.closest('[data-group-addfolder]');
   if (gadd) { event.preventDefault(); event.stopPropagation(); addSharedFolder(gadd.dataset.groupAddfolder); return; }
   const fnote = event.target.closest('[data-folder-note]');
-  if (fnote) { event.preventDefault(); event.stopPropagation(); createNoteInGroup(fnote.dataset.folderGroup, fnote.dataset.folderNote); return; }
+  if (fnote) { event.preventDefault(); event.stopPropagation(); openSharedNewNote(fnote.dataset.folderGroup, fnote.dataset.folderNote); return; }
   const fsub = event.target.closest('[data-folder-sub]');
   if (fsub) { event.preventDefault(); event.stopPropagation(); addSubfolder(fsub.dataset.folderGroup, fsub.dataset.folderSub); return; }
   const open = event.target.closest('[data-collab-open]');
@@ -6971,7 +6993,7 @@ noteList.addEventListener('contextmenu', (event) => {
       const overlay = document.getElementById('delete-overlay');
       if (overlay) { overlay.hidden = false; const b = document.getElementById('confirm-delete'); if (b) b.focus(); }
     }
-    else if (action === 'folder-note') createNoteInGroup(t.groupId, t.folder);
+    else if (action === 'folder-note') openSharedNewNote(t.groupId, t.folder);
     else if (action === 'folder-sub') addSubfolder(t.groupId, t.folder);
     else if (action === 'folder-rename') renameSharedFolder(t.groupId, t.folder);
     else if (action === 'folder-delete') confirmDeleteSharedFolder(t.groupId, t.folder);
@@ -7106,9 +7128,12 @@ document.getElementById('settings-tag-list').addEventListener('click', (event) =
   }
 });
 document.querySelectorAll('#template-overlay .template-option').forEach((option) => option.addEventListener('click', () => {
+  const shared = pendingSharedTemplate;
+  pendingSharedTemplate = null;
   const forVault = vaultTemplatePending;
   vaultTemplatePending = false;
   closeTemplatePicker();
+  if (shared) { createSharedNoteWithTemplate(shared.groupId, shared.folder, option.dataset.template); return; }
   if (forVault) { createVaultNoteFromTemplate(option.dataset.template); return; }
   createNoteFromTemplate(option.dataset.template);
 }));
