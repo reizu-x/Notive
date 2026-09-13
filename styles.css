@@ -913,9 +913,9 @@ at the bottom, only the nav + folder lists scroll. */
 
 @media (min-width: 761px) {
   .sidebar.collapsed { flex-basis: 68px; padding-right: 10px; padding-left: 10px; overflow: hidden; }
-  .sidebar.collapsed .brand-row { flex-direction: column; gap: 12px; justify-content: center; padding: 0; }
+  .sidebar.collapsed .brand-row { flex-direction: column; gap: 8px; justify-content: center; padding: 0; }
   .sidebar.collapsed .brand-name { display: none; }
-  .sidebar.collapsed .profile-card { justify-content: center; margin: 12px 0 8px; padding-right: 0; padding-left: 0; border-color: transparent; background: transparent; }
+  .sidebar.collapsed .profile-card { justify-content: center; margin: 6px 0 4px; padding-right: 0; padding-left: 0; border-color: transparent; background: transparent; }
   .sidebar.collapsed .profile-copy, .sidebar.collapsed .profile-card .tiny { display: none; }
   .sidebar.collapsed .nav-item { justify-content: center; padding-right: 0; padding-left: 0; gap: 0; }
   .sidebar.collapsed .nav-item.active { box-shadow: none; }
