@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev66') {
+  if (build !== 'dev67') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5215,8 +5215,8 @@ function deleteTagEverywhere(name) {
 // Create a standalone tag (available to every note's tag editor and to search).
 function addKnownTag(raw) {
   const tag = normalizeTagName(raw);
-  if (!tag) return false;
-  if (knownTags.some((entry) => entry.toLowerCase() === tag.toLowerCase())) { showToast('Tag already exists'); return false; }
+  if (!tag) { showToast('Enter a tag name'); return false; }
+  if (knownTags.some((entry) => entry.toLowerCase() === tag.toLowerCase())) { showToast(`Tag “${tag}” already exists`); return false; }
   if (knownTags.length >= 500) { showToast('Tag limit reached (500)'); return false; }
   knownTags.push(tag);
   persistUiVault();
