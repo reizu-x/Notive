@@ -1308,6 +1308,38 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
   .recipe-hero-fixed { flex-direction: column; }
   .recipe-hero-photo { flex-basis: auto; width: 100%; max-width: none; }
 }
+/* Structured recipe body: editable Ingredients (left) / Method (right). */
+.recipe-body-fixed { margin: 14px 0 4px; }
+.recipe-body-fixed[hidden] { display: none; }
+.recipe-block { display: flex; align-items: stretch; }
+.recipe-side { flex: 1 1 0; min-width: 0; padding: 0 24px; }
+.recipe-side:first-child { padding-left: 0; }
+.recipe-side:last-child { padding-right: 0; }
+.recipe-side-method { border-left: 1px solid var(--line); }
+.recipe-side-head { margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); color: var(--recipe-head); font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.recipe-rows { display: flex; flex-direction: column; gap: 4px; }
+.recipe-row { display: flex; align-items: flex-start; gap: 8px; }
+.recipe-check { position: relative; flex: 0 0 auto; width: 16px; height: 16px; margin-top: 4px; padding: 0; border: 1px solid var(--task-border); border-radius: 4px; background: transparent; cursor: pointer; }
+.recipe-check.checked { border-color: var(--task-checked-border); background: var(--task-checked-bg); }
+.recipe-check.checked::after { content: ''; position: absolute; left: 5px; top: 1px; width: 4px; height: 9px; border: solid var(--task-checked-ink); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.recipe-num { flex: 0 0 auto; min-width: 16px; margin-top: 3px; color: var(--ink-muted); font-size: 12px; }
+.recipe-input { display: block; flex: 1 1 auto; min-width: 0; padding: 2px 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; line-height: 1.6; resize: none; overflow: hidden; }
+.recipe-input:focus { outline: none; }
+.recipe-input::placeholder { color: var(--input-placeholder); }
+.recipe-remove { flex: 0 0 auto; padding: 0 2px; border: 0; background: none; color: var(--ink-faint); font-size: 15px; line-height: 1.2; cursor: pointer; opacity: 0; }
+.recipe-row:hover .recipe-remove { opacity: 1; }
+.recipe-add { margin-top: 8px; padding: 4px 0; border: 0; background: none; color: var(--plink); font: inherit; font-size: 12px; cursor: pointer; }
+.recipe-add:hover { text-decoration: underline; }
+.recipe-empty { margin: 2px 0; color: var(--ink-faint); font-size: 12px; font-style: italic; }
+.editor-panel.recipe-mode .writing-area,
+.editor-panel.recipe-mode .editor-toolbar,
+.editor-panel.recipe-mode .editor-bottom,
+.editor-panel.recipe-mode .editor-bottom-fixed { display: none; }
+@media (max-width: 760px) {
+  .recipe-block { flex-direction: column; }
+  .recipe-side { padding: 0; }
+  .recipe-side-method { border-left: 0; border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
+}
 .editor-bottom { display: flex; justify-content: space-between; max-width: none; margin: 0; padding: 17px 0 0; color: var(--bottom-ink); font-family: 'DM Mono', monospace; font-size: 8px; }
 /* Pinned footer: sits flush at the bottom edge of the editor panel, outside
    the scrolling content (the in-scroll copy stays hidden). */

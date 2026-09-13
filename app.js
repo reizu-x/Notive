@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev48') {
+  if (build !== 'dev49') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -195,6 +195,45 @@ function cleanCoverSrc(raw) {
   return s;
 }
 
+// Pull Ingredients / Method lists out of a recipe note's legacy Markdown body
+// so old recipes can be migrated into the structured recipe fields.
+function parseRecipeBody(body) {
+  const lines = String(body == null ? '' : body).replace(/\r/g, '').split('\n');
+  const ingredients = [];
+  const steps = [];
+  let section = '';
+  for (const raw of lines) {
+    const line = raw.trim();
+    const heading = line.match(/^#{1,6}\s+(.*)$/);
+    if (heading) {
+      const name = heading[1].trim().toLowerCase();
+      if (/^ingredients?\b/.test(name)) { section = 'ing'; continue; }
+      if (/^(method|steps?|directions?|instructions?)\b/.test(name)) { section = 'method'; continue; }
+      section = '';
+      continue;
+    }
+    if (section === 'ing') {
+      const m = line.match(/^[-*]\s+(?:\[([ xX])\]\s*)?(.*)$/);
+      if (m) { const text = m[2].trim(); if (text) ingredients.push({ t: text, d: (m[1] || '').toLowerCase() === 'x' }); }
+      else if (line) section = '';
+    } else if (section === 'method') {
+      const m = line.match(/^(?:\d+[.)]|[-*])\s+(.*)$/);
+      if (m) { const text = m[1].trim(); if (text) steps.push(text); }
+      else if (line) section = '';
+    }
+  }
+  return { ingredients, steps };
+}
+function sanitizeIngredients(value) {
+  return (Array.isArray(value) ? value : []).slice(0, 200).map((item) => {
+    if (item && typeof item === 'object') return { t: String(item.t == null ? '' : item.t).slice(0, 300), d: Boolean(item.d) };
+    return { t: String(item == null ? '' : item).slice(0, 300), d: false };
+  });
+}
+function sanitizeSteps(value) {
+  return (Array.isArray(value) ? value : []).slice(0, 300).map((step) => String(step == null ? '' : step).slice(0, 2000));
+}
+
 // Clamp/normalize one stored note into the current schema (id, ext, sections, tags/title/body caps, deleted/archived flags, sane bin timestamps). Never throws on hostile input.
 function migrateNote(note) {
   const migrated = (note && typeof note === 'object' && !Array.isArray(note)) ? { ...note } : {};
@@ -287,6 +326,20 @@ function migrateNote(note) {
   } else {
     if ('template' in migrated) delete migrated.template;
     if ('description' in migrated) delete migrated.description;
+  }
+  // Recipe notes carry structured Ingredients/Method fields; backfill them from
+  // a legacy Markdown body once, then keep them normalized.
+  if (migrated.template === 'recipe') {
+    if (!Array.isArray(migrated.ingredients) || !Array.isArray(migrated.steps)) {
+      const parsed = parseRecipeBody(migrated.body);
+      if (!Array.isArray(migrated.ingredients)) migrated.ingredients = parsed.ingredients;
+      if (!Array.isArray(migrated.steps)) migrated.steps = parsed.steps;
+    }
+    migrated.ingredients = sanitizeIngredients(migrated.ingredients);
+    migrated.steps = sanitizeSteps(migrated.steps);
+  } else {
+    if ('ingredients' in migrated) delete migrated.ingredients;
+    if ('steps' in migrated) delete migrated.steps;
   }
   // Built-in Collections/Recipes removed: drop legacy fields (migrated above into custom sections).
   if ('collection' in migrated) delete migrated.collection;
@@ -3686,7 +3739,7 @@ function renderRecipeHero(note) {
   }
   const show = Boolean(template === 'recipe' && activeView !== 'vault');
   hero.hidden = !show;
-  if (!show) return;
+  if (!show) { renderRecipeBody(note); return; }
   const usable = cleanCoverSrc(cover);
   const img = document.getElementById('recipe-photo-img');
   const empty = document.getElementById('recipe-photo-empty');
@@ -3704,6 +3757,94 @@ function renderRecipeHero(note) {
   if (descEl) {
     const next = typeof description === 'string' ? description : '';
     if (document.activeElement !== descEl && descEl.value !== next) descEl.value = next;
+  }
+  renderRecipeBody(note);
+}
+
+// ---- Structured recipe body (Ingredients / Method) -----------------------
+// Recipe notes never show their Markdown body; instead these editable fields
+// are rendered as a two-column table. Local recipes store the lists on the
+// note; shared recipes keep them in a Y.Map('recipe') in the collaborative doc.
+function recipeDataForActive(note) {
+  if (collab.noteId) {
+    const data = { ingredients: [], steps: [] };
+    if (!collab.recipe) return data;
+    try { data.ingredients = sanitizeIngredients(JSON.parse(collab.recipe.get('ingredients') || '[]')); } catch (error) {}
+    try { data.steps = sanitizeSteps(JSON.parse(collab.recipe.get('steps') || '[]')); } catch (error) {}
+    return data;
+  }
+  if (note && note.template === 'recipe') {
+    return { ingredients: sanitizeIngredients(note.ingredients), steps: sanitizeSteps(note.steps) };
+  }
+  return { ingredients: [], steps: [] };
+}
+function renderRecipeIngredients(list) {
+  const box = document.getElementById('recipe-ingredients');
+  if (!box) return;
+  if (!list.length) { box.innerHTML = '<p class="recipe-empty">No ingredients yet.</p>'; return; }
+  box.innerHTML = list.map((item, i) => `
+    <div class="recipe-row">
+      <button type="button" class="recipe-check${item.d ? ' checked' : ''}" data-recipe-toggle="${i}" role="checkbox" aria-checked="${item.d ? 'true' : 'false'}" aria-label="Toggle ingredient"></button>
+      <textarea class="recipe-input" data-recipe-ing="${i}" rows="1" placeholder="Ingredient" aria-label="Ingredient">${escapeHtml(item.t)}</textarea>
+      <button type="button" class="recipe-remove" data-recipe-remove-ing="${i}" aria-label="Remove ingredient">&times;</button>
+    </div>`).join('');
+  box.querySelectorAll('textarea').forEach((area) => { area.style.height = 'auto'; area.style.height = `${area.scrollHeight}px`; });
+}
+function renderRecipeSteps(list) {
+  const box = document.getElementById('recipe-steps');
+  if (!box) return;
+  if (!list.length) { box.innerHTML = '<p class="recipe-empty">No steps yet.</p>'; return; }
+  box.innerHTML = list.map((step, i) => `
+    <div class="recipe-row">
+      <span class="recipe-num">${i + 1}.</span>
+      <textarea class="recipe-input" data-recipe-step="${i}" rows="1" placeholder="Describe this step" aria-label="Step ${i + 1}">${escapeHtml(step)}</textarea>
+      <button type="button" class="recipe-remove" data-recipe-remove-step="${i}" aria-label="Remove step">&times;</button>
+    </div>`).join('');
+  box.querySelectorAll('textarea').forEach((area) => { area.style.height = 'auto'; area.style.height = `${area.scrollHeight}px`; });
+}
+function renderRecipeBody(note) {
+  const wrap = document.getElementById('recipe-body');
+  const panel = document.querySelector('.editor-panel');
+  if (!wrap) return;
+  const target = note || (collab.noteId ? null : currentNote());
+  const isRecipe = activeView !== 'vault' && (collab.noteId ? collab.template === 'recipe' : Boolean(target && target.template === 'recipe'));
+  if (panel) panel.classList.toggle('recipe-mode', isRecipe);
+  wrap.hidden = !isRecipe;
+  if (!isRecipe) return;
+  const data = recipeDataForActive(target);
+  renderRecipeIngredients(data.ingredients);
+  renderRecipeSteps(data.steps);
+}
+// Edit the recipe lists for whichever source is open (local note or shared doc).
+function recipeMutate(mutator) {
+  if (collab.noteId) {
+    if (!collab.recipe) return;
+    const data = recipeDataForActive(null);
+    mutator(data);
+    collab.recipe.set('ingredients', JSON.stringify(sanitizeIngredients(data.ingredients)));
+    collab.recipe.set('steps', JSON.stringify(sanitizeSteps(data.steps)));
+    return;
+  }
+  const note = currentNote();
+  if (!note || note.template !== 'recipe') return;
+  const data = { ingredients: sanitizeIngredients(note.ingredients), steps: sanitizeSteps(note.steps) };
+  mutator(data);
+  note.ingredients = sanitizeIngredients(data.ingredients);
+  note.steps = sanitizeSteps(data.steps);
+  note.date = 'Now';
+  note.updatedAt = Date.now();
+  persistNotes();
+}
+function focusRecipeField(selector, index) {
+  const fields = document.querySelectorAll(`.recipe-body-fixed ${selector}`);
+  if (!fields.length) return;
+  const at = (index === 'last') ? fields.length - 1 : Math.max(0, Math.min(fields.length - 1, Number(index) || 0));
+  const el = fields[at];
+  if (!el) return;
+  el.focus();
+  if (typeof el.setSelectionRange === 'function') {
+    const n = el.value.length;
+    try { el.setSelectionRange(n, n); } catch (error) {}
   }
 }
 
@@ -4526,7 +4667,10 @@ function relativeEditedLabel(note) {
 
 function updateMeta(note) {
   renderRecipeHero(note);
-  const body = typeof note.body === 'string' ? note.body : '';
+  let body = typeof note.body === 'string' ? note.body : '';
+  if (note.template === 'recipe') {
+    body = `${sanitizeIngredients(note.ingredients).map((item) => item.t).join(' ')} ${sanitizeSteps(note.steps).join(' ')}`;
+  }
   const words = body.trim() ? body.trim().split(/\s+/).length : 0;
   wordCount.textContent = `${words} word${words === 1 ? '' : 's'}`;
   const editedEl = document.getElementById('edited-label');
@@ -5290,7 +5434,7 @@ async function openCollabNote(noteId) {
   Object.assign(collab, {
     noteId, groupId: meta.groupId, doc,
     title: doc.getText('title'), body: doc.getText('body'), desc: doc.getText('desc'),
-    assets: doc.getMap('assets'), cover: '', description: '',
+    assets: doc.getMap('assets'), recipe: doc.getMap('recipe'), cover: '', description: '',
     es: null, key: keyRaw, members: group.members || [], owner: meta.owner, groupName: group.name || '',
     folder: noteMeta.folder || '', template: noteMeta.template || '', updates: 0,
   });
@@ -5304,6 +5448,7 @@ async function openCollabNote(noteId) {
   collab.body.observe(collabSyncDom);
   collab.desc.observe(collabSyncDom);
   collab.assets.observe(collabAssetsChanged);
+  collab.recipe.observe((event, transaction) => { if (transaction && transaction.origin === 'remote') renderRecipeBody(null); });
   const me = cachedProfile && cachedProfile.username;
   const displayName = collab.owner === me ? (collab.groupName || 'Shared') : collab.owner;
   const label = document.getElementById('collab-group-label');
@@ -5346,7 +5491,7 @@ function closeCollabNote() {
   if (collab.es) { try { collab.es.close(); } catch (error) {} }
   if (collab.doc) { try { collab.doc.destroy(); } catch (error) {} }
   collab.noteId = null; collab.groupId = null; collab.doc = null; collab.title = null; collab.body = null;
-  collab.desc = null; collab.assets = null; collab.cover = ''; collab.description = '';
+  collab.desc = null; collab.assets = null; collab.recipe = null; collab.cover = ''; collab.description = '';
   collab.es = null; collab.key = null; collab.members = []; collab.owner = null; collab.groupName = ''; collab.template = '';
   try { renderRecipeHero(null); } catch (error) {}
 }
@@ -5423,6 +5568,11 @@ async function createSharedNoteWithTemplate(groupId, folder, templateKey) {
     const doc = new Y.Doc();
     doc.getText('title').insert(0, seed.title);
     if (seed.body) doc.getText('body').insert(0, seed.body);
+    const template = NOTE_TEMPLATES[key0];
+    if (key0 === 'recipe' && template.recipe) {
+      doc.getMap('recipe').set('ingredients', JSON.stringify(sanitizeIngredients(template.recipe.ingredients)));
+      doc.getMap('recipe').set('steps', JSON.stringify(sanitizeSteps(template.recipe.steps)));
+    }
     const update = Y.encodeStateAsUpdate(doc);
     doc.destroy();
     const payload = await collabEncrypt(key, update);
@@ -6763,17 +6913,8 @@ const NOTE_TEMPLATES = {
     icon: 'cooking',
     titleBase: 'New Recipe',
     tags: ['recipe'],
-    body: () => `::: recipe
-## Ingredients
-- [ ] Ingredient one
-- [ ] Ingredient two
-
----
-
-## Method
-1. Step one
-2. Step two
-:::`
+    body: () => '',
+    recipe: { ingredients: ['Ingredient one', 'Ingredient two'], steps: ['Step one', 'Step two'] }
   },
   todo: {
     label: 'To-do list',
@@ -6873,6 +7014,11 @@ function createNoteFromTemplate(templateKey) {
   }
   const note = { id, title, date: 'Now', updatedAt: Date.now(), tags, favorite: false, archived: false, deleted: false, ext: normalizeExt(template.ext), sections: filedSections, body: seedFromTemplate(templateKey, title).body };
   if (templateKey === 'recipe' || templateKey === 'todo') note.template = templateKey;
+  if (templateKey === 'recipe' && template.recipe) {
+    note.ingredients = sanitizeIngredients(template.recipe.ingredients);
+    note.steps = sanitizeSteps(template.recipe.steps);
+  }
+  if (templateKey === 'recipe') note.body = '';
   notes.unshift(note);
   activeFilter = 'all';
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
@@ -7399,6 +7545,77 @@ titleInput.addEventListener('input', saveCurrentNote);
 markdownInput.addEventListener('input', saveCurrentNote);
 document.getElementById('recipe-desc').addEventListener('input', saveCurrentNote);
 document.getElementById('recipe-photo-btn').addEventListener('click', () => { if (collab.noteId) requestCollabCoverUpload(); else requestCoverUpload(); });
+// Structured recipe body: toggle, edit, add and remove Ingredients / Method.
+const recipeBodyEl = document.getElementById('recipe-body');
+if (recipeBodyEl) {
+  recipeBodyEl.addEventListener('click', (event) => {
+    const toggle = event.target.closest('[data-recipe-toggle]');
+    if (toggle) {
+      const i = Number(toggle.dataset.recipeToggle);
+      recipeMutate((data) => { if (data.ingredients[i]) data.ingredients[i].d = !data.ingredients[i].d; });
+      renderRecipeBody(null);
+      return;
+    }
+    const remIng = event.target.closest('[data-recipe-remove-ing]');
+    if (remIng) {
+      const i = Number(remIng.dataset.recipeRemoveIng);
+      recipeMutate((data) => { data.ingredients.splice(i, 1); });
+      renderRecipeBody(null);
+      return;
+    }
+    const remStep = event.target.closest('[data-recipe-remove-step]');
+    if (remStep) {
+      const i = Number(remStep.dataset.recipeRemoveStep);
+      recipeMutate((data) => { data.steps.splice(i, 1); });
+      renderRecipeBody(null);
+      return;
+    }
+    if (event.target.closest('#recipe-add-ingredient')) {
+      recipeMutate((data) => { data.ingredients.push({ t: '', d: false }); });
+      renderRecipeBody(null);
+      focusRecipeField('[data-recipe-ing]', 'last');
+      return;
+    }
+    if (event.target.closest('#recipe-add-step')) {
+      recipeMutate((data) => { data.steps.push(''); });
+      renderRecipeBody(null);
+      focusRecipeField('[data-recipe-step]', 'last');
+    }
+  });
+  recipeBodyEl.addEventListener('input', (event) => {
+    const ing = event.target.closest('[data-recipe-ing]');
+    if (ing) {
+      ing.style.height = 'auto';
+      ing.style.height = `${ing.scrollHeight}px`;
+      const i = Number(ing.dataset.recipeIng);
+      recipeMutate((data) => { if (data.ingredients[i]) data.ingredients[i].t = ing.value; });
+      return;
+    }
+    const step = event.target.closest('[data-recipe-step]');
+    if (step) {
+      step.style.height = 'auto';
+      step.style.height = `${step.scrollHeight}px`;
+      const i = Number(step.dataset.recipeStep);
+      recipeMutate((data) => { data.steps[i] = step.value; });
+    }
+  });
+  recipeBodyEl.addEventListener('keydown', (event) => {
+    const el = event.target.closest('[data-recipe-step], [data-recipe-ing]');
+    if (!el || event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    if (el.dataset.recipeStep != null) {
+      const i = Number(el.dataset.recipeStep);
+      recipeMutate((data) => { data.steps.splice(i + 1, 0, ''); });
+      renderRecipeBody(null);
+      focusRecipeField('[data-recipe-step]', i + 1);
+    } else {
+      const i = Number(el.dataset.recipeIng);
+      recipeMutate((data) => { data.ingredients.splice(i + 1, 0, { t: '', d: false }); });
+      renderRecipeBody(null);
+      focusRecipeField('[data-recipe-ing]', i + 1);
+    }
+  });
+}
 
 document.getElementById('search-input').addEventListener('input', (event) => {
   searchQuery = String(event.target.value || '').slice(0, 200);

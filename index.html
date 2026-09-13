@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notely-build" content="dev48" />
+    <meta name="notely-build" content="dev49" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev48" />
+    <link rel="stylesheet" href="styles.css?v=dev49" />
   </head>
   <body>
     <div class="app-shell">
@@ -185,6 +185,24 @@
             <textarea class="recipe-hero-desc" id="recipe-desc" rows="3" maxlength="2000" placeholder="Write the description here..." aria-label="Meal description"></textarea>
           </div>
 
+          <!-- Structured recipe body (recipe-template notes only): editable
+               Ingredients / Method table. Replaces the Markdown body, which is
+               never shown for recipes. -->
+          <div class="recipe-body-fixed" id="recipe-body" hidden>
+            <div class="recipe-block">
+              <div class="recipe-side">
+                <div class="recipe-side-head">Ingredients</div>
+                <div class="recipe-rows" id="recipe-ingredients"></div>
+                <button type="button" class="recipe-add" id="recipe-add-ingredient">+ Add ingredient</button>
+              </div>
+              <div class="recipe-side recipe-side-method">
+                <div class="recipe-side-head">Method</div>
+                <div class="recipe-rows" id="recipe-steps"></div>
+                <button type="button" class="recipe-add" id="recipe-add-step">+ Add step</button>
+              </div>
+            </div>
+          </div>
+
           <div class="editor-toolbar" id="editor-toolbar" role="toolbar" aria-label="Markdown formatting" hidden>
             <div class="toolbar-group">
               <button class="toolbar-button" data-action="heading" aria-label="Heading"><span class="toolbar-heading">H</span></button>
@@ -269,7 +287,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
           <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
         </div>
-        <p class="login-hint" id="build-tag">dev build dev48</p>
+        <p class="login-hint" id="build-tag">dev build dev49</p>
       </div>
       <div class="login-theme-float">
         <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
@@ -694,6 +712,6 @@
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
-    <script src="app.js?v=dev48"></script>
+    <script src="app.js?v=dev49"></script>
   </body>
 </html>
