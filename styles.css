@@ -1276,21 +1276,20 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .markdown-preview th, .markdown-preview td { padding: 7px 10px; border: 1px solid var(--line); vertical-align: top; }
 .markdown-preview th { color: var(--preview-head); background: var(--code-bg); font-weight: 700; }
 .markdown-preview tbody tr:nth-child(even) { background: var(--tree-hover-bg); }
-/* Two-column recipe block (::: recipe): Ingredients left, Method right, with a
+/* Two-column recipe table (::: recipe): Ingredients left, Method right, with a
    T-shaped divider — a rule under each column heading plus a middle stem. */
-.markdown-preview .recipe-cols { display: flex; align-items: stretch; margin: 18px 0; }
-.markdown-preview .recipe-col { flex: 1 1 0; min-width: 0; padding: 0 24px; }
-.markdown-preview .recipe-col:first-child { padding-left: 0; }
-.markdown-preview .recipe-col:last-child { padding-right: 0; }
-.markdown-preview .recipe-col + .recipe-col { border-left: 1px solid var(--line); }
+.markdown-preview .recipe-table { width: 100%; margin: 18px 0; border-collapse: collapse; }
+.markdown-preview .recipe-table > tbody > tr > td { width: 50%; vertical-align: top; padding: 0 24px; border: 0; }
+.markdown-preview .recipe-table > tbody > tr > td:first-child { padding-left: 0; }
+.markdown-preview .recipe-table > tbody > tr > td:last-child { padding-right: 0; }
+.markdown-preview .recipe-table > tbody > tr > td + td { border-left: 1px solid var(--line); }
 .markdown-preview .recipe-col h1,
 .markdown-preview .recipe-col h2,
 .markdown-preview .recipe-col h3 { margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line); color: var(--recipe-head); font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
 .markdown-preview .recipe-col ul, .markdown-preview .recipe-col ol { margin-top: 0; }
 @media (max-width: 640px) {
-  .markdown-preview .recipe-cols { flex-direction: column; }
-  .markdown-preview .recipe-col { padding: 0; }
-  .markdown-preview .recipe-col + .recipe-col { border-left: 0; border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
+  .markdown-preview .recipe-table > tbody > tr > td { display: block; width: 100%; padding: 0; }
+  .markdown-preview .recipe-table > tbody > tr > td + td { border-left: 0; border-top: 1px solid var(--line); margin-top: 18px; padding-top: 18px; }
 }
 
 /* Fixed recipe hero (recipe-template notes only): meal photo on the left,

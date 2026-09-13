@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev47') {
+  if (build !== 'dev48') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -2637,7 +2637,7 @@ function renderMarkdown(markdown) {
       while (r < lines.length && !/^:::\s*$/.test(lines[r])) { block.push(lines[r]); r += 1; }
       const [left, right] = splitRecipeColumns(block);
       const renderCol = (text) => (text.trim() ? renderMarkdown(text) : '');
-      html += `<div class="recipe-cols"><div class="recipe-col">${renderCol(left)}</div><div class="recipe-col">${renderCol(right)}</div></div>`;
+      html += `<table class="recipe-table"><tbody><tr><td class="recipe-col">${renderCol(left)}</td><td class="recipe-col">${renderCol(right)}</td></tr></tbody></table>`;
       li = r;
       continue;
     }
@@ -3597,9 +3597,9 @@ function renderPreview(note) {
   markdownInput.hidden = showPreview;
   preview.hidden = !showPreview;
   if (modeLabel) modeLabel.textContent = isMd ? (showPreview ? 'Preview' : 'Write') : plainLabel;
-  // Preview toggle is for standard Markdown notes only (recipes/to-dos and
-  // every other file type have no preview).
-  const showLivePreview = isMd && !note.template;
+  // Preview toggle is for standard Markdown notes and recipes; to-dos and
+  // every other file type have no preview.
+  const showLivePreview = isMd && (!note.template || note.template === 'recipe');
   if (modeToggle) {
     modeToggle.hidden = !showLivePreview;
     modeToggle.textContent = showPreview ? 'Write' : 'Preview';
