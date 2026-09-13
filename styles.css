@@ -1309,7 +1309,7 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
   .recipe-hero-photo { flex-basis: auto; width: 100%; max-width: none; }
 }
 /* Structured recipe body: editable Ingredients (left) / Method (right). */
-.recipe-body-fixed { margin: 14px 0 4px; }
+.recipe-body-fixed { margin: 32px 0 4px; }
 .recipe-body-fixed[hidden] { display: none; }
 .recipe-block { display: flex; align-items: stretch; }
 .recipe-side { min-width: 0; padding: 0 24px; flex: 1 1 0; }
