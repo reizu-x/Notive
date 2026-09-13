@@ -962,8 +962,12 @@ def init_db():
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_groups ('
         'id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, name TEXT NOT NULL, '
-        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
+        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_meta BLOB)'
     )
+    # enc_meta carries the section's folder list, encrypted under the group key.
+    _gcols = {row['name'] for row in conn.execute('PRAGMA table_info(collab_groups)')}
+    if 'enc_meta' not in _gcols:
+        conn.execute('ALTER TABLE collab_groups ADD COLUMN enc_meta BLOB')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_members ('
         'group_id INTEGER NOT NULL, username TEXT NOT NULL, wrapped_key BLOB NOT NULL, '
@@ -3184,7 +3188,7 @@ def api_group_list():
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
     groups = conn.execute(
-        'SELECT g.id, g.owner, g.name, g.updated_at FROM collab_groups g'
+        'SELECT g.id, g.owner, g.name, g.updated_at, g.enc_meta FROM collab_groups g'
         ' JOIN collab_members m ON m.group_id = g.id'
         ' WHERE m.username = ? AND m.accepted = 1 ORDER BY g.updated_at DESC LIMIT 200',
         (user['username'],),
@@ -3196,7 +3200,8 @@ def api_group_list():
                   'encMeta': base64.b64encode(bytes(r['enc_meta'])).decode('ascii') if r['enc_meta'] else ''}
                  for r in conn.execute('SELECT id, updated_at, enc_meta FROM collab_notes WHERE group_id = ? ORDER BY id', (g['id'],))]
         out.append({'id': g['id'], 'owner': g['owner'], 'name': g['name'], 'updatedAt': g['updated_at'],
-                    'members': members, 'notes': notes})
+                    'members': members, 'notes': notes,
+                    'encMeta': base64.b64encode(bytes(g['enc_meta'])).decode('ascii') if g['enc_meta'] else ''})
     # Pending invitations: sections shared with me that I have not accepted yet.
     invites = [{'id': r['id'], 'owner': r['owner'], 'name': r['name'], 'createdAt': r['created_at']}
                for r in conn.execute(
@@ -3250,6 +3255,29 @@ def api_group_get(group_id):
             'wrapIv': base64.b64encode(bytes(mine['wrap_iv'])).decode('ascii'),
         },
     })
+
+
+@app.route('/api/collab/groups/<int:group_id>/meta', methods=['POST'])
+def api_group_meta(group_id):
+    # Section folder list, encrypted with the group key.
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        enc_meta = base64.b64decode(str(data.get('encMeta', '')).encode('ascii'), validate=True)
+    except (ValueError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid meta.'}), 400
+    if not (1 <= len(enc_meta) <= 16384):
+        return jsonify({'error': 'Meta too large.'}), 413
+    conn = get_db()
+    if not _is_group_member(conn, group_id, user['username']):
+        conn.close()
+        return jsonify({'error': 'Not a member of this shared section.'}), 403
+    conn.execute('UPDATE collab_groups SET enc_meta = ? WHERE id = ?', (enc_meta, group_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route('/api/collab/groups/<int:group_id>/members', methods=['POST'])

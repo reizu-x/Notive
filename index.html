@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notely-build" content="dev28" />
+    <meta name="notely-build" content="dev29" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev28" />
+    <link rel="stylesheet" href="styles.css?v=dev29" />
   </head>
   <body>
     <div class="app-shell">
@@ -86,6 +86,7 @@
             </div>
             <div class="notes-actions">
               <button class="icon-button workspace-toggle" id="toggle-workspace" aria-label="Collapse workspace" title="Collapse workspace" data-icon="sidebar"></button>
+              <button class="new-note-button" id="shared-new" hidden><span>+</span> New note</button>
               <button class="icon-button strip-back" id="workspace-strip-back" aria-label="Back to parent folder" title="Back to parent folder" data-icon="chevron-right" hidden></button>
               <span class="workspace-view-icon" id="workspace-view-icon" title="All Notes" aria-hidden="true">All Notes</span>
               <div class="workspace-strip-items" id="workspace-strip-items" aria-label="Folder contents"></div>
@@ -106,6 +107,7 @@
             <button class="filter-chip" data-filter="recent">Recent <span id="recent-count"></span></button>
             <button class="filter-chip" data-filter="favorites">Starred <span id="starred-count"></span></button>
             <button class="icon-button fold-toggle" id="toggle-folders" aria-label="Collapse all folders" title="Collapse all folders" data-icon="chevron-down"></button>
+            <button class="icon-button view-refresh" id="refresh-view" aria-label="Refresh" title="Refresh" data-icon="refresh"></button>
           </div>
         </div>
         <div class="note-list" id="note-list" aria-label="Notes"></div>
@@ -267,7 +269,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
           <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
         </div>
-        <p class="login-hint" id="build-tag">dev build dev28</p>
+        <p class="login-hint" id="build-tag">dev build dev29</p>
       </div>
       <div class="login-theme-float">
         <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
@@ -702,6 +704,6 @@
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
-    <script src="app.js?v=dev28"></script>
+    <script src="app.js?v=dev29"></script>
   </body>
 </html>

@@ -1053,6 +1053,8 @@ body.is-panel-resizing { cursor: col-resize; user-select: none; }
 .fold-toggle { margin-left: auto; width: 28px; height: 28px; color: var(--ink-muted); }
 .fold-toggle svg { transition: transform .2s ease; }
 .fold-toggle.is-expanded svg { transform: rotate(180deg); }
+.view-refresh { width: 28px; height: 28px; color: var(--ink-muted); }
+.view-refresh svg { transition: transform .3s ease; }
 .filter-chip { padding: 5px 8px; border: 0; border-radius: 5px; color: var(--chip-ink); background: transparent; font-size: 10px; }
 .filter-chip span { margin-left: 2px; color: var(--chip-soft); font-family: 'DM Mono', monospace; font-size: 9px; }
 .filter-chip:hover { color: var(--ink); background: var(--paper-deep); }
