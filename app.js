@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev36') {
+  if (build !== 'dev37') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5379,8 +5379,9 @@ function sharedFolderTree(notesDec, groupId, folderList) {
         </span>
       </div>`);
     if (collapsed) return;
-    (childrenOf.get(folder) || []).forEach(emit);
+    // A folder's own notes come first, directly under it, then its subfolders.
     notesDec.filter((n) => n.folder === folder).forEach((n) => parts.push(sharedNoteRow(n, groupId)));
+    (childrenOf.get(folder) || []).forEach(emit);
   };
   roots.forEach(emit);
   notesDec.filter((n) => !n.folder).forEach((n) => parts.push(sharedNoteRow(n, groupId)));
