@@ -117,32 +117,65 @@ NOTES_MAX_TOTAL_BYTES = 6 * 1024 * 1024
 SHARE_MAX_BYTES = NOTES_MAX_TOTAL_BYTES
 NOTES_MAX_REQUEST_BYTES = 7 * 1024 * 1024
 
-# Password policy: min 12 chars, at least 1 upper, 1 lower, 1 digit, 1 special.
-PASSWORD_MIN_LENGTH = 12
-PASSWORD_SPECIAL_RE = re.compile(r'[^A-Za-z0-9]')
+# Password policy — aligned to NIST SP 800-63B (800-63-4): length is the
+# primary factor, composition rules are NOT imposed, long passwords allowed,
+# and a blocklist of common/compromised values is enforced. Applies to
+# server-visible passwords (legacy change path, bootstrap env values); E2EE
+# registrations are checked client-side plus the server weak-screen.
+PASSWORD_MIN_LENGTH = 15
+PASSWORD_MAX_LENGTH = 256
 USERNAME_RE = re.compile(r'^[A-Za-z0-9_-]{3,32}$')
 # Person names: letters first, then letters/spaces/hyphens/apostrophes/periods.
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z'.\- ]{0,39}$")
 NOTE_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
 
+# Blocklist of commonly used / expected / compromised passwords. The embedded
+# set is intentionally small; real deployments should point
+# NOTELY_PASSWORD_BLOCKLIST at a large list (one password per line, e.g. a
+# SecLists or Pwned Passwords export) — entries are merged at startup.
+_EMBEDDED_BLOCKLIST = frozenset(word.lower() for word in (
+    '123456', '123456789', '12345678', '1234567', '1234567890', '12345', '1234',
+    '123', '111111', '000000', '121212', '123123', 'password', 'password1',
+    'password1!', 'password123', 'password123!', 'passw0rd', 'pass1234', 'abc123',
+    'qwerty', 'qwerty123', 'qwertyuiop', 'qwertyuiopas', 'qazwsx', '1q2w3e4r',
+    'asdfghjkl', 'zaq12wsx', 'admin', 'admin123', 'admin123!', 'administrator',
+    'root', 'toor', 'login', 'letmein', 'welcome', 'welcome1', 'monkey', 'dragon',
+    'iloveyou', 'sunshine', 'princess', 'football', 'trustno1', 'whatever',
+    'freedom', 'hello', 'changeme', 'secret', 'master', 'shadow', 'superman',
+    'michael', 'aaaaaaaaaaaa', 'aaaaaaaaaaaaaaaa', 'notely', 'notely123',
+    'notely123!', 'notes12345', 'notes123456',
+))
 
-# Enforce the password policy for server-visible passwords (legacy change path, bootstrap env values). E2EE registrations are strength-checked client-side.
+
+def _load_password_blocklist():
+    words = set(_EMBEDDED_BLOCKLIST)
+    path = os.environ.get('NOTELY_PASSWORD_BLOCKLIST')
+    if path and os.path.exists(path):
+        try:
+            with open(path, 'r', errors='ignore') as handle:
+                for line in handle:
+                    word = line.strip().lower()
+                    if word:
+                        words.add(word)
+        except Exception:
+            pass
+    return frozenset(words)
+
+
+PASSWORD_BLOCKLIST = _load_password_blocklist()
+
+
+# Enforce the policy for server-visible passwords. Returns (ok, message).
 def validate_password(password):
-    """Enforce the Notely password policy. Returns (ok, message)."""
+    """NIST-aligned check: length only (no composition) + blocklist."""
     if not isinstance(password, str):
         return False, 'Password must be a string.'
     if len(password) < PASSWORD_MIN_LENGTH:
         return False, f'Password must be at least {PASSWORD_MIN_LENGTH} characters.'
-    if len(password) > 256:
-        return False, 'Password must be at most 256 characters.'
-    if not re.search(r'[A-Z]', password):
-        return False, 'Password must contain at least 1 capital letter.'
-    if not re.search(r'[a-z]', password):
-        return False, 'Password must contain at least 1 small letter.'
-    if not re.search(r'[0-9]', password):
-        return False, 'Password must contain at least 1 number.'
-    if not PASSWORD_SPECIAL_RE.search(password):
-        return False, 'Password must contain at least 1 special character.'
+    if len(password) > PASSWORD_MAX_LENGTH:
+        return False, f'Password must be at most {PASSWORD_MAX_LENGTH} characters.'
+    if password.lower() in PASSWORD_BLOCKLIST:
+        return False, 'That password is too common — choose a different one.'
     return True, 'OK'
 
 
@@ -322,9 +355,19 @@ def b64decode_strict(value, expected_len):
 
 # True once an account carries wrapped-key material; gates E2EE vs legacy code paths.
 def is_e2ee_account(row):
-    """An account is E2EE once it carries wrapped-key material."""
+    """An account is E2EE once it carries wrapped-key material and a verifier.
+
+    Accepts either the raw verifier (legacy, pre-pepper) or the peppered one
+    (auth_hash2). Raw is dropped once a row is peppered (M-4 migration)."""
     try:
-        return bool(row['salt_auth'] and row['auth_hash'] and row['salt_enc'] and row['enc_master_key'])
+        verifier = row['auth_hash'] or row['auth_hash2']
+    except Exception:
+        try:
+            verifier = row['auth_hash']
+        except Exception:
+            return False
+    try:
+        return bool(row['salt_auth'] and verifier and row['salt_enc'] and row['enc_master_key'])
     except Exception:
         return False
 
@@ -1120,7 +1163,9 @@ def csrf_check_failed():
             return (ref_scheme, ref_host, ref_port) != (req_scheme, req_host, req_port)
         return False
     except Exception:
-        return False
+        # Fail closed (OWASP A10): an unexpected error while evaluating a
+        # state-changing /api request must reject, not allow.
+        return True
 
 
 # JSON body as a dict, or {} for missing/unparseable/non-object payloads.
@@ -1242,6 +1287,61 @@ def rotate_session_if_due(conn, user, now):
     return token, digest
 
 
+# --- Security audit logging + alerting (OWASP A09) -------------------------
+# Structured JSONL of security-relevant events (auth outcomes, recovery, MFA,
+# CSRF rejects, rate-limit trips, unhandled errors). Written append-only; the
+# optional NOTELY_ALERT_WEBHOOK receives a POST for events at or above
+# NOTELY_ALERT_MIN_SEVERITY (default 'high'). Callers pass identifiers only —
+# never passwords, verifiers or key material.
+AUDIT_LOG_PATH = os.environ.get('NOTELY_AUDIT_LOG', os.path.join(BASE_DIR, 'audit.log'))
+AUDIT_ENABLED = os.environ.get('NOTELY_AUDIT', '1').lower() != '0'
+ALERT_WEBHOOK = os.environ.get('NOTELY_ALERT_WEBHOOK', '').strip()
+ALERT_MIN_SEVERITY = os.environ.get('NOTELY_ALERT_MIN_SEVERITY', 'high').lower()
+_SEVERITY_RANK = {'info': 0, 'warning': 1, 'high': 2, 'critical': 3}
+AUDITED_ENDPOINTS = {
+    '/api/login', '/api/register', '/api/change-password', '/api/upgrade-kdf',
+    '/api/mfa/setup', '/api/mfa/confirm', '/api/mfa/disable', '/api/mfa/challenge',
+    '/api/passkey/register-begin', '/api/passkey/register-finish',
+    '/api/passkey/login-begin', '/api/passkey/login-finish', '/api/passkey/remove',
+    '/api/recovery/email/start', '/api/recovery/email/complete',
+    '/api/recovery/account/generate', '/api/recovery/account/lookup',
+    '/api/recovery/account/reset', '/api/account', '/api/account/email', '/api/logout',
+}
+
+
+def security_event(event, severity='info', **fields):
+    """Append one structured security event and optionally fire an alert.
+
+    Must never raise into request handling. Values are serialised defensively
+    and callers must not pass secrets."""
+    if not AUDIT_ENABLED:
+        return
+    try:
+        record = {'ts': int(time.time()), 'event': event, 'severity': severity}
+        try:
+            record['ip'] = request.remote_addr
+        except Exception:
+            pass
+        record.update({key: value for key, value in fields.items() if value is not None})
+        line = json.dumps(record, separators=(',', ':'), default=str)
+        try:
+            with open(AUDIT_LOG_PATH, 'a') as handle:
+                handle.write(line + '\n')
+        except Exception:
+            pass
+        if ALERT_WEBHOOK and _SEVERITY_RANK.get(severity, 0) >= _SEVERITY_RANK.get(ALERT_MIN_SEVERITY, 2):
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    ALERT_WEBHOOK, data=line.encode('utf-8'),
+                    headers={'Content-Type': 'application/json'})
+                urllib.request.urlopen(req, timeout=3)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 @app.route('/')
 def root():
     response = send_from_directory(BASE_DIR, 'index.html')
@@ -1269,8 +1369,9 @@ def security_headers(response):
     # Server banner hidden via WSGIRequestHandler override in __main__
     # (gunicorn emits unversioned 'gunicorn' natively). Do NOT set here:
     # Werkzeug would then send two Server headers (duplicate).
-    # HSTS always (browsers ignore over HTTP; enforced over HTTPS).
-    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    # HSTS always (browsers ignore over HTTP; enforced over HTTPS). Two years,
+    # matching current Mozilla TLSRef guidance.
+    response.headers['Strict-Transport-Security'] = 'max-age=63072000; includeSubDomains'
     response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=(), payment=()'
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
@@ -1284,11 +1385,18 @@ def security_headers(response):
         # wasm-unsafe-eval: required to compile the vendored Argon2 WASM
         # module (strictly narrower than unsafe-eval: JS eval stays blocked).
         "script-src 'self' 'wasm-unsafe-eval'; "
+        # style-src keeps 'unsafe-inline': the static shell uses a handful of
+        # inline style attributes. Refactoring those to classes would allow a
+        # fully strict style-src (see hardening backlog).
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "img-src 'self' https: data:; "
         "font-src 'self' https://fonts.gstatic.com; "
         "connect-src 'self'; "
         "frame-ancestors 'self'; "
+        "frame-src 'none'; "
+        "worker-src 'self'; "
+        "manifest-src 'self'; "
+        "media-src 'none'; "
         "base-uri 'self'; "
         "form-action 'self'; "
         "object-src 'none'; "
@@ -1297,9 +1405,35 @@ def security_headers(response):
     return response
 
 
+@app.after_request
+def audit_trail(response):
+    """Audit auth/security endpoint outcomes (OWASP A09). Username is read from
+    the cached JSON body when present; the body is never re-parsed twice."""
+    try:
+        if request.path in AUDITED_ENDPOINTS:
+            severity = 'info' if response.status_code < 400 else 'warning'
+            event = 'auth.' + request.path[len('/api/'):].replace('/', '.')
+            username = None
+            try:
+                payload = request.get_json(silent=True)
+                if isinstance(payload, dict):
+                    username = payload.get('username')
+            except Exception:
+                username = None
+            security_event(event, severity=severity, status=response.status_code,
+                           method=request.method, username=username)
+        elif request.path.startswith('/api/') and response.status_code == 429:
+            security_event('rate_limit.blocked', severity='warning', path=request.path)
+    except Exception:
+        pass
+    return response
+
+
 @app.before_request
 def csrf_protect():
     if csrf_check_failed():
+        security_event('csrf.rejected', severity='warning',
+                       method=request.method, path=request.path)
         return jsonify({'error': 'Cross-site request rejected.'}), 403
 
 
@@ -1316,6 +1450,20 @@ def method_not_allowed(error):
 @app.errorhandler(413)
 def request_too_large(error):
     return jsonify({'error': 'Request too large.'}), 413
+
+
+@app.errorhandler(Exception)
+def unhandled_exception(error):
+    """Log unexpected exceptions (A09/A10) and never leak internals.
+
+    HTTPExceptions (404/405/413/etc.) are re-dispatched to their own handlers;
+    everything else becomes a generic 500 with an audit event."""
+    from werkzeug.exceptions import HTTPException
+    if isinstance(error, HTTPException):
+        return error
+    security_event('error.unhandled', severity='high', path=request.path,
+                   method=request.method, error=type(error).__name__)
+    return jsonify({'error': 'Internal server error.'}), 500
 
 
 # NOTE: unknown usernames get per-name dummy salts from dummy_kdf_salt_for()
@@ -1483,10 +1631,11 @@ def api_login():
             rate_hit(conn, user_bucket)
             conn.close()
             return jsonify({'error': 'Incorrect username or password.'}), 401
-        # Non-breaking pepper upgrade: raw -> peppered on successful login.
+        # Non-breaking pepper upgrade: raw -> peppered on successful login, then
+        # drop the raw verifier (M-4: no replayable bearer token at rest).
         try:
             if ok == 'raw':
-                conn.execute('UPDATE users SET auth_hash2 = ? WHERE username = ?',
+                conn.execute('UPDATE users SET auth_hash2 = ?, auth_hash = NULL WHERE username = ?',
                              (pepper_auth_hash(bytes(candidate)), username))
         except Exception:
             pass
@@ -1648,7 +1797,7 @@ def api_register():
             ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (username, b'', b'', 0,
              encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': 'Personal space', 'email': email}),
-             int(time.time()), salt_auth, salt_enc, auth_hash, wrap_iv + wrap_ct,
+             int(time.time()), salt_auth, salt_enc, (None if auth_hash2 else auth_hash), wrap_iv + wrap_ct,
              'argon2id', json.dumps(ARGON2_DESCRIPTOR), auth_hash2),
         )
         conn.commit()
@@ -1957,7 +2106,7 @@ def api_put_notes():
         except (ValueError, TypeError):
             conn.close()
             return jsonify({'error': 'Invalid baseVersion.'}), 400
-    row = conn.execute('SELECT salt_auth, auth_hash, salt_enc, enc_master_key FROM users WHERE username = ?',
+    row = conn.execute('SELECT salt_auth, auth_hash, auth_hash2, salt_enc, enc_master_key FROM users WHERE username = ?',
                        (user['username'],)).fetchone()
     if row and is_e2ee_account(row):
         # E2EE account: the body is opaque ciphertext. Only size/format is
@@ -2827,6 +2976,84 @@ def api_account_delete():
     resp.delete_cookie(SESSION_COOKIE, path='/', httponly=True, samesite='Lax', secure=session_cookie_secure())
     resp.delete_cookie(LEGACY_SESSION_COOKIE, path='/', httponly=True, samesite='Lax', secure=session_cookie_secure())
     return resp
+
+
+# --- E2EE account keys (for wrapping collaborative-note keys) -------------
+# Each account publishes an ECDH P-256 public key and its private key wrapped
+# under the account master key (opaque). The server can never read either.
+
+@app.route('/api/keys', methods=['POST'])
+def api_keys_publish():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    algo = str(data.get('algo') or 'ECDH-P256')[:32]
+    try:
+        pubkey = base64.b64decode(str(data.get('pubkey', '')).encode('ascii'), validate=True)
+        enc_priv = base64.b64decode(str(data.get('encPriv', '')).encode('ascii'), validate=True)
+    except (base64.binascii.Error, ValueError, AttributeError):
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    # Raw P-256 point is 65 bytes; wrapped private key is nonce(12)+ct(>=48).
+    if len(pubkey) != 65 or not (60 <= len(enc_priv) <= 4096):
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    now = int(time.time())
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO user_keys (username, pubkey, enc_priv, algo, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?)'
+        ' ON CONFLICT(username) DO UPDATE SET pubkey = excluded.pubkey,'
+        ' enc_priv = excluded.enc_priv, algo = excluded.algo, updated_at = excluded.updated_at',
+        (user['username'], pubkey, enc_priv, algo, now, now),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/keys/me', methods=['GET'])
+def api_keys_me():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    row = conn.execute('SELECT pubkey, enc_priv, algo, updated_at FROM user_keys WHERE username = ?',
+                       (user['username'],)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'exists': False})
+    return jsonify({
+        'exists': True,
+        'algo': row['algo'],
+        'pubkey': base64.b64encode(bytes(row['pubkey'])).decode('ascii'),
+        'encPriv': base64.b64encode(bytes(row['enc_priv'])).decode('ascii'),
+        'updated_at': row['updated_at'],
+    })
+
+
+@app.route('/api/keys/lookup', methods=['GET'])
+def api_keys_lookup():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    target = str(request.args.get('username', '')).strip()
+    if not validate_username(target):
+        return jsonify({'error': 'Invalid username.'}), 400
+    conn = get_db()
+    if rate_exceeded(conn, [ip_user_bucket('keylookup', user['username'])], 60, 3600):
+        conn.close()
+        return jsonify({'error': 'Too many lookups — slow down.'}), 429
+    rate_hit(conn, ip_user_bucket('keylookup', user['username']))
+    row = conn.execute('SELECT pubkey, algo FROM user_keys WHERE username = ?', (target,)).fetchone()
+    conn.commit()
+    conn.close()
+    if not row:
+        return jsonify({'error': 'That account has not set up sharing yet. Ask them to log in to Notely once, then try again.'}), 404
+    return jsonify({
+        'username': target,
+        'algo': row['algo'],
+        'pubkey': base64.b64encode(bytes(row['pubkey'])).decode('ascii'),
+    })
 
 
 # --- E2EE collaborative notes (live, server-blind) ------------------------
