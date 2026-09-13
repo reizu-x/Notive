@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev61') {
+  if (build !== 'dev62') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -2989,7 +2989,7 @@ function renderTabs() {
   const bar = document.getElementById('tab-bar');
   if (!bar) return;
   openTabs = openTabs.filter((tab) => {
-    const note = findTabbedNote(tab.id, tab.vault);
+    const note = findTabbedNote(tab.id, tab.vault, tab.shared);
     return note && !note.deleted;
   });
   // No tabs, no collapse toggle.
