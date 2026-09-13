@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev41') {
+  if (build !== 'dev42') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5240,25 +5240,30 @@ function sharedUniqueTitle(base, groupId) {
 // Start a shared note from the same templates used by All Notes.
 async function createSharedNoteWithTemplate(groupId, folder, templateKey) {
   const key0 = NOTE_TEMPLATES[templateKey] ? templateKey : 'standard';
-  const template = NOTE_TEMPLATES[key0];
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
   if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
   let key;
   try { key = (await collabGroupKey(groupId)).key; }
   catch (error) { showToast('You no longer have access to this section'); return; }
-  const title = sharedUniqueTitle(template.titleBase, groupId);
-  const encMeta = await collabEncryptMeta(key, { title, folder: folder || '', template: key0 });
+  const seed = seedFromTemplate(key0, sharedUniqueTitle(NOTE_TEMPLATES[key0].titleBase, groupId));
+  const encMeta = await collabEncryptMeta(key, { title: seed.title, folder: folder || '', template: key0 });
   const res = await apiFetch(`/api/collab/groups/${groupId}/notes`, { method: 'POST', body: JSON.stringify({ encMeta }) });
   if (!res.ok) { showToast('Could not create the note'); return; }
   const note = await res.json();
+  // Seed the template title + body as the note's first CRDT update, so the
+  // editor and every member joining later start from the (possibly edited)
+  // template instead of racing a post-connect insert.
+  try {
+    const Y = await loadYjs();
+    const doc = new Y.Doc();
+    doc.getText('title').insert(0, seed.title);
+    if (seed.body) doc.getText('body').insert(0, seed.body);
+    const update = Y.encodeStateAsUpdate(doc);
+    doc.destroy();
+    const payload = await collabEncrypt(key, update);
+    await apiFetch(`/api/collab/notes/${note.id}/updates`, { method: 'POST', body: JSON.stringify({ payload }) });
+  } catch (error) {}
   await openCollabNote(note.id);
-  if (collab.body && collab.body.length === 0) {
-    const body = typeof template.body === 'function' ? template.body(title) : '';
-    if (body) { try { collab.body.insert(0, body); } catch (error) {} }
-  }
-  if (collab.title && collab.title.length === 0) {
-    try { collab.title.insert(0, title); } catch (error) {}
-  }
   if (activeView === 'shared') renderSharedView();
 }
 // Add a subfolder under an existing shared folder (persisted in group meta).
@@ -6615,6 +6620,17 @@ function renderTemplateOptions() {
   }).join('');
 }
 
+// One seed used by both All Notes and the Shared view, so editing a template's
+// title/body is mirrored everywhere a new note is created from it.
+function seedFromTemplate(templateKey, title) {
+  const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
+  return {
+    template,
+    title,
+    body: typeof template.body === 'function' ? template.body(title) : '',
+  };
+}
+
 // Create a note from a template (Standard/Recipe/To-Do) into the current view+collection and open it.
 function createNoteFromTemplate(templateKey) {
   const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
@@ -6676,7 +6692,7 @@ function createNoteFromTemplate(templateKey) {
     }
     return null;
   }
-  const note = { id, title, date: 'Now', updatedAt: Date.now(), tags, favorite: false, archived: false, deleted: false, ext: normalizeExt(template.ext), sections: filedSections, body: template.body(title) };
+  const note = { id, title, date: 'Now', updatedAt: Date.now(), tags, favorite: false, archived: false, deleted: false, ext: normalizeExt(template.ext), sections: filedSections, body: seedFromTemplate(templateKey, title).body };
   if (templateKey === 'recipe' || templateKey === 'todo') note.template = templateKey;
   notes.unshift(note);
   activeFilter = 'all';
