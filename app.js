@@ -4927,9 +4927,10 @@ async function sharingRecipientPublicKey(username) {
 }
 
 // ---- Live collaborative notes (E2EE via Yjs) ------------------------------
-// A collaborative note carries a random content key; each member's copy is
-// wrapped to their ECDH public key. Edits are Yjs CRDT updates encrypted with
-// that key and relayed over a WebSocket. The server only relays ciphertext.
+// Shared sections: a group has a random key wrapped to each member. Notes live
+// under the group; any note added there is automatically shared with everyone
+// in the group. Edits are Yjs CRDT updates encrypted with the group key and
+// relayed over a WebSocket. The server only relays ciphertext.
 let yjsPromise = null;
 function loadYjs() {
   if (!yjsPromise) yjsPromise = import('/vendor/yjs/yjs.mjs');
@@ -4968,7 +4969,8 @@ async function collabDecrypt(keyRaw, packedB64) {
   return new Uint8Array(await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: packed.slice(0, 12) }, key, packed.slice(12)));
 }
 
-const collab = { id: null, doc: null, title: null, body: null, ws: null, key: null, members: [], owner: null, updates: 0, reconnect: null };
+const collab = { noteId: null, groupId: null, doc: null, title: null, body: null, es: null, key: null,
+  members: [], owner: null, groupName: '', updates: 0, reconnect: null };
 
 function setCollabStatus(text, offline) {
   const el = document.getElementById('collab-status');
@@ -4978,7 +4980,6 @@ function setCollabStatus(text, offline) {
 }
 function commonPrefixLen(a, b) { const n = Math.min(a.length, b.length); let i = 0; while (i < n && a[i] === b[i]) i += 1; return i; }
 function commonSuffixLen(a, b, max) { let i = 0; while (i < max && a[a.length - 1 - i] === b[b.length - 1 - i]) i += 1; return i; }
-// Apply a plain-text edit to a Y.Text as a minimal delete+insert.
 function applyTextDiff(ytext, oldStr, newStr) {
   if (oldStr === newStr) return;
   const p = commonPrefixLen(oldStr, newStr);
@@ -5011,61 +5012,58 @@ function renderCollabMembers() {
   }).join('');
 }
 async function collabBroadcast(update) {
-  if (!collab.key) return;
+  if (!collab.key || !collab.noteId) return;
   try {
     const payload = await collabEncrypt(collab.key, update);
-    if (collab.ws && collab.ws.readyState === 1) collab.ws.send(JSON.stringify({ type: 'update', payload }));
+    await apiFetch(`/api/collab/notes/${collab.noteId}/updates`, { method: 'POST', body: JSON.stringify({ payload }) });
   } catch (error) {}
 }
 async function collabCompact() {
-  if (!collab.doc || !collab.key) return;
+  if (!collab.doc || !collab.key || !collab.noteId) return;
   try {
     const Y = await loadYjs();
     const state = Y.encodeStateAsUpdate(collab.doc);
     const payload = await collabEncrypt(collab.key, state);
-    await apiFetch(`/api/collab/${collab.id}/compact`, { method: 'POST', body: JSON.stringify({ state: payload }) });
+    await apiFetch(`/api/collab/notes/${collab.noteId}/compact`, { method: 'POST', body: JSON.stringify({ state: payload }) });
   } catch (error) {}
 }
-function collabConnect(id, keyRaw, Y, doc) {
-  if (collab.reconnect) { clearTimeout(collab.reconnect); collab.reconnect = null; }
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  let ws;
-  try { ws = new WebSocket(`${proto}//${location.host}/ws/collab/${id}`); }
+function collabConnect(noteId, keyRaw, Y, doc) {
+  if (collab.es) { try { collab.es.close(); } catch (error) {} collab.es = null; }
+  let es;
+  try { es = new EventSource(`/api/collab/notes/${noteId}/stream`); }
   catch (error) { setCollabStatus('Could not connect', true); return; }
-  collab.ws = ws;
-  ws.onopen = () => setCollabStatus('Live · connected', false);
-  ws.onmessage = async (event) => {
+  collab.es = es;
+  es.onopen = () => setCollabStatus('Live · connected', false);
+  es.onmessage = async (event) => {
     let msg; try { msg = JSON.parse(event.data); } catch (error) { return; }
-    if (!msg || (msg.type !== 'state' && msg.type !== 'update')) return;
-    try {
-      const plain = await collabDecrypt(keyRaw, msg.payload);
-      Y.applyUpdate(doc, plain, 'remote');
-    } catch (error) { /* wrong key or corrupt update */ }
+    if (msg.type === 'closed') { setCollabStatus('This note was closed', true); return; }
+    if (msg.type !== 'state' && msg.type !== 'update') return;
+    try { Y.applyUpdate(doc, await collabDecrypt(keyRaw, msg.payload), 'remote'); } catch (error) {}
   };
-  ws.onclose = () => {
-    if (collab.id !== id) return;
-    setCollabStatus('Offline — retrying…', true);
-    collab.reconnect = setTimeout(() => { if (collab.id === id) collabConnect(id, keyRaw, Y, doc); }, 2000);
-  };
-  ws.onerror = () => setCollabStatus('Connection error', true);
+  // EventSource auto-reconnects; the stream replays state + backlog on reconnect.
+  es.onerror = () => { if (collab.noteId === noteId) setCollabStatus('Offline — retrying…', true); };
 }
-async function openCollabNote(id) {
+async function openCollabNote(noteId) {
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
   if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
   let res;
-  try { res = await apiFetch(`/api/collab/${id}`); } catch (error) { res = null; }
+  try { res = await apiFetch(`/api/collab/notes/${noteId}`); } catch (error) { res = null; }
   if (!res || !res.ok) { showToast('Cannot open that shared note'); return; }
   const meta = await res.json();
   let keyRaw;
   try { keyRaw = await unwrapRawKey(meta.myKey.wrappedKey, meta.myKey.ephPub, meta.myKey.wrapIv); }
   catch (error) { showToast('You no longer have access to this note'); return; }
+  // Group metadata gives the section name + members.
+  let group = { name: '', members: [] };
+  try { const g = await apiFetch(`/api/collab/groups/${meta.groupId}`); if (g.ok) group = await g.json(); } catch (error) {}
   const Y = await loadYjs();
   closeCollabNote();
   const doc = new Y.Doc();
   Object.assign(collab, {
-    id, doc,
+    noteId, groupId: meta.groupId, doc,
     title: doc.getText('title'), body: doc.getText('body'),
-    ws: null, key: keyRaw, members: meta.members || [], owner: meta.owner, updates: 0,
+    es: null, key: keyRaw, members: group.members || [], owner: meta.owner, groupName: group.name || '',
+    updates: 0,
   });
   doc.on('update', (update, origin) => {
     if (origin === 'remote') return;
@@ -5075,49 +5073,117 @@ async function openCollabNote(id) {
   });
   collab.title.observe(collabSyncDom);
   collab.body.observe(collabSyncDom);
-  const overlay = document.getElementById('collab-overlay');
+  const me = cachedProfile && cachedProfile.username;
+  const displayName = collab.owner === me ? (collab.groupName || 'Shared') : collab.owner;
+  const label = document.getElementById('collab-group-label');
+  if (label) label.textContent = displayName;
+  const delBtn = document.getElementById('collab-delete');
+  if (delBtn) delBtn.hidden = false;
   const bodyEl = document.getElementById('collab-body');
   const titleEl = document.getElementById('collab-title');
   if (bodyEl) bodyEl.value = '';
   if (titleEl) titleEl.value = '';
   renderCollabMembers();
-  const delBtn = document.getElementById('collab-delete');
-  if (delBtn) delBtn.hidden = !(meta.owner === (cachedProfile && cachedProfile.username));
   setCollabStatus('Connecting…', false);
+  const overlay = document.getElementById('collab-overlay');
   if (overlay) overlay.hidden = false;
-  collabConnect(id, keyRaw, Y, doc);
+  collabConnect(noteId, keyRaw, Y, doc);
 }
-async function collabCreateWithMembers(members) {
-  const names = Array.isArray(members) ? members : [];
-  const keyRaw = e2eeRandomBytes(32);
-  let selfPub;
-  try { selfPub = await sharingRecipientPublicKey(cachedProfile.username); }
-  catch (error) { showToast('Could not load your public key'); return null; }
-  const wrap = await wrapRawKeyFor(selfPub, keyRaw);
-  const res = await apiFetch('/api/collab', { method: 'POST', body: JSON.stringify(wrap) });
-  if (!res.ok) { showToast('Could not create the shared note'); return null; }
-  const data = await res.json();
-  const failed = [];
-  for (const name of names) {
-    try { await collabAddMemberById(data.id, keyRaw, name); }
-    catch (error) { failed.push(`${name}: ${error && error.message ? error.message : 'failed'}`); }
-  }
-  await openCollabNote(data.id);
-  if (activeView === 'shared') renderSharedView();
-  if (failed.length) showToast(`Note created. Some invites failed — ${failed[0]}`);
-  return data.id;
+function closeCollabNote() {
+  if (collab.reconnect) { clearTimeout(collab.reconnect); collab.reconnect = null; }
+  const overlay = document.getElementById('collab-overlay');
+  if (overlay) overlay.hidden = true;
+  if (collab.es) { try { collab.es.close(); } catch (error) {} }
+  if (collab.doc) { try { collab.doc.destroy(); } catch (error) {} }
+  collab.noteId = null; collab.groupId = null; collab.doc = null; collab.title = null; collab.body = null;
+  collab.es = null; collab.key = null; collab.members = []; collab.owner = null; collab.groupName = '';
 }
-async function collabAddMemberById(id, keyRaw, name) {
+async function collabAddGroupMember(groupId, keyRaw, name) {
   const pub = await sharingRecipientPublicKey(name);
   const wrap = await wrapRawKeyFor(pub, keyRaw);
-  const res = await apiFetch(`/api/collab/${id}/members`, { method: 'POST', body: JSON.stringify({ username: name, ...wrap }) });
+  const res = await apiFetch(`/api/collab/groups/${groupId}/members`, { method: 'POST', body: JSON.stringify({ username: name, ...wrap }) });
   if (!res.ok) {
     let message = 'Could not add member';
     try { const d = await res.json(); if (d && d.error) message = d.error; } catch (error) {}
     throw new Error(message);
   }
 }
-// Popup: ask who to share the new note with, then create it.
+// Create a shared section (group) named after the first member, then its first note.
+async function collabCreateSection(members) {
+  const names = Array.isArray(members) ? members : [];
+  const keyRaw = e2eeRandomBytes(32);
+  let selfPub;
+  try { selfPub = await sharingRecipientPublicKey(cachedProfile.username); }
+  catch (error) { showToast('Could not load your public key'); return null; }
+  const wrap = await wrapRawKeyFor(selfPub, keyRaw);
+  const name = names[0] || 'Shared';
+  const res = await apiFetch('/api/collab/groups', { method: 'POST', body: JSON.stringify({ name, ...wrap }) });
+  if (!res.ok) { showToast('Could not create the shared section'); return null; }
+  const data = await res.json();
+  const failed = [];
+  for (const who of names) {
+    try { await collabAddGroupMember(data.id, keyRaw, who); }
+    catch (error) { failed.push(`${who}: ${error && error.message ? error.message : 'failed'}`); }
+  }
+  const noteRes = await apiFetch(`/api/collab/groups/${data.id}/notes`, { method: 'POST', body: '{}' });
+  if (!noteRes.ok) { showToast('Section created, but could not add a note'); if (activeView === 'shared') renderSharedView(); return null; }
+  const note = await noteRes.json();
+  await openCollabNote(note.id);
+  if (activeView === 'shared') renderSharedView();
+  if (failed.length) showToast(`Created. Some invites failed — ${failed[0]}`);
+  return data.id;
+}
+async function createNoteInGroup(groupId) {
+  if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
+  if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
+  const res = await apiFetch(`/api/collab/groups/${groupId}/notes`, { method: 'POST', body: '{}' });
+  if (!res.ok) { showToast('Could not create the note'); return; }
+  const note = await res.json();
+  await openCollabNote(note.id);
+  if (activeView === 'shared') renderSharedView();
+}
+async function collabInvite() {
+  if (!collab.groupId || !collab.key) return;
+  const value = await askInput({ eyebrow: 'Invite', title: 'Add a member', desc: 'They need a Notely account and must have logged in once.', label: 'Username', password: false, placeholder: 'their-username', okText: 'Invite' });
+  if (value == null) return;
+  const target = String(value).trim();
+  if (!/^[A-Za-z0-9_-]{3,32}$/.test(target)) { showToast('Invalid username'); return; }
+  try {
+    await collabAddGroupMember(collab.groupId, collab.key, target);
+    if (!collab.members.includes(target)) collab.members.push(target);
+    renderCollabMembers();
+    showToast(`Added ${target}`);
+  } catch (error) { showToast(error && error.message ? error.message : 'Could not add member'); }
+}
+async function collabRemoveMember(name) {
+  if (!collab.groupId) return;
+  const res = await apiFetch(`/api/collab/groups/${collab.groupId}/members/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  if (res.ok) { collab.members = collab.members.filter((m) => m !== name); renderCollabMembers(); showToast(`Removed ${name}`); }
+  else showToast('Could not remove member');
+}
+async function collabDeleteNote(noteId) {
+  const res = await apiFetch(`/api/collab/notes/${encodeURIComponent(noteId)}`, { method: 'DELETE' });
+  if (res.ok) { if (collab.noteId === Number(noteId) || String(collab.noteId) === String(noteId)) closeCollabNote(); if (activeView === 'shared') renderSharedView(); }
+  else showToast('Could not delete the note');
+}
+async function collabDeleteGroup(groupId) {
+  const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' });
+  if (res.ok) { if (String(collab.groupId) === String(groupId)) closeCollabNote(); showToast('Shared section deleted'); if (activeView === 'shared') renderSharedView(); }
+  else showToast('Could not delete the section');
+}
+function confirmDeleteGroup(groupId) {
+  pendingDeleteId = String(groupId);
+  pendingDeleteMode = 'collab-group';
+  pendingDeleteTag = null;
+  setDeleteDialog({ eyebrow: 'Delete section', title: 'Delete this shared section?', name: 'This section', message: '” and all its notes will be deleted for everyone. This cannot be undone.' });
+  const overlay = document.getElementById('delete-overlay');
+  if (overlay) {
+    overlay.hidden = false;
+    const confirmBtn = document.getElementById('confirm-delete');
+    if (confirmBtn) confirmBtn.focus();
+  }
+}
+// Popup: ask who the new shared section is for.
 function parseUsernames(raw) {
   return String(raw || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean).slice(0, 20);
 }
@@ -5141,57 +5207,26 @@ function setCollabNewStatus(message) {
 }
 async function confirmCollabNew() {
   const input = document.getElementById('collab-new-members');
-  const names = parseUsernames(input ? input.value : '').filter((n) => /^[A-Za-z0-9_-]{3,32}$/.test(n) && n !== (cachedProfile && cachedProfile.username));
+  const me = cachedProfile && cachedProfile.username;
+  const names = parseUsernames(input ? input.value : '').filter((n) => /^[A-Za-z0-9_-]{3,32}$/.test(n) && n !== me);
   if (!names.length) { setCollabNewStatus('Enter at least one valid username (not your own).'); return; }
   if (!(await sharingEnsureKeys())) { setCollabNewStatus('Could not set up sharing keys.'); return; }
   const btn = document.getElementById('collab-new-create');
   if (btn) btn.disabled = true;
   setCollabNewStatus('Creating…');
   try {
-    await collabCreateWithMembers(names);
+    await collabCreateSection(names);
     closeCollabNewDialog();
   } catch (error) {
-    setCollabNewStatus(error && error.message ? error.message : 'Could not create the note.');
+    setCollabNewStatus(error && error.message ? error.message : 'Could not create the section.');
   } finally {
     if (btn) btn.disabled = false;
   }
 }
-async function collabCreate() {
-  openCollabNewDialog();
-}
-function closeCollabNote() {
-  if (collab.reconnect) { clearTimeout(collab.reconnect); collab.reconnect = null; }
-  const overlay = document.getElementById('collab-overlay');
-  if (overlay) overlay.hidden = true;
-  if (collab.ws) { try { collab.ws.close(); } catch (error) {} }
-  if (collab.doc) { try { collab.doc.destroy(); } catch (error) {} }
-  collab.id = null; collab.doc = null; collab.title = null; collab.body = null;
-  collab.ws = null; collab.key = null; collab.members = []; collab.owner = null;
-}
-async function collabInvite() {
-  if (!collab.id || !collab.key) return;
-  const value = await askInput({ eyebrow: 'Invite', title: 'Add a member', desc: 'They need a Notely account and must have logged in once.', label: 'Username', password: false, placeholder: 'their-username', okText: 'Invite' });
-  if (value == null) return;
-  const target = String(value).trim();
-  if (!/^[A-Za-z0-9_-]{3,32}$/.test(target)) { showToast('Invalid username'); return; }
-  try {
-    const pub = await sharingRecipientPublicKey(target);
-    const wrap = await wrapRawKeyFor(pub, collab.key);
-    const res = await apiFetch(`/api/collab/${collab.id}/members`, { method: 'POST', body: JSON.stringify({ username: target, ...wrap }) });
-    if (!res.ok) { let message = 'Could not add member'; try { const d = await res.json(); if (d && d.error) message = d.error; } catch (error) {} showToast(message); return; }
-    if (!collab.members.includes(target)) collab.members.push(target);
-    renderCollabMembers();
-    showToast(`Added ${target}`);
-  } catch (error) { showToast(error && error.message ? error.message : 'Could not add member'); }
-}
-async function collabRemoveMember(name) {
-  if (!collab.id) return;
-  const res = await apiFetch(`/api/collab/${collab.id}/members/${encodeURIComponent(name)}`, { method: 'DELETE' });
-  if (res.ok) { collab.members = collab.members.filter((m) => m !== name); renderCollabMembers(); showToast(`Removed ${name}`); }
-  else showToast('Could not remove member');
-}
-// The Shared view has its own inbox list (rendered into the notes panel),
-// mirroring the Vault view. Rows open the live editor.
+// Bottom "+ New note" opens the same popup (a new person = a new section).
+function collabCreate() { openCollabNewDialog(); }
+
+// The Shared view: one section per person, each holding automatically-shared notes.
 async function renderSharedView() {
   updateBinUI();
   updateVaultUI();
@@ -5206,39 +5241,41 @@ async function renderSharedView() {
   if (starredCountEl) starredCountEl.textContent = '0';
   noteList.innerHTML = `<div class="list-section">
       <div class="list-section-head">
-        <span class="list-section-title">Shared with you</span>
+        <span class="list-section-title">People</span>
         <button type="button" class="new-note-button" id="shared-new"><span>+</span> New note</button>
       </div>
       <div id="shared-view-list"><p class="modal-desc" style="padding:6px 10px">Loading…</p></div>
     </div>`;
-  if (!e2ee.masterKey) {
-    const box = document.getElementById('shared-view-list');
-    if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Log in and unlock your notes first.</p>';
-    return;
-  }
-  let res;
-  try { res = await apiFetch('/api/collab'); } catch (error) { res = null; }
   const box = document.getElementById('shared-view-list');
-  if (!box) return;
-  if (!res || !res.ok) { box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Could not load shared notes.</p>'; return; }
+  if (!e2ee.masterKey) { if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Log in and unlock your notes first.</p>'; return; }
+  let res;
+  try { res = await apiFetch('/api/collab/groups'); } catch (error) { res = null; }
+  if (!res || !res.ok) { if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Could not load shared sections.</p>'; return; }
   const data = await res.json();
-  const items = Array.isArray(data.notes) ? data.notes : [];
-  if (!items.length) { box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">No shared notes yet. Click + to create one and invite people.</p>'; return; }
+  const groups = Array.isArray(data.groups) ? data.groups : [];
+  if (!groups.length) { box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">No shared sections yet. Click + New note and enter a username to start.</p>'; return; }
   const me = cachedProfile && cachedProfile.username;
-  box.innerHTML = items.map((n) => {
-    const when = n.updatedAt ? new Date(n.updatedAt * 1000).toLocaleDateString() : '';
-    const isOwner = n.owner === me;
-    return `<button class="tree-file shared-view-row" data-collab-open="${n.id}" title="Open shared note">
-        <span class="tree-file-icon">${icon('share')}</span>
-        <span class="tree-file-name">Shared note #${n.id} <em class="shared-view-meta">${escapeHtml(isOwner ? 'you' : n.owner)} · ${n.members} member${n.members === 1 ? '' : 's'}${when ? ' · ' + escapeHtml(when) : ''}</em></span>
-        ${isOwner ? `<span class="tree-action danger" data-collab-delete="${n.id}" title="Delete shared note" role="button" aria-label="Delete shared note">${icon('trash')}</span>` : ''}
-      </button>`;
+  box.innerHTML = groups.map((g) => {
+    const isOwner = g.owner === me;
+    const displayName = isOwner ? (g.name || 'Shared') : g.owner;
+    const notes = Array.isArray(g.notes) ? g.notes : [];
+    const noteRows = notes.length
+      ? notes.map((n) => `<button class="tree-file shared-view-row" data-collab-open="${n.id}" title="Open shared note">
+          <span class="tree-file-icon">${icon('share')}</span>
+          <span class="tree-file-name">Note #${n.id}</span>
+          <span class="tree-action danger" data-collab-note-delete="${n.id}" title="Delete note" role="button" aria-label="Delete note">${icon('trash')}</span>
+        </button>`).join('')
+      : '<p class="modal-desc" style="padding:2px 10px 6px">No notes yet — use + New note in this section.</p>';
+    return `<div class="shared-group">
+      <div class="shared-group-head">
+        <span class="shared-group-name">${escapeHtml(displayName)}</span>
+        <span class="shared-group-count">${notes.length}</span>
+        <button type="button" class="shared-group-add" data-group-new="${g.id}" title="New note for ${escapeHtml(displayName)}" aria-label="New note for ${escapeHtml(displayName)}">${icon('folder-plus')}</button>
+        ${isOwner ? `<button type="button" class="shared-icon danger" data-group-delete="${g.id}" title="Delete section" aria-label="Delete section">${icon('trash')}</button>` : ''}
+      </div>
+      ${noteRows}
+    </div>`;
   }).join('');
-}
-async function collabDelete(id) {
-  const res = await apiFetch(`/api/collab/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (res.ok) { showToast('Shared note deleted'); if (activeView === 'shared') renderSharedView(); }
-  else showToast('Could not delete the shared note');
 }
 
 // Keyboard-accessible delete: mirrors the context-menu rules exactly —
@@ -5360,7 +5397,8 @@ function confirmPendingDelete() {
   else if (mode === 'custom-section') deleteCustomSection(id);
   else if (mode === 'custom-folder') deleteCustomFolder(sectionId, id);
   else if (mode === 'tag') { if (pendingDeleteTag) { deleteTagEverywhere(pendingDeleteTag); renderSettingsTags(); } }
-  else if (mode === 'collab-note') { collabDelete(id); if (collab.id === Number(id) || String(collab.id) === String(id)) closeCollabNote(); }
+  else if (mode === 'collab-note') { collabDeleteNote(id); }
+  else if (mode === 'collab-group') { collabDeleteGroup(id); }
   else deleteNoteById(id);
 }
 
@@ -6498,12 +6536,14 @@ document.getElementById('tag-editor-input').addEventListener('keydown', (event) 
     event.target.value = '';
   }
 });
-// Collaborative notes wiring.
-// Shared view wiring: rows open the live editor; + creates a new shared note.
+// Shared view wiring: sections create notes; rows open the live editor.
 noteList.addEventListener('click', (event) => {
-  // Delete must win over the row's open handler (the trash sits inside the row).
-  const del = event.target.closest('[data-collab-delete]');
-  if (del) { event.preventDefault(); event.stopPropagation(); collabDelete(del.dataset.collabDelete); return; }
+  const ndel = event.target.closest('[data-collab-note-delete]');
+  if (ndel) { event.preventDefault(); event.stopPropagation(); collabDeleteNote(ndel.dataset.collabNoteDelete); return; }
+  const gdel = event.target.closest('[data-group-delete]');
+  if (gdel) { event.preventDefault(); event.stopPropagation(); confirmDeleteGroup(gdel.dataset.groupDelete); return; }
+  const gnew = event.target.closest('[data-group-new]');
+  if (gnew) { event.preventDefault(); event.stopPropagation(); createNoteInGroup(gnew.dataset.groupNew); return; }
   const open = event.target.closest('[data-collab-open]');
   if (open) { event.preventDefault(); openCollabNote(open.dataset.collabOpen); return; }
   const newBtn = event.target.closest('#shared-new');
@@ -6522,12 +6562,12 @@ document.getElementById('collab-new-members').addEventListener('keydown', (event
 document.getElementById('collab-done').addEventListener('click', closeCollabNote);
 document.getElementById('collab-invite').addEventListener('click', collabInvite);
 document.getElementById('collab-delete').addEventListener('click', () => {
-  if (!collab.id) return;
-  const id = collab.id;
+  if (!collab.noteId) return;
+  const id = collab.noteId;
   pendingDeleteId = String(id);
   pendingDeleteMode = 'collab-note';
   pendingDeleteTag = null;
-  setDeleteDialog({ eyebrow: 'Delete shared note', title: 'Delete this shared note?', name: `Shared note #${id}`, message: '” will be deleted for everyone. This cannot be undone.' });
+  setDeleteDialog({ eyebrow: 'Delete note', title: 'Delete this shared note?', name: `Note #${id}`, message: '” will be deleted for everyone in this section. This cannot be undone.' });
   const overlay = document.getElementById('delete-overlay');
   if (overlay) {
     overlay.hidden = false;

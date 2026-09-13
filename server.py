@@ -39,6 +39,7 @@ import base64
 import hashlib
 import hmac
 import json
+import queue
 import os
 import re
 import secrets
@@ -51,7 +52,6 @@ import time
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from flask import Flask, jsonify, request, send_from_directory
-from flask_sock import Sock
 from argon2.low_level import Type as Argon2Type, hash_secret_raw
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -244,8 +244,6 @@ PUBLIC_FILES = {'app.js', 'styles.css', 'favicon.ico',
 app = Flask(__name__)
 # Hard cap on request bodies (chunked bodies without Content-Length included).
 app.config['MAX_CONTENT_LENGTH'] = NOTES_MAX_REQUEST_BYTES + 1024
-# WebSocket support for live collaborative-note sync (yjs updates relayed).
-sock = Sock(app)
 
 
 # Load the 32-byte database key: NOTELY_DB_KEY env wins, else the 0600 notely.key file (created once). Validates exact length.
@@ -921,17 +919,21 @@ def init_db():
         wrap_aesgcm = AESGCM(argon2id_raw(password, salt_enc))
         wrap_nonce = secrets.token_bytes(12)
         wrap_ct = wrap_aesgcm.encrypt(wrap_nonce, master_key, None)
+        try:
+            auth_hash2 = pepper_auth_hash(bytes(auth_hash))
+        except Exception:
+            auth_hash2 = None
         conn.execute(
             'INSERT INTO users (username, pwd_salt, pwd_hash, iterations, enc_profile, created_at,'
-            ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params)'
-            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params, auth_hash2)'
+            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (
                 username,
                 b'', b'', 0,
                 encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': subtitle, 'email': ''}),
                 int(time.time()),
-                salt_auth, salt_enc, auth_hash, wrap_nonce + wrap_ct,
-                'argon2id', json.dumps(ARGON2_DESCRIPTOR),
+                salt_auth, salt_enc, (None if auth_hash2 else auth_hash), wrap_nonce + wrap_ct,
+                'argon2id', json.dumps(ARGON2_DESCRIPTOR), auth_hash2,
             ),
         )
         if source == 'generated':
@@ -950,16 +952,29 @@ def init_db():
         'username TEXT PRIMARY KEY, pubkey BLOB NOT NULL, enc_priv BLOB NOT NULL, '
         'algo TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
     )
+    # Collaborative notes are grouped into per-person "shared sections": a
+    # group owns one key wrapped to each member, and any note created under the
+    # group is automatically shared with them. The server never sees the key.
+    # Migration: the first collab schema keyed members by note_id; drop it once.
+    _ccols = {row['name'] for row in conn.execute('PRAGMA table_info(collab_members)')}
+    if _ccols and 'group_id' not in _ccols:
+        for _t in ('collab_groups', 'collab_members', 'collab_notes', 'collab_updates'):
+            conn.execute(f'DROP TABLE IF EXISTS {_t}')
     conn.execute(
-        'CREATE TABLE IF NOT EXISTS collab_notes ('
-        'id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, '
-        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_state BLOB)'
+        'CREATE TABLE IF NOT EXISTS collab_groups ('
+        'id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, name TEXT NOT NULL, '
+        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
     )
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_members ('
-        'note_id INTEGER NOT NULL, username TEXT NOT NULL, wrapped_key BLOB NOT NULL, '
+        'group_id INTEGER NOT NULL, username TEXT NOT NULL, wrapped_key BLOB NOT NULL, '
         'eph_pub BLOB NOT NULL, wrap_iv BLOB NOT NULL, added_at INTEGER NOT NULL, '
-        'PRIMARY KEY (note_id, username))'
+        'PRIMARY KEY (group_id, username))'
+    )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS collab_notes ('
+        'id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, owner TEXT NOT NULL, '
+        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_state BLOB)'
     )
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_updates ('
@@ -968,8 +983,25 @@ def init_db():
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_updates ON collab_updates (note_id, id)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_members_user ON collab_members (username)')
-    # Retired: the async one-way snapshot shares table (replaced by collab_*).
-    conn.execute('DROP TABLE IF EXISTS shared_notes')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_notes_group ON collab_notes (group_id, id)')
+    # Retired schemas (pre-group collab + async snapshot shares).
+    for stale in ('shared_notes',):
+        conn.execute(f'DROP TABLE IF EXISTS {stale}')
+    # M-4 migration: once a row carries a peppered verifier (auth_hash2), drop
+    # the raw verifier so a DB-only leak holds no replayable bearer token.
+    # Back up first so the change is reversible.
+    try:
+        pending = conn.execute(
+            'SELECT COUNT(*) AS n FROM users WHERE auth_hash2 IS NOT NULL AND auth_hash IS NOT NULL'
+        ).fetchone()['n']
+        if pending:
+            conn.commit()
+            take_db_backup()
+            conn.execute('UPDATE users SET auth_hash = NULL'
+                         ' WHERE auth_hash2 IS NOT NULL AND auth_hash IS NOT NULL')
+            print(f'NOTELY MIGRATION: dropped raw verifier for {pending} peppered account(s).', flush=True)
+    except Exception as error:
+        print(f'NOTELY MIGRATION: raw-verifier cleanup skipped: {error}', flush=True)
     conn.commit()
     conn.close()
     # Harden file perms: DB holds verifier material + opaque blobs. 0600 even
@@ -1325,6 +1357,12 @@ def security_event(event, severity='info', **fields):
         record.update({key: value for key, value in fields.items() if value is not None})
         line = json.dumps(record, separators=(',', ':'), default=str)
         try:
+            if not os.path.exists(AUDIT_LOG_PATH):
+                # Create 0600: the audit log holds usernames/IPs, not secrets.
+                try:
+                    os.close(os.open(AUDIT_LOG_PATH, os.O_CREAT | os.O_WRONLY, 0o600))
+                except Exception:
+                    pass
             with open(AUDIT_LOG_PATH, 'a') as handle:
                 handle.write(line + '\n')
         except Exception:
@@ -1545,13 +1583,17 @@ def upgrade_legacy_account(conn, username, password):
     wrap_aesgcm = AESGCM(argon2id_raw(password, salt_enc))
     wrap_nonce = secrets.token_bytes(12)
     wrap_ct = wrap_aesgcm.encrypt(wrap_nonce, master_key, None)
+    try:
+        auth_hash2 = pepper_auth_hash(bytes(auth_hash))
+    except Exception:
+        auth_hash2 = None
     conn.execute(
         'UPDATE users SET pwd_salt = ?, pwd_hash = ?, iterations = ?,'
         ' salt_auth = ?, salt_enc = ?, auth_hash = ?, enc_master_key = ?,'
-        " kdf = 'argon2id', kdf_params = ?"
+        " kdf = 'argon2id', kdf_params = ?, auth_hash2 = ?"
         ' WHERE username = ?',
-        (b'', b'', 0, salt_auth, salt_enc, auth_hash,
-         wrap_nonce + wrap_ct, json.dumps(ARGON2_DESCRIPTOR), username),
+        (b'', b'', 0, salt_auth, salt_enc, (None if auth_hash2 else auth_hash),
+         wrap_nonce + wrap_ct, json.dumps(ARGON2_DESCRIPTOR), auth_hash2, username),
     )
     notes_row = conn.execute('SELECT enc_notes FROM user_notes WHERE username = ?', (username,)).fetchone()
     if notes_row and notes_row['enc_notes']:
@@ -1869,7 +1911,7 @@ def api_change_password():
             'UPDATE users SET salt_auth = ?, salt_enc = ?, auth_hash = ?, enc_master_key = ?,'
             " kdf = 'argon2id', kdf_params = ?, auth_hash2 = ?"
             ' WHERE username = ?',
-            (new_salt_auth, new_salt_enc, new_auth, new_wrap_iv + new_wrap_ct,
+            (new_salt_auth, new_salt_enc, (None if new_hash2 else new_auth), new_wrap_iv + new_wrap_ct,
              json.dumps(ARGON2_DESCRIPTOR), new_hash2, user['username']),
         )
     else:
@@ -1953,7 +1995,7 @@ def api_upgrade_kdf():
         'UPDATE users SET salt_auth = ?, salt_enc = ?, auth_hash = ?, enc_master_key = ?,'
         " kdf = 'argon2id', kdf_params = ?, auth_hash2 = ?"
         ' WHERE username = ?',
-        (new_salt_auth, new_salt_enc, new_auth, new_wrap_iv + new_wrap_ct,
+        (new_salt_auth, new_salt_enc, (None if up_hash2 else new_auth), new_wrap_iv + new_wrap_ct,
          json.dumps(ARGON2_DESCRIPTOR), up_hash2, user['username']),
     )
     conn.commit()
@@ -3057,97 +3099,123 @@ def api_keys_lookup():
 
 
 # --- E2EE collaborative notes (live, server-blind) ------------------------
-# A collaborative note has a random 256-bit key generated on a client. The key
-# is wrapped to each member's ECDH public key and stored here (opaque). Live
-# edits are Yjs CRDT updates, AES-GCM encrypted with that key, relayed over a
-# WebSocket and stored as an append-only log. The server can never read them.
+# Shared sections: a group has a random key wrapped to each member. Notes live
+# under a group and inherit its key; live Yjs updates are AES-GCM encrypted
+# with that key and relayed over a WebSocket. The server reads nothing.
 
-import base64 as _b64
-
-collab_rooms = {}  # note_id -> set of live websocket connections
+collab_streams = {}  # note_id -> list of queue.Queue (SSE subscribers)
 
 
-def _is_collab_member(conn, note_id, username):
-    return conn.execute('SELECT 1 FROM collab_members WHERE note_id = ? AND username = ?',
-                        (note_id, username)).fetchone() is not None
+def _is_group_member(conn, group_id, username):
+    return conn.execute('SELECT 1 FROM collab_members WHERE group_id = ? AND username = ?',
+                        (group_id, username)).fetchone() is not None
 
 
-@app.route('/api/collab', methods=['POST'])
-def api_collab_create():
+def _note_group(conn, note_id):
+    return conn.execute('SELECT id, group_id, owner, updated_at, enc_state FROM collab_notes WHERE id = ?',
+                        (note_id,)).fetchone()
+
+
+def _decode_wrap(data):
+    wrapped_key = base64.b64decode(str(data.get('wrappedKey', '')).encode('ascii'), validate=True)
+    eph_pub = base64.b64decode(str(data.get('ephPub', '')).encode('ascii'), validate=True)
+    wrap_iv = base64.b64decode(str(data.get('wrapIv', '')).encode('ascii'), validate=True)
+    if len(eph_pub) != 65 or len(wrap_iv) != 12 or not (48 <= len(wrapped_key) <= 80):
+        raise ValueError('bad wrap')
+    return wrapped_key, eph_pub, wrap_iv
+
+
+def _broadcast(note_id, message_dict):
+    payload = json.dumps(message_dict)
+    for q in list(collab_streams.get(note_id, ())):
+        try:
+            q.put_nowait(payload)
+        except Exception:
+            pass
+
+
+def _close_streams(note_id):
+    for q in list(collab_streams.get(note_id, ())):
+        try:
+            q.put_nowait(json.dumps({'type': 'closed'}))
+        except Exception:
+            pass
+
+
+@app.route('/api/collab/groups', methods=['POST'])
+def api_group_create():
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     data = json_object()
+    name = str(data.get('name', '')).strip()[:40] or 'Shared'
     try:
-        wrapped_key = _b64.b64decode(str(data.get('wrappedKey', '')).encode('ascii'), validate=True)
-        eph_pub = _b64.b64decode(str(data.get('ephPub', '')).encode('ascii'), validate=True)
-        wrap_iv = _b64.b64decode(str(data.get('wrapIv', '')).encode('ascii'), validate=True)
-    except (ValueError, AttributeError, _b64.binascii.Error):
-        return jsonify({'error': 'Invalid key payload.'}), 400
-    if len(eph_pub) != 65 or len(wrap_iv) != 12 or not (48 <= len(wrapped_key) <= 80):
+        wrapped_key, eph_pub, wrap_iv = _decode_wrap(data)
+    except (ValueError, AttributeError, base64.binascii.Error):
         return jsonify({'error': 'Invalid key payload.'}), 400
     now = int(time.time())
     conn = get_db()
-    cur = conn.execute('INSERT INTO collab_notes (owner, created_at, updated_at, enc_state) VALUES (?, ?, ?, NULL)',
-                       (user['username'], now, now))
-    note_id = cur.lastrowid
-    conn.execute('INSERT OR REPLACE INTO collab_members (note_id, username, wrapped_key, eph_pub, wrap_iv, added_at)'
+    cur = conn.execute('INSERT INTO collab_groups (owner, name, created_at, updated_at) VALUES (?, ?, ?, ?)',
+                       (user['username'], name, now, now))
+    group_id = cur.lastrowid
+    conn.execute('INSERT OR REPLACE INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, added_at)'
                  ' VALUES (?, ?, ?, ?, ?, ?)',
-                 (note_id, user['username'], wrapped_key, eph_pub, wrap_iv, now))
+                 (group_id, user['username'], wrapped_key, eph_pub, wrap_iv, now))
     conn.commit()
     conn.close()
-    return jsonify({'ok': True, 'id': note_id})
+    return jsonify({'ok': True, 'id': group_id, 'name': name})
 
 
-@app.route('/api/collab', methods=['GET'])
-def api_collab_list():
+@app.route('/api/collab/groups', methods=['GET'])
+def api_group_list():
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    rows = conn.execute(
-        'SELECT n.id, n.owner, n.updated_at,'
-        ' (SELECT COUNT(*) FROM collab_members m2 WHERE m2.note_id = n.id) AS members'
-        ' FROM collab_notes n JOIN collab_members m ON m.note_id = n.id'
-        ' WHERE m.username = ? ORDER BY n.updated_at DESC LIMIT 200',
+    groups = conn.execute(
+        'SELECT g.id, g.owner, g.name, g.updated_at FROM collab_groups g'
+        ' JOIN collab_members m ON m.group_id = g.id WHERE m.username = ? ORDER BY g.updated_at DESC LIMIT 200',
         (user['username'],),
     ).fetchall()
+    out = []
+    for g in groups:
+        members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? ORDER BY added_at', (g['id'],))]
+        notes = [{'id': r['id'], 'updatedAt': r['updated_at']} for r in conn.execute(
+            'SELECT id, updated_at FROM collab_notes WHERE group_id = ? ORDER BY id', (g['id'],))]
+        out.append({'id': g['id'], 'owner': g['owner'], 'name': g['name'], 'updatedAt': g['updated_at'],
+                    'members': members, 'notes': notes})
     conn.close()
-    return jsonify({'notes': [{'id': r['id'], 'owner': r['owner'], 'updatedAt': r['updated_at'], 'members': r['members']} for r in rows]})
+    return jsonify({'groups': out})
 
 
-@app.route('/api/collab/<int:note_id>', methods=['GET'])
-def api_collab_get(note_id):
+@app.route('/api/collab/groups/<int:group_id>', methods=['GET'])
+def api_group_get(group_id):
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    if not _is_collab_member(conn, note_id, user['username']):
+    if not _is_group_member(conn, group_id, user['username']):
         conn.close()
-        return jsonify({'error': 'Not a member of this note.'}), 403
-    row = conn.execute('SELECT id, owner, updated_at, enc_state FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
-    mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv FROM collab_members WHERE note_id = ? AND username = ?',
-                        (note_id, user['username'])).fetchone()
-    members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE note_id = ? ORDER BY added_at', (note_id,))]
+        return jsonify({'error': 'Not a member of this shared section.'}), 403
+    g = conn.execute('SELECT id, owner, name FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv FROM collab_members WHERE group_id = ? AND username = ?',
+                        (group_id, user['username'])).fetchone()
+    members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? ORDER BY added_at', (group_id,))]
     conn.close()
-    if not row or not mine:
+    if not g or not mine:
         return jsonify({'error': 'Not found.'}), 404
     return jsonify({
-        'id': row['id'],
-        'owner': row['owner'],
-        'updatedAt': row['updated_at'],
-        'members': members,
+        'id': g['id'], 'owner': g['owner'], 'name': g['name'], 'members': members,
         'myKey': {
-            'wrappedKey': _b64.b64encode(bytes(mine['wrapped_key'])).decode('ascii'),
-            'ephPub': _b64.b64encode(bytes(mine['eph_pub'])).decode('ascii'),
-            'wrapIv': _b64.b64encode(bytes(mine['wrap_iv'])).decode('ascii'),
+            'wrappedKey': base64.b64encode(bytes(mine['wrapped_key'])).decode('ascii'),
+            'ephPub': base64.b64encode(bytes(mine['eph_pub'])).decode('ascii'),
+            'wrapIv': base64.b64encode(bytes(mine['wrap_iv'])).decode('ascii'),
         },
-        'hasState': bool(row['enc_state']),
     })
 
 
-@app.route('/api/collab/<int:note_id>/members', methods=['POST'])
-def api_collab_add_member(note_id):
+@app.route('/api/collab/groups/<int:group_id>/members', methods=['POST'])
+def api_group_add_member(group_id):
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
@@ -3156,173 +3224,225 @@ def api_collab_add_member(note_id):
     if not validate_username(target):
         return jsonify({'error': 'Invalid username.'}), 400
     try:
-        wrapped_key = _b64.b64decode(str(data.get('wrappedKey', '')).encode('ascii'), validate=True)
-        eph_pub = _b64.b64decode(str(data.get('ephPub', '')).encode('ascii'), validate=True)
-        wrap_iv = _b64.b64decode(str(data.get('wrapIv', '')).encode('ascii'), validate=True)
-    except (ValueError, AttributeError, _b64.binascii.Error):
+        wrapped_key, eph_pub, wrap_iv = _decode_wrap(data)
+    except (ValueError, AttributeError, base64.binascii.Error):
         return jsonify({'error': 'Invalid key payload.'}), 400
     conn = get_db()
-    if not _is_collab_member(conn, note_id, user['username']):
+    if not _is_group_member(conn, group_id, user['username']):
         conn.close()
-        return jsonify({'error': 'Not a member of this note.'}), 403
+        return jsonify({'error': 'Not a member of this shared section.'}), 403
     if not conn.execute('SELECT 1 FROM users WHERE username = ?', (target,)).fetchone():
         conn.close()
         return jsonify({'error': 'No such account.'}), 404
-    if len(eph_pub) != 65 or len(wrap_iv) != 12 or not (48 <= len(wrapped_key) <= 80):
-        conn.close()
-        return jsonify({'error': 'Invalid key payload.'}), 400
-    conn.execute('INSERT OR REPLACE INTO collab_members (note_id, username, wrapped_key, eph_pub, wrap_iv, added_at)'
+    conn.execute('INSERT OR REPLACE INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, added_at)'
                  ' VALUES (?, ?, ?, ?, ?, ?)',
-                 (note_id, target, wrapped_key, eph_pub, wrap_iv, int(time.time())))
+                 (group_id, target, wrapped_key, eph_pub, wrap_iv, int(time.time())))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
 
 
-@app.route('/api/collab/<int:note_id>/members/<username>', methods=['DELETE'])
-def api_collab_remove_member(note_id, username):
+@app.route('/api/collab/groups/<int:group_id>/members/<username>', methods=['DELETE'])
+def api_group_remove_member(group_id, username):
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    row = conn.execute('SELECT owner FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
-    if not row:
+    g = conn.execute('SELECT owner FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    if not g:
         conn.close()
         return jsonify({'ok': True})
-    if row['owner'] != user['username'] and username != user['username']:
+    if g['owner'] != user['username'] and username != user['username']:
         conn.close()
         return jsonify({'error': 'Only the owner can remove members.'}), 403
-    conn.execute('DELETE FROM collab_members WHERE note_id = ? AND username = ?', (note_id, username))
+    conn.execute('DELETE FROM collab_members WHERE group_id = ? AND username = ?', (group_id, username))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
 
 
-@app.route('/api/collab/<int:note_id>', methods=['DELETE'])
-def api_collab_delete(note_id):
+@app.route('/api/collab/groups/<int:group_id>', methods=['DELETE'])
+def api_group_delete(group_id):
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    row = conn.execute('SELECT owner FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
-    if not row:
+    g = conn.execute('SELECT owner FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    if not g:
         conn.close()
         return jsonify({'ok': True})
-    if row['owner'] != user['username']:
+    if g['owner'] != user['username']:
         conn.close()
-        return jsonify({'error': 'Only the owner can delete this note.'}), 403
+        return jsonify({'error': 'Only the owner can delete this section.'}), 403
+    note_ids = [r['id'] for r in conn.execute('SELECT id FROM collab_notes WHERE group_id = ?', (group_id,))]
+    conn.execute('DELETE FROM collab_groups WHERE id = ?', (group_id,))
+    conn.execute('DELETE FROM collab_members WHERE group_id = ?', (group_id,))
+    conn.execute('DELETE FROM collab_notes WHERE group_id = ?', (group_id,))
+    for nid in note_ids:
+        conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (nid,))
+    conn.commit()
+    conn.close()
+    for nid in note_ids:
+        _close_streams(nid)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/collab/groups/<int:group_id>/notes', methods=['POST'])
+def api_group_note_create(group_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    if not _is_group_member(conn, group_id, user['username']):
+        conn.close()
+        return jsonify({'error': 'Not a member of this shared section.'}), 403
+    now = int(time.time())
+    cur = conn.execute('INSERT INTO collab_notes (group_id, owner, created_at, updated_at, enc_state) VALUES (?, ?, ?, ?, NULL)',
+                       (group_id, user['username'], now, now))
+    note_id = cur.lastrowid
+    conn.execute('UPDATE collab_groups SET updated_at = ? WHERE id = ?', (now, group_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'id': note_id})
+
+
+@app.route('/api/collab/notes/<int:note_id>', methods=['GET'])
+def api_note_get(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv FROM collab_members WHERE group_id = ? AND username = ?',
+                        (note['group_id'], user['username'])).fetchone()
+    conn.close()
+    return jsonify({
+        'id': note_id, 'groupId': note['group_id'], 'owner': note['owner'], 'updatedAt': note['updated_at'],
+        'myKey': {
+            'wrappedKey': base64.b64encode(bytes(mine['wrapped_key'])).decode('ascii'),
+            'ephPub': base64.b64encode(bytes(mine['eph_pub'])).decode('ascii'),
+            'wrapIv': base64.b64encode(bytes(mine['wrap_iv'])).decode('ascii'),
+        },
+    })
+
+
+@app.route('/api/collab/notes/<int:note_id>', methods=['DELETE'])
+def api_note_delete(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note:
+        conn.close()
+        return jsonify({'ok': True})
+    if not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not allowed.'}), 403
     conn.execute('DELETE FROM collab_notes WHERE id = ?', (note_id,))
-    conn.execute('DELETE FROM collab_members WHERE note_id = ?', (note_id,))
     conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (note_id,))
     conn.commit()
     conn.close()
-    # Drop any live connections.
-    for ws in list(collab_rooms.get(note_id, ())):
-        try: ws.close()
-        except Exception: pass
-    collab_rooms.pop(note_id, None)
+    _close_streams(note_id)
     return jsonify({'ok': True})
 
 
-@app.route('/api/collab/<int:note_id>/compact', methods=['POST'])
-def api_collab_compact(note_id):
-    # A member uploads the full encrypted CRDT state; the update log resets.
+@app.route('/api/collab/notes/<int:note_id>/compact', methods=['POST'])
+def api_note_compact(note_id):
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     data = json_object()
     try:
-        payload = _b64.b64decode(str(data.get('state', '')).encode('ascii'), validate=True)
-    except (ValueError, AttributeError, _b64.binascii.Error):
+        payload = base64.b64decode(str(data.get('state', '')).encode('ascii'), validate=True)
+    except (ValueError, AttributeError, base64.binascii.Error):
         return jsonify({'error': 'Invalid state.'}), 400
     if not (1 <= len(payload) <= SHARE_MAX_BYTES):
         return jsonify({'error': 'State too large.'}), 413
     conn = get_db()
-    if not _is_collab_member(conn, note_id, user['username']):
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
         conn.close()
-        return jsonify({'error': 'Not a member of this note.'}), 403
-    conn.execute('UPDATE collab_notes SET enc_state = ?, updated_at = ? WHERE id = ?', (payload, int(time.time()), note_id))
+        return jsonify({'error': 'Not found.'}), 404
+    now = int(time.time())
+    conn.execute('UPDATE collab_notes SET enc_state = ?, updated_at = ? WHERE id = ?', (payload, now, note_id))
     conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (note_id,))
+    conn.execute('UPDATE collab_groups SET updated_at = ? WHERE id = ?', (now, note['group_id']))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
 
 
-@sock.route('/ws/collab/<int:note_id>')
-def ws_collab(ws, note_id):
-    # Authenticate + authorise from the session cookie; block cross-site opens.
-    origin = request.headers.get('Origin')
-    if origin:
-        from urllib.parse import urlparse
-        try:
-            if (urlparse(origin).hostname or '').lower() != (request.host.split(':')[0] or '').lower():
-                ws.close()
-                return
-        except Exception:
-            ws.close()
-            return
+# Live sync transport: Server-Sent Events for receiving (works with the dev
+# server over TLS), and a plain POST for sending. Same encrypted payloads.
+@app.route('/api/collab/notes/<int:note_id>/stream', methods=['GET'])
+def api_note_stream(note_id):
     user = current_session_user()
     if not user:
-        ws.close()
-        return
+        return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    if not _is_collab_member(conn, note_id, user['username']):
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
         conn.close()
-        ws.close()
-        return
-    state_row = conn.execute('SELECT enc_state FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
+        return jsonify({'error': 'Not found.'}), 404
     backlog = [bytes(r['payload']) for r in conn.execute('SELECT payload FROM collab_updates WHERE note_id = ? ORDER BY id', (note_id,))]
+    state_blob = bytes(note['enc_state']) if note['enc_state'] else None
     conn.close()
-    # Late joiner: send the last compacted state, then every update since.
-    if state_row and state_row['enc_state']:
+    q = queue.Queue()
+    collab_streams.setdefault(note_id, []).append(q)
+
+    def generate():
         try:
-            ws.send(json.dumps({'type': 'state', 'payload': _b64.b64encode(bytes(state_row['enc_state'])).decode('ascii')}))
-        except Exception:
-            return
-    for u in backlog:
-        try:
-            ws.send(json.dumps({'type': 'update', 'payload': _b64.b64encode(u).decode('ascii')}))
-        except Exception:
-            return
-    room = collab_rooms.setdefault(note_id, set())
-    room.add(ws)
-    try:
-        while True:
-            message = ws.receive()
-            if message is None:
-                break
-            try:
-                data = json.loads(message)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(data, dict) or data.get('type') != 'update':
-                continue
-            try:
-                payload = _b64.b64decode(str(data.get('payload', '')).encode('ascii'), validate=True)
-            except (ValueError, AttributeError, _b64.binascii.Error):
-                continue
-            if not (1 <= len(payload) <= SHARE_MAX_BYTES):
-                continue
-            conn = get_db()
-            conn.execute('INSERT INTO collab_updates (note_id, payload, created_at) VALUES (?, ?, ?)',
-                         (note_id, payload, int(time.time())))
-            conn.execute('UPDATE collab_notes SET updated_at = ? WHERE id = ?', (int(time.time()), note_id))
-            # Cap the log; clients re-compact opportunistically.
-            conn.execute('DELETE FROM collab_updates WHERE note_id = ? AND id NOT IN '
-                         '(SELECT id FROM collab_updates WHERE note_id = ? ORDER BY id DESC LIMIT 5000)',
-                         (note_id, note_id))
-            conn.commit()
-            conn.close()
-            outgoing = json.dumps({'type': 'update', 'payload': data['payload']})
-            for peer in list(collab_rooms.get(note_id, ())):
-                if peer is ws:
-                    continue
+            yield 'retry: 2000\n\n'
+            if state_blob:
+                yield 'data: ' + json.dumps({'type': 'state', 'payload': base64.b64encode(state_blob).decode('ascii')}) + '\n\n'
+            for u in backlog:
+                yield 'data: ' + json.dumps({'type': 'update', 'payload': base64.b64encode(u).decode('ascii')}) + '\n\n'
+            while True:
                 try:
-                    peer.send(outgoing)
-                except Exception:
-                    pass
-    finally:
-        collab_rooms.get(note_id, set()).discard(ws)
+                    item = q.get(timeout=20)
+                    yield 'data: ' + item + '\n\n'
+                except queue.Empty:
+                    yield ': ping\n\n'
+        finally:
+            try:
+                collab_streams.get(note_id, []).remove(q)
+            except ValueError:
+                pass
+    return app.response_class(generate(), mimetype='text/event-stream',
+                              headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
+
+
+@app.route('/api/collab/notes/<int:note_id>/updates', methods=['POST'])
+def api_note_updates(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        payload = base64.b64decode(str(data.get('payload', '')).encode('ascii'), validate=True)
+    except (ValueError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid update.'}), 400
+    if not (1 <= len(payload) <= SHARE_MAX_BYTES):
+        return jsonify({'error': 'Update too large.'}), 413
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not allowed.'}), 403
+    now = int(time.time())
+    conn.execute('INSERT INTO collab_updates (note_id, payload, created_at) VALUES (?, ?, ?)', (note_id, payload, now))
+    conn.execute('UPDATE collab_notes SET updated_at = ? WHERE id = ?', (now, note_id))
+    conn.execute('DELETE FROM collab_updates WHERE note_id = ? AND id NOT IN '
+                 '(SELECT id FROM collab_updates WHERE note_id = ? ORDER BY id DESC LIMIT 5000)',
+                 (note_id, note_id))
+    conn.commit()
+    conn.close()
+    _broadcast(note_id, {'type': 'update', 'payload': data['payload']})
+    return jsonify({'ok': True})
 
 
 @app.route('/api/recovery/email/start', methods=['POST'])
@@ -3489,7 +3609,7 @@ def api_recovery_email_complete():
     except Exception:
         new_hash2 = None
     conn.execute('UPDATE users SET salt_auth = ?, auth_hash = ?, auth_hash2 = ? WHERE username = ?',
-                 (new_salt_auth, new_auth, new_hash2, username))
+                 (new_salt_auth, (None if new_hash2 else new_auth), new_hash2, username))
     conn.execute('UPDATE email_recovery SET used_at = ? WHERE token_hash = ?', (int(time.time()), thash))
     conn.execute('DELETE FROM sessions WHERE username = ?', (username,))
     # Fresh start after a lost-password reset: MFA would otherwise lock the
@@ -3679,7 +3799,7 @@ def api_recovery_account_reset():
         new_hash2 = None
     conn.execute('UPDATE users SET salt_auth = ?, salt_enc = ?, auth_hash = ?, enc_master_key = ?,'
                  " kdf = 'argon2id', kdf_params = ?, auth_hash2 = ? WHERE username = ?",
-                 (new_salt_auth, new_salt_enc, new_auth, new_iv + new_ct,
+                 (new_salt_auth, new_salt_enc, (None if new_hash2 else new_auth), new_iv + new_ct,
                   json.dumps(ARGON2_DESCRIPTOR), new_hash2, username))
     conn.execute('UPDATE account_recovery SET used_at = ? WHERE code_hash = ?', (int(time.time()), code_hash))
     conn.execute('DELETE FROM sessions WHERE username = ?', (username,))
