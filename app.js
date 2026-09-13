@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev33') {
+  if (build !== 'dev34') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5334,7 +5334,9 @@ const sharedNoteMeta = new Map();  // noteId -> { title, folder, groupId }
 
 function sharedNoteRow(n, groupId) {
   const title = (n.title && n.title.trim()) ? n.title.trim() : 'Untitled note';
-  return `<button class="tree-file shared-view-row" data-collab-open="${n.id}" title="${escapeHtml(title)}">
+  // Indent the note under its folder (one notch deeper than the folder row).
+  const indent = n.folder ? 8 + (folderDepth(n.folder) + 1) * 14 : 8;
+  return `<button class="tree-file shared-view-row" data-collab-open="${n.id}" data-collab-group="${groupId}" style="padding-left:${indent}px" title="${escapeHtml(title)}">
       <span class="tree-file-icon">${icon('file')}</span>
       <span class="tree-file-name">${escapeHtml(title)}</span>
       <span class="tree-action" data-note-folder="${n.id}" data-note-group="${groupId}" role="button" title="Move to folder" aria-label="Move ${escapeHtml(title)} to a folder">${icon('folder-plus')}</span>
@@ -5479,6 +5481,92 @@ async function moveSharedNote(noteId, groupId) {
   } catch (error) { showToast('Could not move the note'); }
 }
 
+async function saveGroupFolders(groupId, key, folders) {
+  try {
+    const encMeta = await collabEncryptGroupMeta(key, folders);
+    await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
+  } catch (error) {}
+}
+async function updateSharedNoteMeta(key, noteId, meta) {
+  try {
+    const encMeta = await collabEncryptMeta(key, meta);
+    await apiFetch(`/api/collab/notes/${noteId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
+  } catch (error) {}
+}
+async function renameSharedFolder(groupId, folder) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const value = await askInput({ eyebrow: 'Rename folder', title: folderLeaf(folder), desc: 'Rename this folder in the shared section.', label: 'Name', password: false, placeholder: folderLeaf(folder), okText: 'Rename' });
+  if (value == null) return;
+  const leaf = String(value).trim().replace(/[\/\\]+/g, ' ').replace(/\s+/g, ' ').slice(0, 120);
+  if (!leaf) return;
+  const parent = folderParent(folder);
+  const newPath = parent ? `${parent}${FOLDER_SEP}${leaf}` : leaf;
+  if (newPath.toLowerCase() === folder.toLowerCase()) return;
+  const prefix = `${folder}${FOLDER_SEP}`;
+  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
+  const nextFolders = existing.map((f) => (f === folder ? newPath : (f.startsWith(prefix) ? newPath + f.slice(folder.length) : f)));
+  for (const e of [...sharedNoteMeta.values()]) {
+    if (String(e.groupId) !== String(groupId) || !e.folder) continue;
+    if (e.folder === folder || e.folder.startsWith(prefix)) {
+      const nf = e.folder === folder ? newPath : newPath + e.folder.slice(folder.length);
+      await updateSharedNoteMeta(key, e.id, { title: e.title || '', folder: nf });
+    }
+  }
+  await saveGroupFolders(groupId, key, nextFolders);
+  showToast('Folder renamed');
+  renderSharedView();
+}
+function confirmDeleteSharedFolder(groupId, folder) {
+  pendingDeleteId = String(groupId);
+  pendingDeleteMode = 'shared-folder';
+  pendingDeleteSection = folder;
+  setDeleteDialog({ eyebrow: 'Delete folder', title: 'Delete this folder?', name: folderLeaf(folder), message: '” will be removed from the shared section; its notes move to the section root.' });
+  const overlay = document.getElementById('delete-overlay');
+  if (overlay) { overlay.hidden = false; const b = document.getElementById('confirm-delete'); if (b) b.focus(); }
+}
+async function deleteSharedFolderNow(groupId, folder) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const prefix = `${folder}${FOLDER_SEP}`;
+  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
+  const nextFolders = existing.filter((f) => f !== folder && !f.startsWith(prefix));
+  for (const e of [...sharedNoteMeta.values()]) {
+    if (String(e.groupId) !== String(groupId) || !e.folder) continue;
+    if (e.folder === folder || e.folder.startsWith(prefix)) await updateSharedNoteMeta(key, e.id, { title: e.title || '', folder: '' });
+  }
+  await saveGroupFolders(groupId, key, nextFolders);
+  showToast('Folder deleted');
+  renderSharedView();
+}
+
+// Right-click menu for shared notes and folders.
+let sharedMenuTarget = null;
+function closeSharedContextMenu() {
+  const menu = document.getElementById('shared-context-menu');
+  if (menu) menu.hidden = true;
+  sharedMenuTarget = null;
+}
+function showSharedContextMenu(kind, payload, x, y) {
+  const menu = document.getElementById('shared-context-menu');
+  if (!menu) return;
+  sharedMenuTarget = { kind, ...payload };
+  const items = kind === 'note'
+    ? [['open', 'file-text', 'Open'], ['move', 'folder-plus', 'Move to folder'], ['delete', 'trash', 'Delete note']]
+    : [['folder-note', 'file-text', 'New note here'], ['folder-sub', 'folder-plus', 'New subfolder'],
+       ['folder-rename', 'pencil', 'Rename folder'], ['folder-delete', 'trash', 'Delete folder']];
+  menu.innerHTML = items.map(([action, glyph, label]) =>
+    `<button type="button" class="context-item${action.includes('delete') ? ' danger' : ''}" data-shared-action="${action}" role="menuitem"><span data-icon="${glyph}"></span><span>${label}</span></button>`).join('');
+  menu.querySelectorAll('[data-icon]').forEach((el) => { el.innerHTML = icon(el.dataset.icon); });
+  menu.hidden = false;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  const rect = menu.getBoundingClientRect();
+  const pad = 8;
+  if (rect.right > window.innerWidth - pad) menu.style.left = `${Math.max(pad, x - rect.width)}px`;
+  if (rect.bottom > window.innerHeight - pad) menu.style.top = `${Math.max(pad, y - rect.height)}px`;
+}
+
 async function acceptInvite(id) {
   const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(id)}/accept`, { method: 'POST', body: '{}' });
   if (res.ok) { showToast('Invitation accepted'); renderSharedView(); }
@@ -5612,6 +5700,7 @@ function confirmPendingDelete() {
   else if (mode === 'tag') { if (pendingDeleteTag) { deleteTagEverywhere(pendingDeleteTag); renderSettingsTags(); } }
   else if (mode === 'collab-note') { collabDeleteNote(id); }
   else if (mode === 'collab-group') { collabDeleteGroup(id); }
+  else if (mode === 'shared-folder') { deleteSharedFolderNow(Number(id), sectionId); }
   else deleteNoteById(id);
 }
 
@@ -6781,6 +6870,50 @@ noteList.addEventListener('click', (event) => {
   const newBtn = event.target.closest('#shared-new');
   if (newBtn) { event.preventDefault(); collabCreate(); }
 });
+// Right-click a shared note or folder to act on it.
+noteList.addEventListener('contextmenu', (event) => {
+  if (activeView !== 'shared') return;
+  const folderRow = event.target.closest('.shared-folder');
+  if (folderRow) {
+    const ref = folderRow.querySelector('[data-folder-note]');
+    if (ref) {
+      event.preventDefault(); event.stopPropagation();
+      showSharedContextMenu('folder', { groupId: ref.dataset.folderGroup, folder: ref.dataset.folderNote }, event.clientX, event.clientY);
+      return;
+    }
+  }
+  const noteRow = event.target.closest('[data-collab-open]');
+  if (noteRow) {
+    event.preventDefault(); event.stopPropagation();
+    showSharedContextMenu('note', { noteId: noteRow.dataset.collabOpen, groupId: noteRow.dataset.collabGroup }, event.clientX, event.clientY);
+  }
+});
+{
+  const menu = document.getElementById('shared-context-menu');
+  if (menu) menu.addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-shared-action]');
+    if (!btn || !sharedMenuTarget) return;
+    const action = btn.dataset.sharedAction;
+    const t = sharedMenuTarget;
+    closeSharedContextMenu();
+    if (action === 'open') openCollabNote(t.noteId);
+    else if (action === 'move') moveSharedNote(t.noteId, t.groupId);
+    else if (action === 'delete') {
+      pendingDeleteId = String(t.noteId); pendingDeleteMode = 'collab-note'; pendingDeleteTag = null;
+      setDeleteDialog({ eyebrow: 'Delete note', title: 'Delete this shared note?', name: `Note #${t.noteId}`, message: '\u201d will be deleted for everyone. This cannot be undone.' });
+      const overlay = document.getElementById('delete-overlay');
+      if (overlay) { overlay.hidden = false; const b = document.getElementById('confirm-delete'); if (b) b.focus(); }
+    }
+    else if (action === 'folder-note') createNoteInGroup(t.groupId, t.folder);
+    else if (action === 'folder-sub') addSubfolder(t.groupId, t.folder);
+    else if (action === 'folder-rename') renameSharedFolder(t.groupId, t.folder);
+    else if (action === 'folder-delete') confirmDeleteSharedFolder(t.groupId, t.folder);
+  });
+  document.addEventListener('click', (event) => { if (sharedMenuTarget && !event.target.closest('#shared-context-menu')) closeSharedContextMenu(); });
+  document.addEventListener('contextmenu', (event) => { if (sharedMenuTarget && !event.target.closest('#shared-context-menu')) closeSharedContextMenu(); }, true);
+  window.addEventListener('resize', closeSharedContextMenu);
+  noteList.addEventListener('scroll', closeSharedContextMenu, true);
+}
 function refreshCurrent() {
   // Refresh only the workspace sidebar (the notes list / Shared inbox).
   if (activeView === 'shared') { renderSharedView(); return; }
@@ -9072,6 +9205,7 @@ document.addEventListener('keydown', (event) => {
     if (coverRepositioning) { exitCoverRepos(false); return; }
     if (typeof loginThemeMenu !== 'undefined' && loginThemeMenu && !loginThemeMenu.hidden) { setLoginThemeMenu(false); return; }
     if (folderMenuTarget) { closeFolderContextMenu(); return; }
+    if (typeof sharedMenuTarget !== 'undefined' && sharedMenuTarget) { closeSharedContextMenu(); return; }
     if (contextMenuNoteId) { closeNoteContextMenu(); return; }
     const vaultOverlay = document.getElementById('vault-overlay');
     if (vaultOverlay && !vaultOverlay.hidden) { closeVaultModal(); return; }
