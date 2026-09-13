@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev34') {
+  if (build !== 'dev35') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -4134,6 +4134,8 @@ function enableNoteDragDrop() {
 function renderNoteList() {
   const sharedNewBtn = document.getElementById('shared-new');
   if (sharedNewBtn) sharedNewBtn.hidden = true;
+  const refreshBtnTop = document.getElementById('refresh-view');
+  if (refreshBtnTop) refreshBtnTop.hidden = true; // Refresh lives only in Shared.
   if (activeView === 'vault') { renderVaultList(); renderTabs(); renderStripItems(); return; }
   if (activeView === 'shared') { renderSharedView(); renderTabs(); renderStripItems(); return; }
   const visible = visibleNotes();
@@ -5381,6 +5383,8 @@ async function renderSharedView() {
   if (starredCountEl) starredCountEl.textContent = '0';
   const headerNew = document.getElementById('shared-new');
   if (headerNew) headerNew.hidden = false;
+  const headerRefresh = document.getElementById('refresh-view');
+  if (headerRefresh) headerRefresh.hidden = false;
   noteList.innerHTML = `<div class="list-section">
       <div class="list-section-head">
         <span class="list-section-title">People</span>
