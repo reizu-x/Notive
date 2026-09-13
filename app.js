@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev71') {
+  if (build !== 'dev70') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -8382,11 +8382,7 @@ function fullNameOf(profile) {
 // Synchronous view of the in-memory session for render code (null when signed out).
 function getSessionUser() {
   if (!cachedProfile) return null;
-  const raw = typeof cachedProfile.subtitle === 'string' ? cachedProfile.subtitle.trim() : '';
-  // Treat the legacy default ("Personal space") as unset so accounts migrate to
-  // the current default label.
-  const subtitle = (!raw || raw === 'Personal space') ? 'Premium User' : raw;
-  return { username: cachedProfile.username, name: fullNameOf(cachedProfile), subtitle };
+  return { username: cachedProfile.username, name: fullNameOf(cachedProfile), subtitle: cachedProfile.subtitle || 'Personal space' };
 }
 
 // Avatar initials: first letters of the first two name words, uppercased.
