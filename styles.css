@@ -1312,10 +1312,10 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .recipe-body-fixed { margin: 14px 0 4px; }
 .recipe-body-fixed[hidden] { display: none; }
 .recipe-block { display: flex; align-items: stretch; }
-.recipe-side { flex: 1 1 0; min-width: 0; padding: 0 24px; }
-.recipe-side:first-child { padding-left: 0; }
+.recipe-side { min-width: 0; padding: 0 24px; flex: 1 1 0; }
+.recipe-side:first-child { flex: 0 0 25%; padding-left: 0; }
 .recipe-side:last-child { padding-right: 0; }
-.recipe-side-method { border-left: 1px solid var(--line); }
+.recipe-side-method { flex: 1 1 auto; border-left: 1px solid var(--line); }
 .recipe-side-head { margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); color: var(--recipe-head); font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
 .recipe-rows { display: flex; flex-direction: column; gap: 4px; }
 .recipe-row { display: flex; align-items: flex-start; gap: 8px; }
