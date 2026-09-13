@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev62') {
+  if (build !== 'dev63') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -3021,7 +3021,7 @@ function renderTabs() {
       const active = tab.shared
         ? (collab.noteId != null && String(tab.id) === String(collab.noteId))
         : ((!tab.vault && tab.id === currentId) || (tab.vault && tab.id === currentVaultId));
-      return `<button type="button" class="tab-item${active ? ' active' : ''}" data-tab-id="${escapeHtml(String(tab.id))}" data-tab-vault="${tab.vault ? '1' : ''}" data-tab-shared="${tab.shared ? '1' : ''}" title="${escapeHtml(title)}">`
+      return `<button type="button" class="tab-item${active ? ' active' : ''}" draggable="true" data-tab-id="${escapeHtml(String(tab.id))}" data-tab-vault="${tab.vault ? '1' : ''}" data-tab-shared="${tab.shared ? '1' : ''}" title="${escapeHtml(title)}">`
         + `<span class="tab-glyph">${icon(tab.shared ? 'share' : noteGlyphFor(note))}</span>`
         + `<span class="tab-label">${escapeHtml(title)}</span>`
         + `<span class="tab-close" data-tab-close="${escapeHtml(String(tab.id))}" data-tab-close-vault="${tab.vault ? '1' : ''}" data-tab-close-shared="${tab.shared ? '1' : ''}" role="button" aria-label="Close ${escapeHtml(title)}">×</span>`
@@ -3119,6 +3119,7 @@ function toggleTabOverflow() {
 }
 const tabBarEl = document.getElementById('tab-bar');
 if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
+  if (tabClickSuppressed) return;
   const closer = event.target.closest('[data-tab-close]');
   if (closer) {
     event.stopPropagation();
@@ -3133,6 +3134,60 @@ if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
   else if (tab.dataset.tabVault === '1') selectVaultNote(tab.dataset.tabId);
   else selectNote(tab.dataset.tabId);
 });
+// Drag-and-drop reordering of tabs (order is otherwise fixed by opening time).
+let dragTabEl = null;
+let dragTabIndex = null;
+let tabClickSuppressed = false;
+function clearTabDropMarks() {
+  if (!tabBarEl) return;
+  tabBarEl.querySelectorAll('.tab-drop-before, .tab-drop-after').forEach((el) => el.classList.remove('tab-drop-before', 'tab-drop-after'));
+}
+function endTabDrag() {
+  if (dragTabEl) dragTabEl.classList.remove('dragging');
+  clearTabDropMarks();
+  dragTabEl = null;
+  dragTabIndex = null;
+  tabClickSuppressed = true;
+  setTimeout(() => { tabClickSuppressed = false; }, 250);
+}
+if (tabBarEl) tabBarEl.addEventListener('dragstart', (event) => {
+  const tab = event.target.closest('[data-tab-id]');
+  if (!tab) return;
+  dragTabEl = tab;
+  dragTabIndex = [...tabBarEl.querySelectorAll('[data-tab-id]')].indexOf(tab);
+  tab.classList.add('dragging');
+  try { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', tab.dataset.tabId || ''); } catch (error) {}
+});
+if (tabBarEl) tabBarEl.addEventListener('dragover', (event) => {
+  if (dragTabIndex == null) return;
+  event.preventDefault();
+  try { event.dataTransfer.dropEffect = 'move'; } catch (error) {}
+  const over = event.target.closest('[data-tab-id]');
+  clearTabDropMarks();
+  if (!over || over === dragTabEl) return;
+  const rect = over.getBoundingClientRect();
+  over.classList.add(event.clientX > rect.left + rect.width / 2 ? 'tab-drop-after' : 'tab-drop-before');
+});
+if (tabBarEl) tabBarEl.addEventListener('drop', (event) => {
+  if (dragTabIndex == null) return;
+  event.preventDefault();
+  const over = event.target.closest('[data-tab-id]');
+  if (over && over !== dragTabEl) {
+    const tabs = [...tabBarEl.querySelectorAll('[data-tab-id]')];
+    let to = tabs.indexOf(over);
+    const rect = over.getBoundingClientRect();
+    if (event.clientX > rect.left + rect.width / 2) to += 1;
+    if (dragTabIndex < to) to -= 1;
+    const [moved] = openTabs.splice(dragTabIndex, 1);
+    if (moved) {
+      openTabs.splice(Math.max(0, Math.min(openTabs.length, to)), 0, moved);
+      renderTabs();
+    }
+  }
+  endTabDrag();
+});
+if (tabBarEl) tabBarEl.addEventListener('dragend', endTabDrag);
+
 const tabOverflowMenuEl = document.getElementById('tab-overflow-menu');
 if (tabOverflowMenuEl) tabOverflowMenuEl.addEventListener('click', (event) => {
   const closer = event.target.closest('[data-otab-close]');
