@@ -1032,6 +1032,9 @@ body.is-panel-resizing { cursor: col-resize; user-select: none; }
 .shared-folder { display: flex; align-items: center; gap: 7px; padding: 5px 9px; color: var(--tree-folder-ink); font-size: 11px; font-weight: 700; letter-spacing: .03em; }
 .shared-folder svg { width: 13px; height: 13px; color: var(--tree-folder-icon); }
 .collab-group-label { margin: 2px 0 0; color: var(--ink-muted); font-size: 11px; }
+/* Live status sits inline in the note meta, before "Edited today". */
+.collab-status-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-muted); font-size: 11px; }
+.collab-status-inline .live-dot { width: 6px; height: 6px; }
 /* Pending invitations in the Shared view */
 .shared-invite { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-bg); }
 .shared-invite-text { flex: 1; min-width: 0; overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }

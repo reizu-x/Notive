@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev27') {
+  if (build !== 'dev28') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -5006,9 +5006,11 @@ const collab = { noteId: null, groupId: null, doc: null, title: null, body: null
 
 function setCollabStatus(text, offline) {
   const el = document.getElementById('collab-status');
-  if (!el) return;
-  el.textContent = text;
-  el.style.color = offline ? '#c0453e' : '';
+  const textEl = document.getElementById('collab-status-text');
+  const sep = document.getElementById('collab-status-sep');
+  if (textEl) textEl.textContent = text;
+  if (el) { el.hidden = false; el.style.color = offline ? '#c0453e' : ''; }
+  if (sep) sep.hidden = false;
 }
 function commonPrefixLen(a, b) { const n = Math.min(a.length, b.length); let i = 0; while (i < n && a[i] === b[i]) i += 1; return i; }
 function commonSuffixLen(a, b, max) { let i = 0; while (i < max && a[a.length - 1 - i] === b[b.length - 1 - i]) i += 1; return i; }
@@ -5129,6 +5131,10 @@ async function openCollabNote(noteId) {
 }
 function closeCollabNote() {
   if (collab.reconnect) { clearTimeout(collab.reconnect); collab.reconnect = null; }
+  const statusEl = document.getElementById('collab-status');
+  const statusSep = document.getElementById('collab-status-sep');
+  if (statusEl) statusEl.hidden = true;
+  if (statusSep) statusSep.hidden = true;
   const panel = document.getElementById('collab-panel');
   if (panel) panel.hidden = true;
   const editorPanel = document.querySelector('.editor-panel');
