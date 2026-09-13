@@ -224,8 +224,8 @@ def generate_policy_password(length=20):
 # fresh database, any bootstrap user without an env password gets a random
 # policy-compliant one printed ONCE to the server log; rotate it immediately.
 BOOTSTRAP_PROFILES = {
-    'admin': ('Admin', 'Nimda', 'Personal space'),
-    'reizu': ('Anthony', 'Samson', 'Personal space'),
+    'admin': ('Admin', 'Nimda', 'Premium User'),
+    'reizu': ('Anthony', 'Samson', 'Premium User'),
 }
 
 
@@ -1851,7 +1851,7 @@ def api_register():
             ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params, auth_hash2)'
             ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (username, b'', b'', 0,
-             encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': 'Personal space', 'email': email}),
+             encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': 'Premium User', 'email': email}),
              int(time.time()), salt_auth, salt_enc, (None if auth_hash2 else auth_hash), wrap_iv + wrap_ct,
              'argon2id', json.dumps(ARGON2_DESCRIPTOR), auth_hash2),
         )
@@ -2971,7 +2971,7 @@ def api_account_email():
                  (encrypt_profile({
                      'firstName': profile.get('firstName', ''),
                      'lastName': profile.get('lastName', ''),
-                     'subtitle': profile.get('subtitle', 'Personal space'),
+                     'subtitle': profile.get('subtitle', 'Premium User'),
                      'email': email,
                  }), user['username']))
     conn.commit()
@@ -3003,7 +3003,7 @@ def api_account_profile():
                  (encrypt_profile({
                      'firstName': first,
                      'lastName': last,
-                     'subtitle': profile.get('subtitle', 'Personal space'),
+                     'subtitle': profile.get('subtitle', 'Premium User'),
                      'email': profile.get('email', ''),
                  }), user['username']))
     conn.commit()
