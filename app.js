@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev52') {
+  if (build !== 'dev53') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -8103,6 +8103,77 @@ async function refreshSession() {
   }
 }
 
+// --- Per-browser-session unlock -------------------------------------------
+// The master key never touches persistent storage. To survive a page refresh
+// without re-typing the password we keep it in sessionStorage, which the
+// browser wipes when the tab/window closes. Clearing it (logout) or closing
+// the browser locks the vault again.
+function sessionUnlockKey() { return accountScopeKey('notely-session-unlock'); }
+function clearSessionUnlock() {
+  try { sessionStorage.removeItem(sessionUnlockKey()); } catch (error) {}
+}
+async function saveSessionUnlock() {
+  if (!e2ee.masterKey || !cachedProfile) return;
+  try {
+    const raw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
+    sessionStorage.setItem(sessionUnlockKey(), JSON.stringify({
+      u: cachedProfile.username,
+      k: e2eeBytesToB64(new Uint8Array(raw)),
+      kdf: e2ee.kdf || 'pbkdf2',
+      saltAuth: e2ee.saltAuth ? e2eeBytesToB64(e2ee.saltAuth) : '',
+      saltEnc: e2ee.saltEnc ? e2eeBytesToB64(e2ee.saltEnc) : '',
+      iterations: e2ee.iterations || 0,
+    }));
+  } catch (error) {}
+}
+async function restoreSessionUnlock() {
+  if (!cachedProfile) return false;
+  let blob;
+  try { blob = JSON.parse(sessionStorage.getItem(sessionUnlockKey()) || 'null'); } catch (error) { blob = null; }
+  if (!blob || blob.u !== cachedProfile.username || !blob.k) return false;
+  try {
+    const raw = e2eeB64ToBytes(blob.k);
+    const masterKey = await window.crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+    e2ee.masterKey = masterKey;
+    e2ee.kdf = blob.kdf || 'pbkdf2';
+    e2ee.saltAuth = blob.saltAuth ? e2eeB64ToBytes(blob.saltAuth) : null;
+    e2ee.saltEnc = blob.saltEnc ? e2eeB64ToBytes(blob.saltEnc) : null;
+    e2ee.iterations = blob.iterations || 0;
+    return true;
+  } catch (error) { clearSessionUnlock(); return false; }
+}
+// Load the decrypted workspace after an unlock (login or session restore).
+async function enterWorkspace() {
+  // Fresh account context: never leak the previous login's sidebar into this one.
+  serverUiLoaded = false;
+  collapsedFolders = new Set();
+  customSections = [];
+  deletedCustomSections = [];
+  activeCustom = null;
+  await loadNotesFromServer();
+  if (purgeExpiredBin()) persistNotes();
+  await loadUiVault();
+  // No default section/folder seeding: new accounts start with an empty
+  // sidebar. ensureMigratedCollectionsSection only runs for genuine legacy data.
+  syncCustomSections();
+  // First login on a v1 row (or a device that knew more than the server):
+  // push the merged sidebar up so the next relog/device sees it.
+  if (!serverUiLoaded) {
+    try { await writeUiVaultLocal(); } catch (error) {}
+    persistNotes();
+  }
+  renderCustomSections();
+  const firstActiveNote = notes.find((note) => !note.deleted && !note.archived)
+    || notes.find((note) => !note.deleted)
+    || notes[0];
+  currentId = firstActiveNote ? firstActiveNote.id : null;
+  if (currentId) selectNote(currentId);
+  else clearEditor();
+  refreshEditorLock();
+  restoreWorkspaceCollapsed();
+  try { sharingEnsureKeys(); } catch (error) {}
+}
+
 // Display name from an E2EE profile (first + last, falls back to username).
 function fullNameOf(profile) {
   return `${profile.firstName || ''} ${profile.lastName || ''}`.trim() || profile.username || '?';
@@ -8161,6 +8232,7 @@ function hideLogin() {
 // (it needs the master key to read); only legacy plaintext keys are removed.
 async function logout() {
   // Flush while still unlocked: local UI cache + server envelope (notes + UI).
+  clearSessionUnlock();
   try {
     clearTimeout(uiVaultTimer);
     if (cachedProfile && e2ee.masterKey) {
@@ -8509,35 +8581,9 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
     passwordEl.value = '';
     hideLogin();
     applyProfile();
-    // Fresh account context: never leak the previous login's sidebar into this one.
-    serverUiLoaded = false;
-    collapsedFolders = new Set();
-    customSections = [];
-    deletedCustomSections = [];
-    activeCustom = null;
-    await loadNotesFromServer();
-    if (purgeExpiredBin()) persistNotes();
-    await loadUiVault();
-    // No default section/folder seeding: new accounts start with an empty
-    // sidebar. ensureMigratedCollectionsSection only runs for genuine legacy data.
-    syncCustomSections();
-    // First login on a v1 row (or a device that knew more than the server):
-    // push the merged sidebar up so the next relog/device sees it.
-    if (!serverUiLoaded) {
-      try { await writeUiVaultLocal(); } catch (error) {}
-      persistNotes();
-    }
-    renderCustomSections();
-    const firstActiveNote = notes.find((note) => !note.deleted && !note.archived)
-      || notes.find((note) => !note.deleted)
-      || notes[0];
-    currentId = firstActiveNote ? firstActiveNote.id : null;
-    if (currentId) selectNote(currentId);
-    else clearEditor();
-    refreshEditorLock();
-    restoreWorkspaceCollapsed();
+    await enterWorkspace();
+    await saveSessionUnlock();
     showToast(`Welcome back, ${fullNameOf(cachedProfile)}`);
-    try { sharingEnsureKeys(); } catch (error) {}
   } catch (error) {
     e2eeLock();
     const message = error && error.message;
@@ -8791,31 +8837,9 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
     passwordEl.value = '';
     hideLogin();
     applyProfile();
-    serverUiLoaded = false;
-    collapsedFolders = new Set();
-    customSections = [];
-    deletedCustomSections = [];
-    activeCustom = null;
-    await loadNotesFromServer();
-    if (purgeExpiredBin()) persistNotes();
-    await loadUiVault();
-    // Same normalization as the password path: no default section seeding.
-    syncCustomSections();
-    if (!serverUiLoaded) {
-      try { await writeUiVaultLocal(); } catch (error) {}
-      persistNotes();
-    }
-    renderCustomSections();
-    const firstActiveNote = notes.find((note) => !note.deleted && !note.archived)
-      || notes.find((note) => !note.deleted)
-      || notes[0];
-    currentId = firstActiveNote ? firstActiveNote.id : null;
-    if (currentId) selectNote(currentId);
-    else clearEditor();
-    refreshEditorLock();
-    restoreWorkspaceCollapsed();
+    await enterWorkspace();
+    await saveSessionUnlock();
     showToast(`Welcome back, ${fullNameOf(cachedProfile)}`);
-    try { sharingEnsureKeys(); } catch (error) {}
   } catch (error) {
     e2eeLock();
     loginFail(error && error.message === 'mfa required' ? 'MFA code required.'
@@ -9913,12 +9937,24 @@ if (recoverTokenBtn) recoverTokenBtn.addEventListener('click', async () => {
 async function boot() {
   await refreshSession();
   applyProfile();
-  // E2EE posture: the master key never persists, so even a valid session
-  // cookie leaves the vault locked — the password is required on every fresh
-  // page load to decrypt notes. The profile (server-side) still renders.
-  notes = [];
-  clearEditor();
-  showLogin();
+  // A valid session plus a per-browser-session key (sessionStorage) restores the
+  // workspace on refresh; otherwise the vault stays locked and the password gate
+  // shows. The key is wiped when the tab/browser closes or on logout.
+  const unlocked = await restoreSessionUnlock();
+  if (unlocked) {
+    hideLogin();
+    try { await enterWorkspace(); }
+    catch (error) { e2eeLock(); clearSessionUnlock(); notes = []; clearEditor(); showLogin(); }
+  } else {
+    notes = [];
+    clearEditor();
+    showLogin();
+    refreshEditorLock();
+    syncCustomSections();
+    renderCustomSections();
+    clearEditor();
+    refreshEditorLock();
+  }
   // Email-reset landing: open recovery with only the token popup visible.
   try {
     if (emailRecoveryToken) {
@@ -9926,11 +9962,6 @@ async function boot() {
       openRecoverModal('token');
     }
   } catch {}
-  refreshEditorLock();
-  syncCustomSections();
-  renderCustomSections();
-  clearEditor();
-  refreshEditorLock();
 }
 setInterval(() => {
   const hadBin = notes.some((note) => note.deleted);
