@@ -6,6 +6,8 @@ notely.key
 *.bak-*
 notely.db.bak*
 server-*.log
+audit.log
+audit-*.log
 __pycache__/
 
 # TLS material (private CA + server keys) and DB snapshots — never commit.
