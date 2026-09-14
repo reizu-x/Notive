@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev76') {
+  if (build !== 'dev77') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -9063,6 +9063,16 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
       pendingRewrap = null;
     }
     } // end password fallback (skipped entirely after PRF unlock)
+    // Auto-enable passwordless: this login's assertion already produced the
+    // passkey's PRF secret, and we now hold the master key (PRF or password).
+    // If no wrap is stored yet, store one so future logins need no password.
+    if (prfSecret && !data.prfWrap && e2ee.masterKey) {
+      try {
+        const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
+        const prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
+        await apiFetch('/api/passkey/prf-wrap', { method: 'POST', body: JSON.stringify({ id: cred.id, prfWrap }) });
+      } catch (error) {}
+    }
     cachedProfile = { username: data.username, firstName: data.firstName, lastName: data.lastName, subtitle: data.subtitle, email: data.email || '' };
     passwordEl.value = '';
     hideLogin();
@@ -9317,6 +9327,7 @@ async function enablePasswordlessPasskey(credIdB64, prfSaltB64, btn) {
     const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
     const prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
     const r = await apiFetch('/api/passkey/prf-wrap', { method: 'POST', body: JSON.stringify({ id: credIdB64, prfWrap }) });
+    if (r.status === 401) throw new Error('Session expired — log in again, then retry.');
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
       throw new Error(d.error || 'Could not enable passwordless.');
@@ -9435,7 +9446,7 @@ if (passkeyAddBtn) passkeyAddBtn.addEventListener('click', async () => {
       throw new Error(d.error || 'Enrolment failed.');
     }
     const fd = await finish.json().catch(() => ({}));
-    showToast(fd.prf ? 'Passkey added — passwordless unlock on' : 'Passkey added (this device still needs your password)');
+    showToast(fd.prf ? 'Passkey added — passwordless unlock on' : 'Passkey added — it turns passwordless after your next passkey sign-in');
     await refreshPasskeys();
   } catch (error) {
     // Cancelled browser ceremony (NotAllowedError/AbortError) is deliberate,
