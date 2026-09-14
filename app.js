@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev72') {
+  if (build !== 'dev73') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -9273,6 +9273,29 @@ function prfFirstResult(cred) {
     return null;
   }
 }
+// Many authenticators evaluate the PRF only during an assertion (get), not
+// during creation. Run a throwaway get() against the just-created credential to
+// obtain its PRF output, so passwordless unlock works on far more devices. The
+// challenge is local — nothing is sent to the server; only the PRF output is
+// used, to wrap the master key under SHA-256(PRF).
+async function prfSecretViaAssertion(credentialId, rpId, prfSaltB64) {
+  if (!window.PublicKeyCredential || !navigator.credentials || !navigator.credentials.get) return null;
+  try {
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: e2eeRandomBytes(32),
+        ...(rpId ? { rpId } : {}),
+        allowCredentials: [{ type: 'public-key', id: credentialId }],
+        userVerification: 'required',
+        timeout: 60000,
+        extensions: { prf: { eval: { first: b64urlToBuf(prfSaltB64) } } },
+      },
+    });
+    return prfFirstResult(assertion);
+  } catch (error) {
+    return null;
+  }
+}
 async function refreshPasskeys() {
   const listEl = document.getElementById('passkey-list');
   const errEl = document.getElementById('passkey-error');
@@ -9333,10 +9356,17 @@ if (passkeyAddBtn) passkeyAddBtn.addEventListener('click', async () => {
     // stored or sent anywhere.
     let prfWrap = null;
     try {
-      const prfSecret = prfFirstResult(cred);
-      if (prfSecret && e2ee.masterKey) {
-        const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
-        prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
+      if (e2ee.masterKey && opts.prfSalt) {
+        // Prefer the PRF from the create ceremony; fall back to a follow-up
+        // assertion for authenticators that only evaluate PRF on get().
+        let prfSecret = prfFirstResult(cred);
+        if (!prfSecret) {
+          prfSecret = await prfSecretViaAssertion(cred.rawId, opts.rp && opts.rp.id, opts.prfSalt);
+        }
+        if (prfSecret) {
+          const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
+          prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
+        }
       }
     } catch (error) { prfWrap = null; }
     const finish = await apiFetch('/api/passkey/register-finish', {
