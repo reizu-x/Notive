@@ -27,6 +27,7 @@ import { highlightJson, yamlCommentAt, highlightYamlValue, highlightYaml, beauti
 import { NOTE_EXTS, COVER_ACCEPT, COVER_MAX_CHARS, MIGRATED_COLLECTIONS_SECTION_ID, normalizeExt, isImageFile, parseRecipeBody, migrateNote, sanitizeIngredients, sanitizeSteps, cleanCoverSrc, sanitizeFilename, parseTitleExtension, EXT_LABELS, EXT_MIME, COVER_MAX_DIM } from './core/schema.js';
 import { THEMES, THEME_META_COLORS, THEME_LABELS, FONTS } from './ui/theme.js';
 import { showToast, askInput } from './ui/modal.js';
+import { validVaultBlob, cleanVaultFolders, timingSafeEqualStr, vaultEncryptNote, vaultDecryptItem, decryptAllVaultBlobs, currentVaultBlobs, uniqueVaultTitle, cleanVaultFolderInput } from './data/vault.js';
 import { state } from './domain/state.js';
 import { noteList, listEmpty, listHeading, titleInput, markdownInput, preview, breadcrumbTitle, wordCount, tagList, saveLabel, typeBadge, editorToolbar, allCount, recentCountEl, starredCountEl, totalCount, importInput, modeLabel, modeToggle, beautifyBtn, tabBarEl, tabOverflowMenuEl, stripBoxEl, stripBackEl, syntaxLayer, recipeBodyEl, foldToggle, importNotesBtn, panelResizer, notesPanel, sidebar, sidebarToggle, workspaceToggle, settingsOverlay, tabLogin, tabRegister, registerForm, passkeyLoginBtn, changeBtn, mfaSetupBtn, closeMfaQrBtn, mfaQrOverlay, mfaConfirmBtn, mfaDisableBtn, passkeyAddBtn, accountSaveBtn, accountDeleteBtn, accountSaveNameBtn, profileOverlay, profileCardEl, closeProfileBtn, profileEditBtn, profilePhotoBtn, profilePhotoRemove, avatarInputEl, acctRecBtn, acctRecDownloadBtn, acctRecDoneBtn, acctRecViewBtn, recoverLink, recoverBack, closeRecoverModalBtn, recoverModalOverlay, recoverOptEmail, recoverOptCode, recoverEmailBtn, recoverVerifyBtn, recoverBtn, settingsNewTagBtn, deviceOnlyBox, themeSelect, fontSelect, loginThemeToggle, loginThemeMenu, recoverTokenBtn } from './core/elements.js';
 import { newNoteId, isValidNoteId } from './core/ids.js';
@@ -6396,88 +6397,17 @@ state.vault = { unlocked: false, dek: null, notes: [], blobs: [], meta: null, fo
 let currentVaultId = null;
 let vaultModalMode = null; // 'setup' | 'unlock' | 'reset-confirm'
 
-function validVaultBlob(item) {
-  return Boolean(item && typeof item.id === 'string' && item.payload
-    && typeof item.payload.iv === 'string' && typeof item.payload.data === 'string');
-}
 
 // Vault folder names: flat, trimmed, no slashes, capped. Shared by envelope
 // reads and the add/rename dialogs.
-function cleanVaultFolders(value) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((name) => typeof name === 'string' && name.trim() && !/[/\\]/.test(name))
-    .map((name) => name.trim().replace(/\s+/g, ' ').slice(0, 60))
-    .filter(Boolean)
-    .slice(0, 200);
-}
 
-function timingSafeEqualStr(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
 
-async function vaultEncryptNote(note) {
-  const iv = e2eeRandomBytes(12);
-  const folder = (note && typeof note.folder === 'string' && note.folder.trim())
-    ? note.folder.trim().slice(0, 60) : null;
-  const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, state.vault.dek,
-    new TextEncoder().encode(    JSON.stringify({
-      id: note.id, title: note.title, body: note.body,
-      tags: Array.isArray(note.tags) ? note.tags : [],
-      ext: normalizeExt(note.ext),
-      date: note.date, favorite: !!note.favorite, folder,
-    })));
-  return { id: note.id, payload: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) } };
-}
 
-async function vaultDecryptItem(item) {
-  const plain = await window.crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: e2eeB64ToBytes(item.payload.iv) }, state.vault.dek,
-    e2eeB64ToBytes(item.payload.data));
-  const obj = JSON.parse(new TextDecoder().decode(plain));
-  if (!obj || typeof obj !== 'object') throw new Error('bad vault note');
-  return {
-    id: String(item.id),
-    title: typeof obj.title === 'string' && obj.title.trim() ? obj.title.slice(0, 200) : 'Untitled note',
-    body: typeof obj.body === 'string' ? obj.body.slice(0, 500000) : '',
-    tags: Array.isArray(obj.tags) ? obj.tags.filter((tag) => typeof tag === 'string').slice(0, 20) : [],
-    ext: normalizeExt(obj.ext),
-    date: typeof obj.date === 'string' ? obj.date.slice(0, 40) : 'Now',
-    favorite: false,
-    folder: (typeof obj.folder === 'string' && obj.folder.trim()) ? obj.folder.trim().slice(0, 60) : null,
-  };
-}
 
-async function decryptAllVaultBlobs() {
-  const out = [];
-  for (const item of state.vault.blobs) {
-    try { out.push(await vaultDecryptItem(item)); }
-    catch (error) { /* skip corrupt items */ }
-  }
-  return out;
-}
 
 // Ciphertext staged for upload: freshly encrypted while unlocked, retained
 // blobs while locked (a background sync can never erase secrets).
-async function currentVaultBlobs() {
-  if (!state.vault.unlocked) return state.vault.blobs;
-  const out = [];
-  for (const note of state.vault.notes) out.push(await vaultEncryptNote(note));
-  state.vault.blobs = out;
-  return out;
-}
 
-function uniqueVaultTitle(base) {
-  const clean = (typeof base === 'string' ? base : 'Untitled note').trim().slice(0, 180) || 'Untitled note';
-  const taken = new Set(state.vault.notes.map((note) => String(note.title || '').toLowerCase()));
-  if (!taken.has(clean.toLowerCase())) return clean;
-  let counter = 2;
-  while (taken.has(`${clean} ${counter}`.toLowerCase())) counter += 1;
-  return `${clean} ${counter}`;
-}
 
 // Open a vault note in the editor (preview-first, like normal notes).
 function selectVaultNote(id) {
@@ -6612,15 +6542,6 @@ function openVaultNoteDeleteConfirm(id) {
 
 // ---- Vault folders (flat, dev): explicit list in the envelope so empty
 // folders survive. Notes carry folder (or null for Vault root).
-function cleanVaultFolderInput(raw, exceptFolder) {
-  const clean = String(raw == null ? '' : raw).trim().replace(/\s+/g, ' ').slice(0, 60);
-  if (!clean) return { error: 'Give the folder a name' };
-  if (/[/\\]/.test(raw)) return { error: 'Use a plain name without slashes' };
-  if (state.vault.folders.some((entry) => entry !== exceptFolder && entry.toLowerCase() === clean.toLowerCase())) {
-    return { error: 'A folder with that name already exists' };
-  }
-  return { name: clean };
-}
 
 function addVaultFolder() {
   if (!state.vault.unlocked) { showToast('Unlock the Vault first'); return; }
