@@ -21,12 +21,13 @@ import { collabAddGroupMember, renderSharedView, updateSharedNoteMeta } from '..
 import { e2ee } from '../data/crypto.js';
 import { cleanVaultFolderInput } from '../data/vault.js';
 import { DEFAULT_CUSTOM_FOLDERS } from '../domain/constants.js';
-import { findCustomItem, repathList, updateListHeading } from './misc.js';
 import { askInput } from './modal.js';
-import { openTemplatePicker } from './notes-core.js';
 import { clearEditor, clearSearch, closeNoteContextMenu, createNoteFromTemplate, firstFilingOf, persistNotes, renderNoteList, selectNote } from './notes.js';
 import { slideMenuCollapsed } from './shell.js';
 import { persistUiVault } from './vault.js';
+import { findTreeWrap } from './editor.js';
+import { openTemplatePicker } from './editor.js';
+import { updateListHeading } from './notes.js';
 
 // Clear section/folder filters and sidebar highlights (unified custom implementation).
 export function clearSectionSelection() {
@@ -1968,4 +1969,78 @@ export function ensureMigratedCollectionsSection(legacyFolders, legacyName) {
   if (notesDirty) persistNotes();
   persistCustomSections();
   return section;
+}
+
+
+export function findCustomItem(sectionId, folder) {
+  return [...document.querySelectorAll('#custom-sections .collection-item')]
+    .find((item) => item.dataset.csection === sectionId && item.dataset.cfolder === folder) || null;
+}
+
+// Rewrite exact + descendant paths in a folder list (sidebar, collapsed keys).
+export function repathList(list, oldPath, newPath) {
+  const prefix = `${oldPath}${FOLDER_SEP}`;
+  return list.map((entry) => {
+    if (entry === oldPath) return newPath;
+    if (entry.startsWith(prefix)) return newPath + entry.slice(oldPath.length);
+    return entry;
+  });
+}
+
+// Inline rename for All-Notes folder headers; refused in Bin.
+export function startTreeRename(folder) {
+  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
+  if (state.activeView === 'bin') return;
+  const wrap = findTreeWrap(folder);
+  if (!wrap) return;
+  const row = wrap.querySelector('.tree-folder-row');
+  const folderBtn = wrap.querySelector('[data-folder]');
+  const renameBtn = wrap.querySelector('[data-folder-rename]');
+  let input = wrap.querySelector('.tree-rename-input');
+  if (!input) {
+    input = document.createElement('input');
+    input.className = 'tree-rename-input';
+    input.maxLength = 60;
+    input.setAttribute('aria-label', 'Folder name');
+    row.appendChild(input);
+  }
+  input.value = folderLeaf(folder);
+  input.hidden = false;
+  if (folderBtn) folderBtn.hidden = true;
+  if (renameBtn) renameBtn.hidden = true;
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    if (commit) {
+      // Namespace follows the row; fall back to whichever custom section owns the folder.
+      let sectionId = null;
+      if (state.activeCustom) sectionId = state.activeCustom.section;
+      else {
+        const shell = wrap.closest('[data-list-section]');
+        const kind = shell ? shell.dataset.listSection : null;
+        if (kind === 'custom') {
+          const secBtn = shell.querySelector('[data-section-id]');
+          if (secBtn && secBtn.dataset.sectionId) sectionId = secBtn.dataset.sectionId;
+        }
+      }
+      if (!sectionId) {
+        const owner = state.customSections.find((section) => section.folders.some((entry) => entry === folder || isFolderOrSub(entry, folder) || isFolderOrSub(folder, entry)));
+        if (owner) sectionId = owner.id;
+      }
+      if (!sectionId) { renderNoteList(); return; }
+      renameFolderPath('custom', sectionId, folder, joinLeafRename(folder, input.value));
+    }
+    else renderNoteList();
+  };
+  input.onkeydown = (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    event.stopPropagation();
+  };
+  input.onclick = (event) => event.stopPropagation();
+  input.ondblclick = (event) => event.stopPropagation();
+  input.onblur = () => finish(true);
 }

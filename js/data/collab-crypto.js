@@ -22,14 +22,17 @@ import { FOLDER_SEP } from '../core/paths.js';
 import { sanitizeIngredients, sanitizeSteps } from '../core/schema.js';
 import { sharedGroupFolders, sharedGroupKeys, sharedGroupTags } from '../domain/constants.js';
 import { renderPreview, renderRecipeBody } from '../ui/editor.js';
-import { parseUsernames, refreshEditorLock, rekeyGroupIfNeeded, sharingEnsureKeys } from '../ui/misc.js';
-import { openTemplatePicker } from '../ui/notes-core.js';
 import { updateBinUI } from '../ui/notes.js';
 import { collabCreateSection, sharedFolderTree, updateFoldToggle } from '../ui/sections.js';
 import { seedFromTemplate } from '../ui/shell.js';
 import { renderTabs, trackTab, updateBreadcrumbs } from '../ui/tabs.js';
 import { renderSharedTags } from '../ui/tags.js';
 import { updateVaultUI } from '../ui/vault.js';
+import { rekeyInFlight } from '../domain/constants.js';
+import { setDeleteDialog } from '../ui/notes.js';
+import { rotateGroupSection } from '../ui/sections.js';
+import { refreshEditorLock } from '../ui/auth.js';
+import { openTemplatePicker } from '../ui/editor.js';
 
 
 
@@ -1171,4 +1174,94 @@ export async function collabBroadcast(update) {
   state.collab.outbox.push(update);
   if (state.collab.outbox.length >= 200) { state.collab.outbox.length = 0; collabCompact(); return; }
   flushCollabOutbox();
+}
+
+
+// Popup: ask who the new shared section is for.
+export function parseUsernames(raw) {
+  // Owner + invitees must stay within the 4-member section cap.
+  return String(raw || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean).slice(0, 3);
+}
+
+export function confirmDeleteGroup(groupId) {
+  state.pendingDeleteId = String(groupId);
+  state.pendingDeleteMode = 'collab-group';
+  state.pendingDeleteTag = null;
+  setDeleteDialog({ eyebrow: 'Delete section', title: 'Delete this shared section?', name: 'This section', message: '” and all its notes will be deleted for everyone. This cannot be undone.' });
+  const overlay = document.getElementById('delete-overlay');
+  if (overlay) {
+    overlay.hidden = false;
+    const confirmBtn = document.getElementById('confirm-delete');
+    if (confirmBtn) confirmBtn.focus();
+  }
+}
+
+export async function rekeyGroupIfNeeded(group, key) {
+  if (!group || !key || !group.rekeyNeeded || rekeyInFlight.has(group.id)) return;
+  // Only a member holding the current epoch may rotate. A stale wrap (e.g. an
+  // invite accepted after a rekey) must not rotate — it would re-encrypt with an
+  // old key and lose content. Another member rotates and re-wraps us instead.
+  if (Number(group.myKeyVersion) !== Number(group.keyVersion)) return;
+  rekeyInFlight.add(group.id);
+  try {
+    const ok = await rotateGroupSection({
+      groupId: group.id, key, version: group.keyVersion,
+      members: group.members || [], notes: group.notes || [], folderMeta: group.encMeta || '' });
+    if (ok) showToast('Section key rotated after a member left');
+  } finally {
+    rekeyInFlight.delete(group.id);
+  }
+}
+
+export async function sharingEnsureKeysOnce() {
+  if (state.sharing.ready && state.sharing.privateKey && state.sharing.signingKey) return true;
+  if (!e2ee.masterKey) return false;
+  try {
+    const res = await apiFetch('/api/keys/me');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.exists && data.encPriv && data.pubkey) {
+        state.sharing.privateKey = await sharingUnwrapAccountKey(data.encPriv, 'ECDH');
+        if (data.sigEncPriv && data.sigPubkey) {
+          state.sharing.signingKey = await sharingUnwrapAccountKey(data.sigEncPriv, 'ECDSA');
+          state.sharing.ready = true;
+          return true;
+        }
+        return await sharingPublishSigningKey(data.pubkey, data.encPriv);
+      }
+    }
+  } catch (error) { /* fall through and (re)generate */ }
+  return sharingGenerateKeys();
+}
+
+export async function sharingGenerateKeys() {
+  try {
+    const ecdh = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
+    const sig = await window.crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+    const pub = new Uint8Array(await window.crypto.subtle.exportKey('raw', ecdh.publicKey));
+    const ecdhPkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', ecdh.privateKey));
+    const sigPub = new Uint8Array(await window.crypto.subtle.exportKey('raw', sig.publicKey));
+    const sigPkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', sig.privateKey));
+    const pubRes = await apiFetch('/api/keys', { method: 'POST', body: JSON.stringify({
+      algo: 'ECDH-P256',
+      pubkey: e2eeBytesToB64(pub),
+      encPriv: await sharingWrapAccountKey(ecdhPkcs8),
+      sigPubkey: e2eeBytesToB64(sigPub),
+      sigEncPriv: await sharingWrapAccountKey(sigPkcs8),
+    }) });
+    if (!pubRes.ok) return false;
+    state.sharing.privateKey = ecdh.privateKey;
+    state.sharing.signingKey = sig.privateKey;
+    state.sharing.ready = true;
+    return true;
+  } catch (error) { return false; }
+}
+
+export function sharingEnsureKeys() {
+  // Single-flight: concurrent callers must never generate two different
+  // keypairs (the published public key could stop matching the in-memory key).
+  if (state.sharing.ready && state.sharing.privateKey && state.sharing.signingKey) return Promise.resolve(true);
+  if (state.sharingKeyPromise) return state.sharingKeyPromise;
+  state.sharingKeyPromise = sharingEnsureKeysOnce().finally(() => { state.sharingKeyPromise = null; });
+  return state.sharingKeyPromise;
 }

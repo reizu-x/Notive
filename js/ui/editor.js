@@ -10,7 +10,6 @@ import { e2ee, e2eeB64ToBytes, e2eeBytesToB64, e2eeRandomBytes } from '../data/c
 import { REC_ALPHABET } from '../domain/constants.js';
 import { state } from '../domain/state.js';
 import { acctRecCacheKey } from './auth.js';
-import { isUnlocked, readFileAsDataUrl } from './misc.js';
 import { showToast } from './modal.js';
 import { currentNote } from './notes.js';
 import { coverDragNote } from './tabs.js';
@@ -18,8 +17,12 @@ import { beautifyJsonText, beautifyYamlText } from '../core/syntax.js';
 import { renderCollabPresence } from '../data/collab-crypto.js';
 import { IDLE_PREVIEW_MS } from '../domain/constants.js';
 import { setSaveLabel } from './feedback.js';
-import { updateMeta } from './misc.js';
 import { activeEditorNote, isPlainTextNote, persistNotes, renderNoteList, saveCurrentNote } from './notes.js';
+import { icon } from '../core/icons.js';
+import { NOTE_TEMPLATES } from '../domain/constants.js';
+import { addNote } from './notes.js';
+import { isUnlocked } from './auth.js';
+import { updateMeta } from './notes.js';
 
 export function closeRecoverModal() {
   const modal = document.getElementById('recover-modal');
@@ -634,4 +637,58 @@ export function applyBeautify() {
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 200);
   showToast(`${note.ext === 'json' ? 'JSON' : 'YAML'} beautified`);
+}
+
+
+// Hide the template chooser popup.
+export function closeTemplatePicker() {
+  state.vaultTemplatePending = false;
+  state.pendingSharedTemplate = null;
+  const overlay = document.getElementById('template-overlay');
+  if (overlay) overlay.hidden = true;
+}
+
+// Single source of truth for the New-note chooser, shared by All Notes and the
+// Shared view so the two pickers are always identical.
+export function renderTemplateOptions() {
+  const box = document.getElementById('template-options');
+  if (!box) return;
+  box.innerHTML = Object.keys(NOTE_TEMPLATES).map((key) => {
+    const template = NOTE_TEMPLATES[key];
+    const label = template.label || template.caption || key;
+    return `<button class="template-option template-square" data-template="${escapeHtml(key)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
+        <span class="template-icon">${icon(template.icon || 'file-text')}</span>
+        <span class="template-caption">${escapeHtml(template.caption || key)}</span>
+      </button>`;
+  }).join('');
+}
+
+// De-duplicate a note title (case-insensitive) by appending a counter.
+// Binned notes don't squat names — only live ones count.
+export function uniqueTitle(base) {
+  const clean = (typeof base === 'string' ? base : 'Untitled note').trim().slice(0, 180) || 'Untitled note';
+  const taken = new Set(state.notes.filter((note) => !note.deleted).map((note) => String(note.title || '').toLowerCase()));
+  if (!taken.has(clean.toLowerCase())) return clean;
+  let counter = 2;
+  while (taken.has(`${clean} ${counter}`.toLowerCase())) counter += 1;
+  return `${clean} ${counter}`;
+}
+
+export function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+}
+
+// Show the New-note template chooser popup.
+export function openTemplatePicker() {
+  const overlay = document.getElementById('template-overlay');
+  if (!overlay) { addNote(); return; }
+  renderTemplateOptions();
+  overlay.hidden = false;
+  const first = overlay.querySelector('.template-option');
+  if (first) first.focus();
 }

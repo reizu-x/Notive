@@ -42,7 +42,6 @@ import { cancelCollabInvite, closeCollabNewDialog, closeCollabNote, closeCollabP
 import { COLLAPSED_FOLDERS_KEY, IMPORTANT_TAG, NOTE_TEMPLATES, SECTION_DATA_KEY, SECTION_ICONS, UI_VAULT_KEY, sharedBodyCache, sharedCollapsed, sharedGroupFolders, sharedGroupKeys, sharedGroupOwners, sharedGroupTags, sharedNoteMeta } from './domain/constants.js';
 import { closeAcctRecModal, closeMfaQrModal, openAcctRecModal, openMfaQrModal, prfFirstResult, prfSecretViaAssertion, refreshAccountPane, refreshAcctRecStatus, renderAcctRecCodes, saveAccountName } from './ui/auth.js';
 import { clearRecoveryCodesLocal, closeRecoverModal, downscaleCover, enterCoverRepos, findTreeWrap, focusRecipeField, handleCollabCoverFile, loadRecoveryCodesLocal, moveCoverOnNote, newRecoveryCode, openRecoverModal, prfUnwrapMasterKey, prfWrapMasterKey, recipeDataForActive, renderCover, renderPreview, renderRecipeBody, renderRecipeHero, saveRecoveryCodesLocal, setCoverReposUI } from './ui/editor.js';
-import { cleanUiSnapshot, closeDeleteConfirm, closeTemplatePicker, confirmDeleteGroup, e2eeLock, findCustomItem, isUnlocked, openDeleteConfirm, openPermanentDeleteConfirm, parseUsernames, readFileAsDataUrl, readLegacyUiKeys, refreshEditorLock, rekeyGroupIfNeeded, renderTemplateOptions, repathList, sharingEnsureKeys, uniqueTitle, updateListHeading, updateMeta } from './ui/misc.js';
 import { activeEditorNote, buildNotesEnvelope, clearSearch, closeNoteContextMenu, currentNote, deviceOnlyPref, downloadNoteById, ensureNoteFiled, exportAllNotes, firstFilingOf, getNoteContextMenu, isImportant, isPlainTextNote, localNotesKey, markSynced, openEmptyBinConfirm, openNoteContextMenu, readLegacyLocalNotes, saveNotesToDevice, scopeNotes, setDeleteDialog, setDeviceOnlyPref, updateBinUI, visibleNotes, wipeLegacyLocalNotes } from './ui/notes.js';
 import { clearSectionSelection, closeFolderContextMenu, closeFolderPicker, closeSectionContextMenu, closeSectionIconPicker, closeSectionSettings, confirmDeleteSharedFolder, customFolderColor, customNoteFolder, folderListOf, getFolderContextMenu, insertFolderAfterParent, isFolderDrag, isSectionEmpty, openCustomFolderDeleteConfirm, openCustomSectionDeleteConfirm, openFolderContextMenu, openSectionContextMenu, openSectionIconPicker, openSectionSettings, openVaultFolderDeleteConfirm, orderFoldersLikeWorkspace, renderCustomSections, resolveListFolderTarget, saveGroupFolders, sectionDisplayName, sectionTagAdd, sectionTagRemove, sharedAllFolderKeys, sharedFolderKey, sharedFolderTree, sidebarFolderTarget, takenSectionNames, uniqueCustomFolderName, uniqueSectionId, uniqueSectionName, updateFoldToggle, visibleFolderPaths } from './ui/sections.js';
 import { applyFont, applyPanelWidth, applyProfile, clearSessionUnlock, closeProfilePopup, closeSettings, downscaleAvatar, openProfilePopup, openSettings, paintAvatar, refreshProfilePopup, restorePanelWidth, restoreSessionUnlock, restoreWorkspaceCollapsed, saveSessionUnlock, seedFromTemplate, setLoginThemeMenu, setSidebarCollapsed, setWorkspaceCollapsed, slideMenuCollapsed, startCollapsedPref, welcomeSeedNotes, welcomeSeedUi } from './ui/shell.js';
@@ -52,13 +51,18 @@ import { decryptUiVaultRaw, openVaultModal, openVaultNoteDeleteConfirm, uiVaultK
 import { acceptInvite, collabDeleteNote, confirmCollabNew, createSharedNoteWithTemplate, declineInvite, moveSharedNote, openCollabNote, openSharedNewNote, renderSharedView } from './data/collab-crypto.js';
 import { refreshPasskeys } from './ui/auth.js';
 import { applyBeautify, exitCoverRepos, handleCoverFile, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
-import { confirmPendingDelete, logout, refreshCurrent } from './ui/notes-core.js';
 import { bindNoteContextMenu, clearEditor, createNoteFromTemplate, goAllNotes, loadNotesFromServer, onNewNoteClick, persistNotes, purgeExpiredBin, renderNoteList, requestDeleteNoteById, saveCurrentNote, selectNote, syncNotesToServer } from './ui/notes.js';
 import { addSharedFolder, addSubfolder, bindCustomSectionsEvents, bindFolderContextMenu, bindFolderDragDrop, bindSectionContextMenu, bindSectionHeaderEvents, chooseSectionIcon, deleteCustomSection, leaveSharedSection, moveSharedNoteToFolder, persistCollapsedFolders, renameSharedFolder, reparentSharedFolder, selectCustomFolder, selectCustomSection, syncCustomSections } from './ui/sections.js';
 import { applyTheme, enterWorkspace, handleAvatarFile } from './ui/shell.js';
 import { closeTab, renderTabs } from './ui/tabs.js';
 import { addKnownTag, renameTagEverywhere, tagEditorAdd, tagEditorRemove } from './ui/tags.js';
 import { createVaultNoteFromTemplate, loadUiVault, lockVault, onNewVaultNoteClick, persistUiVault, resetVault, selectVaultNote, setupVaultFromModal, unlockVaultFromModal } from './ui/vault.js';
+import { confirmDeleteGroup, parseUsernames, rekeyGroupIfNeeded, sharingEnsureKeys } from './data/collab-crypto.js';
+import { e2eeLock, isUnlocked, logout, refreshEditorLock } from './ui/auth.js';
+import { closeTemplatePicker, readFileAsDataUrl, renderTemplateOptions, uniqueTitle } from './ui/editor.js';
+import { closeDeleteConfirm, confirmPendingDelete, openDeleteConfirm, openPermanentDeleteConfirm, refreshCurrent, updateListHeading, updateMeta } from './ui/notes.js';
+import { findCustomItem, repathList } from './ui/sections.js';
+import { cleanUiSnapshot, readLegacyUiKeys } from './ui/vault.js';
 
 'use strict';
 // Build guard: index.html carries <meta name="notely-build">. If this script
@@ -71,7 +75,7 @@ const BUILD_NOTE_OK = (() => {
   try {
     const tag = document.querySelector('meta[name="notely-build"]');
     const build = tag ? tag.getAttribute('content') : null;
-    if (build !== 'dev85') {
+    if (build !== 'dev86') {
       if (!sessionStorage.getItem('notely-build-reloaded')) {
         sessionStorage.setItem('notely-build-reloaded', '1');
         window.location.reload();
@@ -130,7 +134,6 @@ if (BUILD_NOTE_OK) {
   // Notes are the signed-in user's server-side data (GET/PUT /api/notes,
   // AES-GCM encrypted at rest). Nothing note-shaped is written to localStorage:
   // legacy plaintext keys are migrated once, then wiped (CWE-312 fix).
-  // notes now lives on the shared state object (js/domain/state.js).
   // Last server updated_at seen (optimistic concurrency: sent as baseVersion on
   // PUT; server rejects 409 on stale overwrites so hijacked/racing writes fail
   // instead of silently destroying newer data).

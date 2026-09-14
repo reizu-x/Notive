@@ -13,11 +13,13 @@ import { renderStripItems, setSettingsTab } from './tabs.js';
 import { FONTS } from './theme.js';
 import { isImageFile } from '../core/schema.js';
 import { refreshSharedNavCount } from '../data/collab-crypto.js';
-import { readFileAsDataUrl, refreshEditorLock, sharingEnsureKeys } from './misc.js';
 import { clearEditor, loadNotesFromServer, persistNotes, purgeExpiredBin, selectNote } from './notes.js';
 import { renderCustomSections, syncCustomSections } from './sections.js';
 import { THEMES, THEME_LABELS, THEME_META_COLORS } from './theme.js';
 import { loadUiVault, persistUiVault, writeUiVaultLocal } from './vault.js';
+import { sharingEnsureKeys } from '../data/collab-crypto.js';
+import { refreshEditorLock } from './auth.js';
+import { readFileAsDataUrl } from './editor.js';
 
 export function setLoginThemeMenu(open) {
   if (!loginThemeToggle || !loginThemeMenu) return;

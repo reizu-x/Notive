@@ -7,9 +7,9 @@ import { escapeHtml } from '../core/strings.js';
 import { sharedGroupTags } from '../domain/constants.js';
 import { state } from '../domain/state.js';
 import { showToast } from './modal.js';
-import { updateMeta } from './misc.js';
 import { activeEditorNote, persistNotes, renderNoteList } from './notes.js';
 import { persistUiVault } from './vault.js';
+import { updateMeta } from './notes.js';
 
 export function sharedGroupTagList(groupId) {
   return sharedGroupTags.get(groupId) || sharedGroupTags.get(Number(groupId)) || [];

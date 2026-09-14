@@ -14,6 +14,14 @@ import { clearRecoveryCodesLocal, loadRecoveryCodesLocal } from './editor.js';
 import { showToast } from './modal.js';
 import { applyProfile } from './shell.js';
 import { prfWrapMasterKey } from './editor.js';
+import { breadcrumbTitle, markdownInput, tagList, titleInput, wordCount } from '../core/elements.js';
+import { setSharedNavCount } from '../data/collab-crypto.js';
+import { COLLAPSED_FOLDERS_KEY, SECTION_DATA_KEY } from '../domain/constants.js';
+import { setCoverAddHidden } from './editor.js';
+import { clearEditor, flushNotesToServer, wipeLegacyLocalNotes } from './notes.js';
+import { renderCustomSections } from './sections.js';
+import { clearSessionUnlock } from './shell.js';
+import { writeUiVaultLocal } from './vault.js';
 
 
 
@@ -424,4 +432,129 @@ export async function enablePasswordlessPasskey(credIdB64, prfSaltB64, btn) {
     }
     if (btn) btn.disabled = false;
   }
+}
+
+
+// Central lock switch: disables editor inputs and hides New/Import while logged out or locked; otherwise defers to the note deleted/archived state. Runs after every list/selection render.
+export function refreshEditorLock() {
+  // A shared note is always editable while it is open in the standard editor.
+  if (state.collab.noteId) {
+    titleInput.disabled = false;
+    markdownInput.disabled = false;
+    return;
+  }
+  let note = null;
+  let locked = !isUnlocked();
+  if (state.activeView === 'vault') {
+    locked = locked || !state.vault.unlocked;
+    if (!locked && state.currentVaultId) note = state.vault.notes.find((item) => item.id === state.currentVaultId) || null;
+  } else if (state.currentId) {
+    note = state.notes.find((item) => item.id === state.currentId) || null;
+  }
+  const readOnly = locked || !note || Boolean(note.deleted) || Boolean(note.archived);
+  titleInput.disabled = readOnly;
+  markdownInput.disabled = readOnly;
+  const newNoteBtn = document.getElementById('new-note');
+  const importBtn = document.getElementById('import-notes');
+  if (newNoteBtn) newNoteBtn.hidden = locked || state.activeView === 'bin' || state.activeView === 'vault' || state.activeView === 'shared';
+  if (importBtn) importBtn.hidden = locked || state.activeView === 'bin' || state.activeView === 'vault' || state.activeView === 'shared';
+  const coverAddBtn = document.getElementById('cover-add');
+  if (coverAddBtn) setCoverAddHidden(readOnly || state.activeView === 'vault' || !note || Boolean(note.cover) || note.template === 'recipe');
+  const coverChangeBtn = document.getElementById('cover-change');
+  if (coverChangeBtn) coverChangeBtn.disabled = readOnly;
+  const coverRemoveBtn = document.getElementById('cover-remove');
+  if (coverRemoveBtn) coverRemoveBtn.disabled = readOnly;
+  const coverReposBtn = document.getElementById('cover-repos');
+  if (coverReposBtn) coverReposBtn.disabled = readOnly;
+  const coverDoneBtn = document.getElementById('cover-done');
+  if (coverDoneBtn) coverDoneBtn.disabled = readOnly;
+  const recipeDesc = document.getElementById('recipe-desc');
+  if (recipeDesc) recipeDesc.disabled = readOnly;
+  const recipePhotoBtn = document.getElementById('recipe-photo-btn');
+  if (recipePhotoBtn) recipePhotoBtn.disabled = readOnly;
+}
+
+// True when a session exists AND the master key is in memory (vault unlocked, notes readable).
+export function isUnlocked() {
+  return Boolean(state.cachedProfile && e2ee.masterKey);
+}
+
+// Wipe all key material from memory (logout, failed unlock). Display/session state is cleared separately.
+export function e2eeLock() {
+  e2ee.masterKey = null;
+  e2ee.kdf = null;
+  e2ee.saltAuth = null;
+  e2ee.saltEnc = null;
+  e2ee.iterations = 0;
+}
+
+// Server logout, then wipe keys/notes/editor/selection from memory and reset the UI to the gate.
+// Pending edits are flushed to the server FIRST so nothing made in this
+// session is lost by the relog. The per-account encrypted local cache is kept
+// (it needs the master key to read); only legacy plaintext keys are removed.
+export async function logout() {
+  // Flush while still unlocked: local UI cache + server envelope (notes + UI).
+  clearSessionUnlock();
+  try {
+    clearTimeout(state.uiVaultTimer);
+    if (state.cachedProfile && e2ee.masterKey) {
+      try { await writeUiVaultLocal(); } catch (error) {}
+      try { await flushNotesToServer(); } catch (error) {}
+    } else {
+      clearTimeout(state.syncTimer);
+    }
+  } catch (error) {}
+  try { await apiFetch('/api/logout', { method: 'POST' }); } catch (error) {}
+  state.cachedProfile = null;
+  state.profileAvatar = '';
+  state.knownTags = [];
+  setSharedNavCount(0);
+  e2eeLock();
+  // Wipe decrypted workspace: memory, editor DOM and any legacy local copy.
+  state.notes = [];
+  state.openTabs = [];
+  state.notesLoaded = false;
+  state.serverNotesVersion = 0;
+  state.serverUiLoaded = false;
+  state.currentId = null;
+  state.currentVaultId = null;
+  state.vault.unlocked = false;
+  state.vault.dek = null;
+  state.vault.notes = [];
+  state.vault.blobs = [];
+  state.vault.folders = [];
+  state.vault.meta = null;
+  state.activeView = 'notes';
+  state.activeFilter = 'all';
+  state.activeCustom = null;
+  state.searchQuery = '';
+  clearTimeout(state.syncTimer);
+  try { clearTimeout(state.saveTimer); } catch (error) {}
+  const searchInput = document.getElementById('search-input');
+  if (searchInput) searchInput.value = '';
+  wipeLegacyLocalNotes();
+  try {
+    // Drop only legacy plaintext keys (CWE-312). Per-account encrypted caches
+    // (`notely-ui-vault:<user>`) stay so the next login boots fast offline —
+    // the server envelope remains the source of truth.
+    localStorage.removeItem('notely-collections');
+    localStorage.removeItem('notely-deleted-collections');
+    localStorage.removeItem(COLLAPSED_FOLDERS_KEY);
+    localStorage.removeItem(SECTION_DATA_KEY);
+  } catch (error) {}
+  state.collapsedFolders = new Set();
+  state.customSections = [];
+  state.deletedCustomSections = [];
+  state.activeCustom = null;
+  titleInput.value = '';
+  markdownInput.value = '';
+  breadcrumbTitle.textContent = 'No notes';
+  if (wordCount) wordCount.textContent = '0 words';
+  if (tagList) tagList.innerHTML = '';
+  const passwordInput = document.getElementById('login-password');
+  if (passwordInput) passwordInput.value = '';
+  document.getElementById('sidebar').classList.remove('open');
+  renderCustomSections();
+  clearEditor();
+  showLogin();
 }

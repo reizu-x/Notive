@@ -10,7 +10,6 @@ import { IMPORTANT_TAG, WELCOME_FOLDERS, WELCOME_SECTION_ID } from '../domain/co
 import { state } from '../domain/state.js';
 import { accountScopeKey } from './auth.js';
 import { setSaveLabel, syncAgoText } from './feedback.js';
-import { refreshEditorLock, uiSnapshot } from './misc.js';
 import { showToast } from './modal.js';
 import { customNoteFolder } from './sections.js';
 import { BIN_RETENTION_MS } from '../core/dates.js';
@@ -27,13 +26,21 @@ import { cleanVaultFolders, decryptAllVaultBlobs, validVaultBlob } from '../data
 import { NOTE_TEMPLATES } from '../domain/constants.js';
 import { exitCoverRepos, renderCover, renderPreview, renderRecipeHero, resetIdleTimer } from './editor.js';
 import { binRemainingText, noteGlyphFor } from './feedback.js';
-import { openDeleteConfirm, openPermanentDeleteConfirm, uniqueTitle, updateListHeading, updateMeta } from './misc.js';
-import { applyUiSnapshot, openTemplatePicker, startTreeRename } from './notes-core.js';
 import { addFolderToSection, clearSectionSelection, openFolderPicker, persistCollapsedFolders, persistDeletedCustomSections, pruneDeletedCustomSections, renderCustomSections, reviveSectionsForNote, sectionDisplayName, selectCustomSection, startSectionRename, syncCustomSections, updateFoldToggle } from './sections.js';
 import { seedFromTemplate, welcomeSeedNotes, welcomeSeedUi } from './shell.js';
 import { enableNoteDragDrop, renderStripItems, renderTabs, trackTab, updateBreadcrumbs } from './tabs.js';
 import { openTagEditor } from './tags.js';
 import { renderVaultList, saveVaultNote, updateVaultUI, writeUiVaultLocal } from './vault.js';
+import { relativeEditedLabel } from '../core/dates.js';
+import { listHeading } from '../core/elements.js';
+import { collabDeleteGroup, collabDeleteNote } from '../data/collab-crypto.js';
+import { deleteCustomFolder, deleteCustomSection, deleteSharedFolderNow, deleteVaultFolder } from './sections.js';
+import { deleteTagEverywhere, renderSettingsTags, renderSharedTags } from './tags.js';
+import { deleteVaultNote } from './vault.js';
+import { refreshEditorLock } from './auth.js';
+import { openTemplatePicker, uniqueTitle } from './editor.js';
+import { startTreeRename } from './sections.js';
+import { applyUiSnapshot, uiSnapshot } from './vault.js';
 
 // Export every plainWorkspace note (and unlocked Vault notes) as one JSON
 // backup file in the browser's download folder — the "desktop copy".
@@ -1286,4 +1293,129 @@ export async function adoptNotesEnvelope(envelope) {
   } catch (error) {}
   // Folder-required invariant: nothing loads (or stays) unfiled.
   try { enforceFilingInvariant(); } catch (error) {}
+}
+
+
+// Hide the confirm popup and clear the pending action.
+export function closeDeleteConfirm() {
+  const overlay = document.getElementById('delete-overlay');
+  if (overlay) overlay.hidden = true;
+  state.pendingDeleteId = null;
+  state.pendingDeleteMode = 'soft';
+  state.pendingDeleteSection = null;
+}
+
+// Popup: permanently erase one binned note (no recovery).
+export function openPermanentDeleteConfirm(id) {
+  const note = state.notes.find((item) => item.id === id);
+  if (!note) return;
+  state.pendingDeleteId = id;
+  state.pendingDeleteMode = 'permanent';
+  setDeleteDialog({
+    eyebrow: 'Permanently delete',
+    title: 'Delete forever?',
+    name: note.title || 'Untitled note',
+    message: '” will be permanently deleted and cannot be recovered. Are you sure?'
+  });
+  const overlay = document.getElementById('delete-overlay');
+  if (overlay) {
+    overlay.hidden = false;
+    const confirmBtn = document.getElementById('confirm-delete');
+    if (confirmBtn) confirmBtn.focus();
+  }
+}
+
+// Popup: delete an important-tagged note (moves to Bin, restorable for 3 days).
+export function openDeleteConfirm(id) {
+  const note = state.notes.find((item) => item.id === id);
+  if (!note) return;
+  state.pendingDeleteId = id;
+  state.pendingDeleteMode = 'soft';
+  setDeleteDialog({
+    eyebrow: 'Delete note',
+    title: 'Delete this note?',
+    name: note.title || 'Untitled note',
+    message: '” is marked as important. Move it to Bin anyway? You can restore it within 3 days.'
+  });
+  const overlay = document.getElementById('delete-overlay');
+  if (overlay) {
+    overlay.hidden = false;
+    const confirmBtn = document.getElementById('confirm-delete');
+    if (confirmBtn) confirmBtn.focus();
+  }
+}
+
+export function updateMeta(note) {
+  // Shared notes render their tags from the Yjs doc instead of note.tags.
+  if (state.collab.noteId) { renderSharedTags(); return; }
+  renderRecipeHero(note);
+  let body = typeof note.body === 'string' ? note.body : '';
+  if (note.template === 'recipe') {
+    body = `${sanitizeIngredients(note.ingredients).map((item) => item.t).join(' ')} ${sanitizeSteps(note.steps).join(' ')}`;
+  }
+  const words = body.trim() ? body.trim().split(/\s+/).length : 0;
+  wordCount.textContent = `${words} word${words === 1 ? '' : 's'}`;
+  const editedEl = document.getElementById('edited-label');
+  if (editedEl) editedEl.textContent = relativeEditedLabel(note);
+  const tags = Array.isArray(note.tags) ? note.tags.filter((tag) => typeof tag === 'string').slice(0, 20) : [];
+  // "+" affordance sits inline after the tags and opens the tag editor for THIS
+  // note (the note id is bound to the button). It only appears for the user's
+  // own regular notes: vault and shared/collab notes have no editable tag list,
+  // and showing it there used to tag whichever regular note was last active.
+  const taggable = !state.collab.noteId && state.activeView !== 'vault' && state.activeView !== 'shared'
+    && state.notes.some((item) => item.id === note.id);
+  const addTagButton = taggable
+    ? `<button type="button" class="tag-add" data-note-id="${escapeHtml(String(note.id))}" title="Add tag" aria-label="Add tag">+</button>`
+    : '';
+  tagList.innerHTML = tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('') + addTagButton;
+  document.getElementById('favorite-button').classList.toggle('is-favorite', Boolean(note.favorite));
+  document.getElementById('favorite-button').style.color = note.favorite ? '#b79b54' : '';
+}
+
+// Single place that computes the list heading from view + collection + chip filter (e.g. "Work · Starred").
+export function updateListHeading() {
+  const suffix = state.activeFilter === 'favorites' ? ' · Starred' : state.activeFilter === 'recent' ? ' · Recent' : '';
+  if (state.activeView === 'bin') listHeading.textContent = `Bin${suffix}`;
+  else if (state.activeView === 'vault') listHeading.textContent = `Vault${suffix}`;
+  else if (state.activeView === 'shared') listHeading.textContent = 'Shared';
+  else if (state.activeView === 'archive') listHeading.textContent = `Archive${suffix}`;
+  else if (state.activeView === 'favorites') listHeading.textContent = 'Starred notes';
+  else if (state.activeCustom) listHeading.textContent = `${state.activeCustom.folder ? folderLeaf(state.activeCustom.folder) : sectionDisplayName('custom', state.activeCustom.section)}${suffix}`;
+  else listHeading.textContent = state.activeFilter === 'favorites' ? 'Starred notes' : state.activeFilter === 'recent' ? 'Recent notes' : 'All Notes';
+  // Collapsed-strip name mirrors the heading (dev), rendered vertically.
+  try {
+    const viewIcon = document.getElementById('workspace-view-icon');
+    if (viewIcon) {
+      const name = listHeading.textContent || '';
+      viewIcon.textContent = name.trim() || '?';
+      viewIcon.title = listHeading.textContent;
+    }
+  } catch (error) {}
+}
+
+export function refreshCurrent() {
+  // Refresh only the workspace sidebar (the notes list / Shared inbox).
+  if (state.activeView === 'shared') { renderSharedView(); return; }
+  if (state.activeView === 'vault') { renderVaultList(); return; }
+  renderNoteList();
+}
+
+// Run the pending popup action: soft/permanent/empty/folder/folder-permanent.
+export function confirmPendingDelete() {
+  if (!state.pendingDeleteId) return;
+  const id = state.pendingDeleteId;
+  const mode = state.pendingDeleteMode;
+  const sectionId = state.pendingDeleteSection;
+  closeDeleteConfirm();
+  if (mode === 'empty') emptyBin();
+  else if (mode === 'permanent') permanentlyDeleteNoteById(id);
+  else if (mode === 'vault-note') deleteVaultNote(id);
+  else if (mode === 'vault-folder') deleteVaultFolder(id);
+  else if (mode === 'custom-section') deleteCustomSection(id);
+  else if (mode === 'custom-folder') deleteCustomFolder(sectionId, id);
+  else if (mode === 'tag') { if (state.pendingDeleteTag) { deleteTagEverywhere(state.pendingDeleteTag); renderSettingsTags(); } }
+  else if (mode === 'collab-note') { collabDeleteNote(id); }
+  else if (mode === 'collab-group') { collabDeleteGroup(id); }
+  else if (mode === 'shared-folder') { deleteSharedFolderNow(Number(id), sectionId); }
+  else deleteNoteById(id);
 }

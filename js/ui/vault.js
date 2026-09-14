@@ -21,12 +21,18 @@ import { NOTE_TEMPLATES } from '../domain/constants.js';
 import { passwordPolicyCheck } from './auth.js';
 import { exitCoverRepos, renderCover, renderPreview } from './editor.js';
 import { setSaveLabel } from './feedback.js';
-import { readLegacyUiKeys, refreshEditorLock, updateListHeading, updateMeta } from './misc.js';
-import { applyUiSnapshot, openTemplatePicker } from './notes-core.js';
 import { clearEditor, clearSearch, goAllNotes, persistNotes, renderNoteList, updateBinUI } from './notes.js';
 import { addVaultFolder, ensureMigratedCollectionsSection, openVaultFolderDeleteConfirm, openVaultFolderPicker, persistCollapsedFolders, renameVaultFolder, renderCustomSections } from './sections.js';
 import { welcomeSeedUi } from './shell.js';
 import { renderStripItems, renderTabs, trackTab, updateBreadcrumbs } from './tabs.js';
+import { SECTION_DATA_KEY } from '../domain/constants.js';
+import { cleanAvatarSrc } from './auth.js';
+import { cleanCustomSections, sectionIconName } from './sections.js';
+import { applyProfile, applyTheme } from './shell.js';
+import { cleanTagList } from './tags.js';
+import { refreshEditorLock } from './auth.js';
+import { openTemplatePicker } from './editor.js';
+import { updateListHeading, updateMeta } from './notes.js';
 
 
 
@@ -628,4 +634,134 @@ export function persistUiVault() {
       try { persistNotes(); } catch (error) {}
     })();
   }, 150);
+}
+
+
+export function readLegacyUiKeys() {
+  const out = { cols: null, colsName: null, collapsed: null, sections: null };
+  try {
+    const storedSections = JSON.parse(localStorage.getItem(SECTION_DATA_KEY) || 'null');
+    if (storedSections && typeof storedSections === 'object') {
+      const clean = cleanCustomSections(storedSections.sections);
+      if (clean && clean.length) {
+        out.sections = { sections: clean };
+      }
+      if (storedSections.names && typeof storedSections.names.collections === 'string' && storedSections.names.collections.trim()) {
+        out.colsName = storedSections.names.collections.trim().slice(0, 40);
+      }
+    }
+  } catch (error) {}
+  try {
+    const stored = JSON.parse(localStorage.getItem('notely-collections') || 'null');
+    if (Array.isArray(stored)) {
+      const cols = stored.filter((name) => typeof name === 'string' && name.trim()).slice(0, 200);
+      if (cols.length) out.cols = cols;
+    }
+  } catch (error) {}
+  try {
+    const storedCollapsed = JSON.parse(localStorage.getItem(COLLAPSED_FOLDERS_KEY) || 'null');
+    if (Array.isArray(storedCollapsed)) {
+      const collapsed = storedCollapsed.filter((name) => typeof name === 'string').slice(0, 500);
+      out.collapsed = collapsed;
+    }
+  } catch (error) {}
+  return out;
+}
+
+// Validate + normalize a UI snapshot from the server (never throws). Returns
+// the cleaned object or null when unusable.
+export function cleanUiSnapshot(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const out = {};
+  out.collapsed = Array.isArray(value.collapsed)
+    ? value.collapsed.filter((name) => typeof name === 'string').slice(0, 500) : null;
+  const cleanCustom = cleanCustomSections(value.customSections);
+  if (cleanCustom) out.customSections = cleanCustom;
+  // Legacy built-in Collections data (pre-unification): carried for migration
+  // in applyUiSnapshot into the default custom section.
+  if (Array.isArray(value.collections)) {
+    const legacyCols = value.collections.filter((name) => typeof name === 'string' && name.trim()).slice(0, 200);
+    if (legacyCols.length) out.legacyCollections = legacyCols;
+  }
+  if (value.sectionNames && typeof value.sectionNames.collections === 'string' && value.sectionNames.collections.trim()) {
+    out.legacyCollectionsName = value.sectionNames.collections.trim().slice(0, 40);
+  }
+  if (Array.isArray(value.deletedCustomSections)) {
+    const cleanSections = value.deletedCustomSections.filter((entry) => (
+      entry && typeof entry.id === 'string' && entry.id.trim()
+      && typeof entry.name === 'string' && entry.name.trim()
+      && typeof entry.deletedAt === 'number'
+    )).map((entry) => ({
+      id: entry.id.slice(0, 80), name: entry.name.trim().slice(0, 40),
+      folders: Array.isArray(entry.folders)
+        ? entry.folders.filter((name) => typeof name === 'string' && name.trim())
+          .map((name) => name.trim().slice(0, 180)).slice(0, 200)
+        : [],
+      deletedAt: entry.deletedAt,
+    })).slice(0, 20);
+    if (cleanSections.length) out.deletedCustomSections = cleanSections;
+  }
+  if (typeof value.theme === 'string' && THEMES.includes(value.theme)) {
+    out.theme = value.theme;
+  }
+  if (typeof value.avatar === 'string' && cleanAvatarSrc(value.avatar)) {
+    out.avatar = value.avatar.trim();
+  }
+  if (Array.isArray(value.tags)) {
+    const tags = cleanTagList(value.tags);
+    if (tags.length) out.tags = tags;
+  }
+  if (out.collapsed === null
+    && !out.customSections && !out.legacyCollections && !out.legacyCollectionsName && !out.deletedCustomSections && !out.theme && !out.avatar && !out.tags) return null;
+  return out;
+}
+
+// Plain-object snapshot of the whole sidebar state for the server envelope.
+export function uiSnapshot() {
+  let theme = 'light';
+  try {
+    const current = document.documentElement.dataset.theme
+      || localStorage.getItem('notely-theme') || 'light';
+    if (THEMES.includes(current)) theme = current;
+  } catch (error) {}
+  return {
+    collapsed: [...state.collapsedFolders],
+    customSections: state.customSections.map((section) => ({ id: section.id, name: section.name, folders: [...section.folders], icon: sectionIconName(section) })),
+    deletedCustomSections: (state.deletedCustomSections || []).map((entry) => ({
+      id: entry.id, name: entry.name,
+      folders: [...(entry.folders || [])], deletedAt: entry.deletedAt,
+    })),
+    theme,
+    avatar: state.profileAvatar || '',
+    tags: state.knownTags,
+  };
+}
+
+// Apply a server/UI-vault snapshot to memory. Returns true when anything was adopted.
+export function applyUiSnapshot(value) {
+  const clean = cleanUiSnapshot(value);
+  if (!clean) return false;
+  let adopted = false;
+  if (clean.collapsed !== null) { state.collapsedFolders = new Set(clean.collapsed); adopted = true; }
+  if (clean.customSections) { state.customSections = clean.customSections; adopted = true; }
+  if (clean.deletedCustomSections) { state.deletedCustomSections = clean.deletedCustomSections; adopted = true; }
+  // One-time migration of legacy built-in Collections into the default custom
+  // section (same folders/value, unified implementation).
+  if (clean.legacyCollections || clean.legacyCollectionsName) {
+    try { ensureMigratedCollectionsSection(clean.legacyCollections || [], clean.legacyCollectionsName || null); adopted = true; } catch (error) {}
+  }
+  if (clean.theme) {
+    try { applyTheme(clean.theme, false); } catch (error) {}
+    adopted = true;
+  }
+  if (typeof clean.avatar === 'string') {
+    state.profileAvatar = clean.avatar;
+    adopted = true;
+    try { applyProfile(); } catch (error) {}
+  }
+  if (Array.isArray(clean.tags)) {
+    state.knownTags = cleanTagList(clean.tags);
+    adopted = true;
+  }
+  return adopted;
 }
