@@ -3490,8 +3490,8 @@ function visibleNotes() {
 }
 
 // Sidebar search. Plain terms match file text (title + contents) and folder
-// names only — tags are excluded. A tag is matched solely via the explicit
-// `tag: <name>` keyword (`tag:name` also works). Terms are AND-ed.
+// names only — tags are excluded. `tag: <name>` matches tags and `body: <text>`
+// matches the note body. Terms are AND-ed.
 function noteMatchesSearch(note, query) {
   const q = String(query == null ? '' : query).trim().toLowerCase();
   if (!q) return true;
@@ -3503,6 +3503,7 @@ function noteMatchesSearch(note, query) {
   const tags = (Array.isArray(note.tags) ? note.tags : []).filter((t) => typeof t === 'string').map((t) => t.toLowerCase());
   const tokens = q.split(/\s+/).filter(Boolean);
   const tagTerms = [];
+  const bodyTerms = [];
   const textTerms = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
@@ -3513,14 +3514,66 @@ function noteMatchesSearch(note, query) {
       i += 1;
     } else if (token.startsWith('tag:') && token.length > 4) {
       tagTerms.push(token.slice(4));
+    } else if (token === 'body:') {
+      const text = tokens[i + 1];
+      if (!text) return false; // a bare "body:" matches nothing until text is typed
+      bodyTerms.push(text);
+      i += 1;
+    } else if (token.startsWith('body:') && token.length > 5) {
+      bodyTerms.push(token.slice(5));
     } else {
       textTerms.push(token);
     }
   }
   const tagMatch = tagTerms.every((term) => tags.some((tag) => tag.includes(term)));
+  const bodyHay = body.toLowerCase();
+  const bodyMatch = bodyTerms.every((term) => bodyHay.includes(term));
   const haystack = `${title} ${body} ${folders}`.toLowerCase();
   const textMatch = textTerms.every((term) => haystack.includes(term));
-  return tagMatch && textMatch;
+  return tagMatch && bodyMatch && textMatch;
+}
+
+// Search a shared-note inbox entry. Title/folder/tags are in the decrypted meta;
+// `body:` matches against a session cache of note bodies (populated whenever a
+// shared note is opened — bodies live in the CRDT and aren't loaded for the list).
+function sharedNoteMatchesSearch(entry, query) {
+  const q = String(query == null ? '' : query).trim().toLowerCase();
+  if (!q) return true;
+  const title = typeof entry.title === 'string' ? entry.title : '';
+  const folder = typeof entry.folder === 'string' ? entry.folder : '';
+  const tags = (Array.isArray(entry.tags) ? entry.tags : []).filter((t) => typeof t === 'string').map((t) => t.toLowerCase());
+  const body = sharedBodyCache.get(String(entry.id)) || '';
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const tagTerms = [];
+  const bodyTerms = [];
+  const textTerms = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token === 'tag:') {
+      const name = tokens[i + 1];
+      if (!name) return false;
+      tagTerms.push(name);
+      i += 1;
+    } else if (token.startsWith('tag:') && token.length > 4) {
+      tagTerms.push(token.slice(4));
+    } else if (token === 'body:') {
+      const text = tokens[i + 1];
+      if (!text) return false;
+      bodyTerms.push(text);
+      i += 1;
+    } else if (token.startsWith('body:') && token.length > 5) {
+      bodyTerms.push(token.slice(5));
+    } else {
+      textTerms.push(token);
+    }
+  }
+  if (tagTerms.length && !tags.length) return false;
+  const tagMatch = tagTerms.every((term) => tags.some((tag) => tag.includes(term)));
+  const bodyHay = body.toLowerCase();
+  const bodyMatch = bodyTerms.every((term) => bodyHay.includes(term));
+  const haystack = `${title} ${folder}`.toLowerCase();
+  const textMatch = textTerms.every((term) => haystack.includes(term));
+  return tagMatch && bodyMatch && textMatch;
 }
 
 // Notes in the current view + selected folder, ignoring the search box and
@@ -4185,6 +4238,7 @@ function setWriteMode(mode, { focus = false } = {}) {
   writeMode = mode;
   clearTimeout(idleTimer);
   renderPreview(activeEditorNote());
+  try { renderCollabPresence(); } catch (error) {}
   if (mode === 'edit') {
     resetIdleTimer();
     if (focus) {
@@ -4778,6 +4832,8 @@ function relativeEditedLabel(note) {
 }
 
 function updateMeta(note) {
+  // Shared notes render their tags from the Yjs doc instead of note.tags.
+  if (collab.noteId) { renderSharedTags(); return; }
   renderRecipeHero(note);
   let body = typeof note.body === 'string' ? note.body : '';
   if (note.template === 'recipe') {
@@ -4788,10 +4844,15 @@ function updateMeta(note) {
   const editedEl = document.getElementById('edited-label');
   if (editedEl) editedEl.textContent = relativeEditedLabel(note);
   const tags = Array.isArray(note.tags) ? note.tags.filter((tag) => typeof tag === 'string').slice(0, 20) : [];
-  // "+" affordance sits inline after the tags and opens the tag editor for the
-  // open note. Hidden for vault notes (the tag editor works on regular notes).
-  const addTagButton = activeView === 'vault' ? ''
-    : '<button type="button" class="tag-add" title="Add tag" aria-label="Add tag">+</button>';
+  // "+" affordance sits inline after the tags and opens the tag editor for THIS
+  // note (the note id is bound to the button). It only appears for the user's
+  // own regular notes: vault and shared/collab notes have no editable tag list,
+  // and showing it there used to tag whichever regular note was last active.
+  const taggable = !collab.noteId && activeView !== 'vault' && activeView !== 'shared'
+    && notes.some((item) => item.id === note.id);
+  const addTagButton = taggable
+    ? `<button type="button" class="tag-add" data-note-id="${escapeHtml(String(note.id))}" title="Add tag" aria-label="Add tag">+</button>`
+    : '';
   tagList.innerHTML = tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('') + addTagButton;
   document.getElementById('favorite-button').classList.toggle('is-favorite', Boolean(note.favorite));
   document.getElementById('favorite-button').style.color = note.favorite ? '#b79b54' : '';
@@ -5232,11 +5293,39 @@ function addKnownTag(raw) {
 
 // ---- Note tag editor (opened from the note right-click menu) --------------
 let tagEditorNoteId = null;
+let tagEditorShared = false;
+
+// Shared-note tags live in the Yjs doc (a Y.Array) so they sync live to every
+// member; the encrypted note meta mirrors them for the Shared list.
+function sharedTagList() {
+  if (!collab.noteId || !collab.tags) return [];
+  try { return collab.tags.toArray().filter((x) => typeof x === 'string').slice(0, 20); } catch (error) { return []; }
+}
+function renderSharedTags() {
+  if (!collab.noteId || !tagList) return;
+  const tags = sharedTagList();
+  const addTagButton = '<button type="button" class="tag-add" data-shared-tag-add="1" title="Add tag" aria-label="Add tag">+</button>';
+  tagList.innerHTML = tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('') + addTagButton;
+}
+function openSharedTagEditor() {
+  const overlay = document.getElementById('tag-editor-overlay');
+  if (!overlay || !collab.noteId) return;
+  tagEditorShared = true;
+  tagEditorNoteId = null;
+  const desc = document.getElementById('tag-editor-desc');
+  const title = collab.title ? collab.title.toString() : 'this shared note';
+  if (desc) desc.textContent = `Add or remove tags for “${title}”.`;
+  renderTagEditor();
+  overlay.hidden = false;
+  const input = document.getElementById('tag-editor-input');
+  if (input) { input.value = ''; try { input.focus(); } catch (error) {} }
+}
 
 function openTagEditor(id) {
   const note = notes.find((item) => item.id === id);
   const overlay = document.getElementById('tag-editor-overlay');
   if (!note || !overlay) return;
+  tagEditorShared = false;
   tagEditorNoteId = id;
   const desc = document.getElementById('tag-editor-desc');
   if (desc) desc.textContent = `Add or remove tags for “${note.title || 'Untitled note'}”.`;
@@ -5249,13 +5338,19 @@ function closeTagEditor() {
   const overlay = document.getElementById('tag-editor-overlay');
   if (overlay) overlay.hidden = true;
   tagEditorNoteId = null;
+  tagEditorShared = false;
 }
 function renderTagEditor() {
-  const note = notes.find((item) => item.id === tagEditorNoteId);
-  if (!note) return;
+  let tags;
+  if (tagEditorShared) {
+    tags = sharedTagList();
+  } else {
+    const note = notes.find((item) => item.id === tagEditorNoteId);
+    if (!note) return;
+    tags = Array.isArray(note.tags) ? note.tags : [];
+  }
   const current = document.getElementById('tag-editor-current');
   const suggest = document.getElementById('tag-editor-suggest');
-  const tags = Array.isArray(note.tags) ? note.tags : [];
   if (current) {
     current.innerHTML = tags.length
       ? tags.map((tag) => `<button type="button" class="tag-chip" data-tag-remove="${escapeHtml(tag)}" title="Remove ${escapeHtml(tag)}">${escapeHtml(tag)}<span aria-hidden="true">×</span></button>`).join('')
@@ -5263,13 +5358,35 @@ function renderTagEditor() {
   }
   if (suggest) {
     const have = new Set(tags.map((tag) => String(tag).toLowerCase()));
-    const others = allTagCounts().filter((entry) => !have.has(entry.label.toLowerCase()));
+    // Shared notes also suggest the section's owner-curated tags.
+    const pool = tagEditorShared
+      ? [...sharedGroupTagList(collab.groupId).map((label) => ({ label })), ...allTagCounts()]
+      : allTagCounts();
+    const seen = new Set();
+    const others = [];
+    for (const entry of pool) {
+      const key = String(entry.label).toLowerCase();
+      if (!key || have.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      others.push(entry);
+    }
     suggest.innerHTML = others.length
       ? `<span class="tag-editor-suggest-label">Existing tags</span>${others.map((entry) => `<button type="button" class="tag-chip is-add" data-tag-add="${escapeHtml(entry.label)}">${escapeHtml(entry.label)}</button>`).join('')}`
       : '';
   }
 }
 function tagEditorAdd(raw) {
+  const tag = normalizeTagName(raw);
+  if (!tag) return;
+  if (tagEditorShared) {
+    if (!collab.noteId || !collab.tags) return;
+    const list = sharedTagList();
+    if (list.some((t) => String(t).toLowerCase() === tag.toLowerCase())) return;
+    if (list.length >= 20) { showToast('Tag limit reached (20 per note)'); return; }
+    collab.tags.push([tag]);
+    renderTagEditor();
+    return;
+  }
   const note = notes.find((item) => item.id === tagEditorNoteId);
   if (!note) return;
   if (addNoteTag(note, raw)) {
@@ -5279,6 +5396,15 @@ function tagEditorAdd(raw) {
   }
 }
 function tagEditorRemove(name) {
+  if (tagEditorShared) {
+    if (!collab.noteId || !collab.tags) return;
+    const list = sharedTagList();
+    const at = list.findIndex((t) => String(t).toLowerCase() === String(name).toLowerCase());
+    if (at === -1) return;
+    collab.tags.delete(at, 1);
+    renderTagEditor();
+    return;
+  }
   const note = notes.find((item) => item.id === tagEditorNoteId);
   if (!note) return;
   if (removeNoteTag(note, name)) {
@@ -5311,54 +5437,149 @@ function renderSettingsTags() {
 // the private key wrapped under the account master key. To share, a random
 // content key encrypts the note and is wrapped for the recipient's public key
 // (ECIES). The server relays only ciphertext and can never read a note.
-const sharing = { privateKey: null, ready: false };
+const sharing = { privateKey: null, signingKey: null, ready: false };
 
 let sharingKeyPromise = null;
 function sharingEnsureKeys() {
   // Single-flight: concurrent callers must never generate two different
   // keypairs (the published public key could stop matching the in-memory key).
-  if (sharing.ready && sharing.privateKey) return Promise.resolve(true);
+  if (sharing.ready && sharing.privateKey && sharing.signingKey) return Promise.resolve(true);
   if (sharingKeyPromise) return sharingKeyPromise;
   sharingKeyPromise = sharingEnsureKeysOnce().finally(() => { sharingKeyPromise = null; });
   return sharingKeyPromise;
 }
+async function sharingUnwrapAccountKey(encPrivB64, kind) {
+  const wrapped = e2eeB64ToBytes(encPrivB64);
+  const priv = await window.crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: wrapped.slice(0, 12) }, e2ee.masterKey, wrapped.slice(12));
+  if (kind === 'ECDSA') {
+    return window.crypto.subtle.importKey('pkcs8', priv, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  }
+  return window.crypto.subtle.importKey('pkcs8', priv, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
+}
+async function sharingWrapAccountKey(pkcs8) {
+  const iv = e2eeRandomBytes(12);
+  const ct = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, e2ee.masterKey, pkcs8));
+  const out = new Uint8Array(iv.length + ct.length);
+  out.set(iv); out.set(ct, iv.length);
+  return e2eeBytesToB64(out);
+}
+async function sharingGenerateKeys() {
+  try {
+    const ecdh = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
+    const sig = await window.crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+    const pub = new Uint8Array(await window.crypto.subtle.exportKey('raw', ecdh.publicKey));
+    const ecdhPkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', ecdh.privateKey));
+    const sigPub = new Uint8Array(await window.crypto.subtle.exportKey('raw', sig.publicKey));
+    const sigPkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', sig.privateKey));
+    const pubRes = await apiFetch('/api/keys', { method: 'POST', body: JSON.stringify({
+      algo: 'ECDH-P256',
+      pubkey: e2eeBytesToB64(pub),
+      encPriv: await sharingWrapAccountKey(ecdhPkcs8),
+      sigPubkey: e2eeBytesToB64(sigPub),
+      sigEncPriv: await sharingWrapAccountKey(sigPkcs8),
+    }) });
+    if (!pubRes.ok) return false;
+    sharing.privateKey = ecdh.privateKey;
+    sharing.signingKey = sig.privateKey;
+    sharing.ready = true;
+    return true;
+  } catch (error) { return false; }
+}
+async function sharingPublishSigningKey(pubB64, encPrivB64) {
+  // Additive backfill: keep the existing ECDH key, add a signing key.
+  try {
+    const sig = await window.crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+    const sigPub = new Uint8Array(await window.crypto.subtle.exportKey('raw', sig.publicKey));
+    const sigPkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', sig.privateKey));
+    const res = await apiFetch('/api/keys', { method: 'POST', body: JSON.stringify({
+      algo: 'ECDH-P256', pubkey: pubB64, encPriv: encPrivB64,
+      sigPubkey: e2eeBytesToB64(sigPub),
+      sigEncPriv: await sharingWrapAccountKey(sigPkcs8),
+    }) });
+    if (!res.ok) return false;
+    sharing.signingKey = sig.privateKey;
+    sharing.ready = true;
+    return true;
+  } catch (error) { return false; }
+}
 async function sharingEnsureKeysOnce() {
-  if (sharing.ready && sharing.privateKey) return true;
+  if (sharing.ready && sharing.privateKey && sharing.signingKey) return true;
   if (!e2ee.masterKey) return false;
   try {
     const res = await apiFetch('/api/keys/me');
     if (res.ok) {
       const data = await res.json();
       if (data && data.exists && data.encPriv && data.pubkey) {
-        const wrapped = e2eeB64ToBytes(data.encPriv);
-        const priv = await window.crypto.subtle.decrypt(
-          { name: 'AES-GCM', iv: wrapped.slice(0, 12) }, e2ee.masterKey, wrapped.slice(12));
-        sharing.privateKey = await window.crypto.subtle.importKey(
-          'pkcs8', priv, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
-        sharing.ready = true;
-        return true;
+        sharing.privateKey = await sharingUnwrapAccountKey(data.encPriv, 'ECDH');
+        if (data.sigEncPriv && data.sigPubkey) {
+          sharing.signingKey = await sharingUnwrapAccountKey(data.sigEncPriv, 'ECDSA');
+          sharing.ready = true;
+          return true;
+        }
+        return await sharingPublishSigningKey(data.pubkey, data.encPriv);
       }
     }
   } catch (error) { /* fall through and (re)generate */ }
+  return sharingGenerateKeys();
+}
+
+// ---- Signed wraps: a member signs the key they hand a peer, so the recipient
+// can detect a server that substitutes a wrap it controls. ------------------------------------------------------------------
+let sharingPinsLoaded = false;
+const sharingPins = new Map(); // signer username -> signing-key fingerprint
+function sharingPinsLoad() {
+  if (sharingPinsLoaded) return;
+  sharingPinsLoaded = true;
   try {
-    const kp = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
-    const pub = new Uint8Array(await window.crypto.subtle.exportKey('raw', kp.publicKey));
-    const pkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', kp.privateKey));
-    const iv = e2eeRandomBytes(12);
-    const ct = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, e2ee.masterKey, pkcs8));
-    const wrapped = new Uint8Array(iv.length + ct.length);
-    wrapped.set(iv); wrapped.set(ct, iv.length);
-    const pubRes = await apiFetch('/api/keys', {
-      method: 'POST',
-      body: JSON.stringify({ algo: 'ECDH-P256', pubkey: e2eeBytesToB64(pub), encPriv: e2eeBytesToB64(wrapped) }),
-    });
-    if (!pubRes.ok) return false;
-    sharing.privateKey = kp.privateKey;
-    sharing.ready = true;
-    return true;
-  } catch (error) {
-    return false;
+    const obj = JSON.parse(localStorage.getItem('notely-keypins') || '{}');
+    Object.keys(obj).forEach((k) => sharingPins.set(k, String(obj[k])));
+  } catch (error) {}
+}
+function sharingPinsSave() {
+  try { localStorage.setItem('notely-keypins', JSON.stringify(Object.fromEntries(sharingPins))); } catch (error) {}
+}
+async function sharingFingerprint(pubRawBytes) {
+  const digest = new Uint8Array(await window.crypto.subtle.digest('SHA-256', pubRawBytes));
+  return [...digest.slice(0, 16)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+function wrapSigMessage(groupId, recipient, keyVersion, w) {
+  return `notely-wrap-v1|${groupId || ''}|${recipient}|${Number(keyVersion) || 1}|${w.wrappedKey}|${w.ephPub}|${w.wrapIv}`;
+}
+async function signWrap(groupId, recipient, keyVersion, w) {
+  if (!sharing.signingKey) return '';
+  const data = new TextEncoder().encode(wrapSigMessage(groupId, recipient, keyVersion, w));
+  const sig = new Uint8Array(await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, sharing.signingKey, data));
+  return e2eeBytesToB64(sig);
+}
+async function sharingSignerPublicKey(signer) {
+  const res = await apiFetch(`/api/keys/lookup?username=${encodeURIComponent(signer)}`);
+  if (!res.ok) throw new Error('Could not load the sender\'s signing key.');
+  const data = await res.json();
+  if (!data.sigPubkey) throw new Error(`${signer} has no signing key published.`);
+  const raw = e2eeB64ToBytes(data.sigPubkey);
+  const fp = await sharingFingerprint(raw);
+  sharingPinsLoad();
+  const pinned = sharingPins.get(signer);
+  if (pinned && pinned !== fp) {
+    throw new Error(`Signing key for ${signer} changed (${pinned} → ${fp}). Refusing to trust it.`);
   }
+  if (!pinned) { sharingPins.set(signer, fp); sharingPinsSave(); }
+  return window.crypto.subtle.importKey('raw', raw, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+}
+// Throws if a wrap we did not make fails verification (legacy unsigned wraps are
+// allowed through so existing sections keep working).
+async function verifyWrap(groupId, recipient, keyVersion, w) {
+  if (!w || !w.sig || !w.signer) return;
+  if (w.signer === recipient) return; // our own wrap
+  const pub = await sharingSignerPublicKey(w.signer);
+  const data = new TextEncoder().encode(wrapSigMessage(groupId, recipient, keyVersion, w));
+  const ok = await window.crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pub, e2eeB64ToBytes(w.sig), data);
+  if (!ok) throw new Error(`The section key from ${w.signer} failed verification.`);
+}
+async function unwrapMyKey(myKey, groupId, recipient, keyVersion) {
+  await verifyWrap(groupId, recipient, keyVersion, myKey);
+  return unwrapRawKey(myKey.wrappedKey, myKey.ephPub, myKey.wrapIv);
 }
 
 async function sharingRecipientPublicKey(username) {
@@ -5418,35 +5639,45 @@ async function collabDecrypt(keyRaw, packedB64) {
 // Note "meta" (title + folder) is encrypted under the group key so the server
 // still sees nothing. It powers the Shared inbox list without loading the doc.
 async function collabEncryptMeta(keyRaw, meta) {
-  return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({ t: meta.title || '', f: meta.folder || '', tp: meta.template || '' })));
+  return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({
+    t: meta.title || '', f: meta.folder || '', tp: meta.template || '',
+    tg: Array.isArray(meta.tags) ? meta.tags.filter((x) => typeof x === 'string').slice(0, 20) : [],
+  })));
 }
 async function collabDecryptMeta(keyRaw, encB64) {
-  if (!encB64) return { title: '', folder: '', template: '' };
+  if (!encB64) return { title: '', folder: '', template: '', tags: [] };
   try {
     const obj = JSON.parse(new TextDecoder().decode(await collabDecrypt(keyRaw, encB64)));
     return {
       title: typeof obj.t === 'string' ? obj.t : '',
       folder: typeof obj.f === 'string' ? obj.f : '',
-      template: typeof obj.tp === 'string' ? obj.tp : ''
+      template: typeof obj.tp === 'string' ? obj.tp : '',
+      tags: Array.isArray(obj.tg) ? obj.tg.filter((x) => typeof x === 'string').slice(0, 20) : []
     };
-  } catch (error) { return { title: '', folder: '', template: '' }; }
+  } catch (error) { return { title: '', folder: '', template: '', tags: [] }; }
 }
-async function collabEncryptGroupMeta(keyRaw, folders) {
-  return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({ folders: Array.isArray(folders) ? folders : [] })));
+async function collabEncryptGroupMeta(keyRaw, folders, tags) {
+  return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({
+    folders: Array.isArray(folders) ? folders : [],
+    tags: Array.isArray(tags) ? tags.filter((x) => typeof x === 'string').slice(0, 100) : [],
+  })));
 }
 async function collabDecryptGroupMeta(keyRaw, encB64) {
-  if (!encB64) return { folders: [] };
+  if (!encB64) return { folders: [], tags: [] };
   try {
     const obj = JSON.parse(new TextDecoder().decode(await collabDecrypt(keyRaw, encB64)));
-    return { folders: Array.isArray(obj.folders) ? obj.folders.filter((f) => typeof f === 'string') : [] };
-  } catch (error) { return { folders: [] }; }
+    return {
+      folders: Array.isArray(obj.folders) ? obj.folders.filter((f) => typeof f === 'string') : [],
+      tags: Array.isArray(obj.tags) ? obj.tags.filter((t) => typeof t === 'string') : [],
+    };
+  } catch (error) { return { folders: [], tags: [] }; }
 }
 // Unwrap a group's key from my membership (used by the inbox + note creation).
 async function collabGroupKey(groupId) {
   const res = await apiFetch(`/api/collab/groups/${groupId}`);
   if (!res.ok) throw new Error('No access');
   const g = await res.json();
-  const key = await unwrapRawKey(g.myKey.wrappedKey, g.myKey.ephPub, g.myKey.wrapIv);
+  const key = await unwrapMyKey(g.myKey, groupId, cachedProfile && cachedProfile.username, g.myKeyVersion);
   return { key, group: g };
 }
 // Push the current title/folder (debounced) so the inbox list stays current.
@@ -5460,6 +5691,7 @@ function scheduleCollabMeta() {
         title: collab.title ? collab.title.toString().slice(0, 200) : '',
         folder: collab.folder || '',
         template: collab.template || '',
+        tags: collab.tags ? collab.tags.toArray().filter((x) => typeof x === 'string').slice(0, 20) : [],
       });
       await apiFetch(`/api/collab/notes/${collab.noteId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
     } catch (error) {}
@@ -5467,8 +5699,19 @@ function scheduleCollabMeta() {
 }
 
 const collab = { noteId: null, groupId: null, doc: null, title: null, body: null, desc: null, assets: null,
-  cover: '', description: '', es: null, key: null,
-  members: [], owner: null, groupName: '', folder: '', template: '', updates: 0, reconnect: null, metaTimer: null };
+  cover: '', description: '', es: null, key: null, keyVersion: 1, keys: new Map(),
+  members: [], owner: null, groupName: '', folder: '', template: '', updates: 0, reconnect: null, metaTimer: null,
+  outbox: [], flushing: false, flushTimer: null,
+  presence: new Map(), presenceTimer: null, clientId: null, color: null, typing: false, pending: [], tags: null };
+
+// Raw group key for a given epoch (falls back to the current key). After a
+// rotation the section's content is always fully under the current epoch, but a
+// frame posted just before the switch may still carry the previous version.
+function collabKeyFor(version) {
+  const v = Number(version);
+  if (Number.isFinite(v) && collab.keys.has(v)) return collab.keys.get(v);
+  return collab.key;
+}
 
 function setCollabStatus(text, offline) {
   const el = document.getElementById('collab-status');
@@ -5514,21 +5757,240 @@ function collabAssetsChanged() {
   collab.description = collab.desc ? collab.desc.toString() : '';
   renderRecipeHero(null);
 }
-function renderCollabMembers() {
-  const box = document.getElementById('collab-members');
-  if (!box) return;
+// The Members popup: accepted members, plus invites for the owner.
+function renderCollabMembersModal() {
+  const btn = document.getElementById('collab-pending');
   const me = cachedProfile && cachedProfile.username;
-  box.innerHTML = (collab.members || []).map((name) => {
-    const canRemove = collab.owner === me || name === me;
-    return `<span class="collab-member">${escapeHtml(name)}${name === me ? ' (you)' : ''}${canRemove && name !== me ? `<button type="button" class="collab-member-remove" data-collab-remove="${escapeHtml(name)}" title="Remove ${escapeHtml(name)}" aria-label="Remove ${escapeHtml(name)}">×</button>` : ''}</span>`;
+  const isOwner = collab.owner === me;
+  // Owner always first; stable sort keeps the rest in join order.
+  const members = [...(collab.members || [])].sort((a, b) => {
+    if (a === collab.owner) return -1;
+    if (b === collab.owner) return 1;
+    return 0;
+  });
+  const pending = collab.pending || [];
+  if (btn) {
+    btn.classList.toggle('has-pending', isOwner && pending.length > 0);
+    const extra = (isOwner && pending.length) ? ` · ${pending.length} invited` : '';
+    btn.title = `Members (${members.length}${extra})`;
+  }
+  const list = document.getElementById('collab-pending-list');
+  if (!list) return;
+  const memberRows = members.map((name) => {
+    const tags = `${name === me ? ' (you)' : ''}${name === collab.owner ? ' · owner' : ''}`;
+    const canRemove = isOwner && name !== me;
+    return `<div class="collab-pending-row"><span class="collab-pending-name">${escapeHtml(name)}${tags}</span>${canRemove ? `<button type="button" class="btn btn-secondary" data-remove-member="${escapeHtml(name)}">Remove</button>` : ''}</div>`;
   }).join('');
+  let html = `<p class="collab-members-section">Members</p>${memberRows || '<p class="collab-pending-empty">No members yet.</p>'}`;
+  // Only the owner sees who has not accepted yet (and can cancel invites).
+  if (isOwner) {
+    const pendingRows = pending.map((name) => `<div class="collab-pending-row"><span class="collab-pending-name">${escapeHtml(name)}</span><button type="button" class="btn btn-secondary" data-cancel-invite="${escapeHtml(name)}">Cancel</button></div>`).join('');
+    html += `<p class="collab-members-section">Invited</p>${pendingRows || '<p class="collab-pending-empty">No pending invitations.</p>'}`;
+  }
+  list.innerHTML = html;
 }
+function openCollabPending() {
+  if (!collab.noteId) return;
+  renderCollabMembersModal();
+  const overlay = document.getElementById('collab-pending-overlay');
+  if (overlay) overlay.hidden = false;
+}
+function closeCollabPending() {
+  const overlay = document.getElementById('collab-pending-overlay');
+  if (overlay) overlay.hidden = true;
+}
+async function cancelCollabInvite(name) {
+  if (!collab.groupId || !name) return;
+  const res = await apiFetch(`/api/collab/groups/${collab.groupId}/members/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  if (!res.ok) { showToast('Could not cancel the invitation'); return; }
+  collab.pending = (collab.pending || []).filter((n) => n !== name);
+  renderCollabMembersModal();
+  showToast(`Invitation to ${name} cancelled`);
+}
+
+// ---- Presence: who is here, where their cursor is (ephemeral, encrypted) ----
+let collabCaretMirror = null;
+let collabTypingTimer = null;
+let collabPresenceLocalTimer = null;
+const COLLAB_PRESENCE_TTL_MS = 15000;
+
+function collabPresenceColor(username) {
+  const name = String(username || '');
+  let h = 0;
+  for (let i = 0; i < name.length; i += 1) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return `hsl(${h}, 65%, 45%)`;
+}
+// Textarea caret coordinates via an offscreen mirror with identical metrics.
+function collabCaretCoords(index) {
+  const ta = markdownInput;
+  if (!ta) return null;
+  if (!collabCaretMirror) {
+    collabCaretMirror = document.createElement('div');
+    collabCaretMirror.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(collabCaretMirror);
+  }
+  const mirror = collabCaretMirror;
+  const cs = window.getComputedStyle(ta);
+  const st = mirror.style;
+  st.position = 'absolute';
+  st.visibility = 'hidden';
+  st.top = '-9999px';
+  st.left = '-9999px';
+  st.whiteSpace = 'pre-wrap';
+  st.overflowWrap = 'break-word';
+  st.width = `${ta.clientWidth}px`;
+  st.boxSizing = cs.boxSizing;
+  st.fontFamily = cs.fontFamily;
+  st.fontSize = cs.fontSize;
+  st.fontWeight = cs.fontWeight;
+  st.lineHeight = cs.lineHeight;
+  st.letterSpacing = cs.letterSpacing;
+  st.padding = cs.padding;
+  st.border = cs.border;
+  st.tabSize = cs.tabSize;
+  const value = ta.value || '';
+  const clamped = Math.max(0, Math.min(Number(index) || 0, value.length));
+  mirror.textContent = value.slice(0, clamped);
+  const marker = document.createElement('span');
+  marker.textContent = '\u200b';
+  mirror.appendChild(marker);
+  return { top: marker.offsetTop, left: marker.offsetLeft,
+           height: marker.offsetHeight || parseFloat(cs.lineHeight) || 16 };
+}
+function renderCollabPresence() {
+  const box = document.getElementById('collab-presence');
+  const layer = document.getElementById('collab-caret-layer');
+  if (!collab.noteId) {
+    if (box) box.innerHTML = '';
+    if (layer) layer.innerHTML = '';
+    return;
+  }
+  const now = Date.now();
+  const entries = [];
+  collab.presence.forEach((p, id) => {
+    if (now - p.ts < COLLAB_PRESENCE_TTL_MS) entries.push({ id, ...p });
+    else collab.presence.delete(id);
+  });
+  entries.sort((a, b) => String(a.user).localeCompare(String(b.user)));
+  if (box) {
+    // Always show a "you" chip so the row is visible even when alone; remote
+    // peers are appended after it.
+    const meName = (cachedProfile && cachedProfile.username) || 'You';
+    const self = `<span class="collab-presence-chip${collab.typing ? ' is-typing' : ''}"><span class="collab-presence-dot" style="background:${collab.color || '#888'}"></span>${escapeHtml(meName)} (you)${collab.typing ? ' · typing…' : ''}</span>`;
+    box.innerHTML = self + entries.map((p) => `<span class="collab-presence-chip${p.typing ? ' is-typing' : ''}"><span class="collab-presence-dot" style="background:${p.color}"></span>${escapeHtml(p.user || 'Someone')}${p.typing ? ' · typing…' : ''}</span>`).join('');
+  }
+  if (layer) {
+    if (writeMode !== 'edit') { layer.innerHTML = ''; }
+    else {
+      layer.innerHTML = entries.map((p) => {
+        const c = collabCaretCoords(p.s);
+        if (!c) return '';
+        return `<div class="collab-caret" style="top:${c.top}px;left:${c.left}px;height:${c.height}px;background:${p.color}"><span class="collab-caret-label" style="background:${p.color}">${escapeHtml(p.user || '')}</span></div>`;
+      }).join('');
+    }
+  }
+}
+function collabPresenceLocal(typing) {
+  if (!collab.noteId) return;
+  if (typing) {
+    collab.typing = true;
+    clearTimeout(collabTypingTimer);
+    collabTypingTimer = setTimeout(() => { collab.typing = false; }, 1500);
+  }
+  if (collabPresenceLocalTimer) return;
+  collabPresenceLocalTimer = setTimeout(() => { collabPresenceLocalTimer = null; collabSendPresence(false); }, 120);
+}
+async function collabSendPresence(leave) {
+  if (!collab.noteId || !collab.key || !collab.clientId) return;
+  const noteId = collab.noteId;
+  const key = collab.key;
+  const keyVersion = collab.keyVersion;
+  const ta = markdownInput;
+  const body = JSON.stringify({
+    id: collab.clientId,
+    u: (cachedProfile && cachedProfile.username) || '',
+    c: collab.color,
+    s: ta ? ta.selectionStart : 0,
+    e: ta ? ta.selectionEnd : 0,
+    typing: !leave && collab.typing === true,
+    leave: Boolean(leave),
+  });
+  try {
+    const payload = await collabEncrypt(key, new TextEncoder().encode(body));
+    if (!leave && collab.noteId !== noteId) return; // note changed while encrypting
+    await apiFetch(`/api/collab/notes/${noteId}/presence`, { method: 'POST', body: JSON.stringify({ payload, keyVersion }) });
+  } catch (error) {}
+}
+async function collabPresenceReceive(msg) {
+  if (!collab.noteId) return;
+  const key = collabKeyFor(msg.version);
+  if (!key) return;
+  let data;
+  try { data = JSON.parse(new TextDecoder().decode(await collabDecrypt(key, msg.payload))); } catch (error) { return; }
+  const id = String(data.id || '');
+  if (!id || id === collab.clientId) return;
+  if (data.leave) { collab.presence.delete(id); renderCollabPresence(); return; }
+  collab.presence.set(id, {
+    user: String(data.u || ''),
+    color: typeof data.c === 'string' ? data.c : '#888',
+    s: Number(data.s) || 0,
+    e: Number(data.e) || 0,
+    typing: Boolean(data.typing),
+    ts: Date.now(),
+  });
+  renderCollabPresence();
+}
+function collabPresenceHeartbeat() {
+  if (!collab.noteId) return;
+  collabSendPresence(false);
+  renderCollabPresence();
+  collab.presenceTimer = setTimeout(collabPresenceHeartbeat, 5000);
+}
+// Local edits go through an outbox so nothing is lost while offline or when a
+// POST fails: queued Yjs updates are retried until the server acks them. A 409
+// means the section key moved under us, so the full local state is compacted
+// instead (which also clears the queue).
 async function collabBroadcast(update) {
   if (!collab.key || !collab.noteId) return;
+  collab.outbox.push(update);
+  if (collab.outbox.length >= 200) { collab.outbox.length = 0; collabCompact(); return; }
+  flushCollabOutbox();
+}
+function scheduleCollabFlush() {
+  if (collab.flushTimer || !collab.noteId) return;
+  collab.flushTimer = setTimeout(() => { collab.flushTimer = null; flushCollabOutbox(); }, 5000);
+}
+async function flushCollabOutbox() {
+  if (collab.flushing || !collab.outbox.length || !collab.key || !collab.noteId) return;
+  collab.flushing = true;
   try {
-    const payload = await collabEncrypt(collab.key, update);
-    await apiFetch(`/api/collab/notes/${collab.noteId}/updates`, { method: 'POST', body: JSON.stringify({ payload }) });
-  } catch (error) {}
+    while (collab.outbox.length) {
+      const update = collab.outbox[0];
+      let res;
+      try {
+        const payload = await collabEncrypt(collab.key, update);
+        res = await apiFetch(`/api/collab/notes/${collab.noteId}/updates`, {
+          method: 'POST', body: JSON.stringify({ payload, keyVersion: collab.keyVersion }) });
+      } catch (error) {
+        setCollabStatus(`Offline — ${collab.outbox.length} unsent`, true);
+        scheduleCollabFlush();
+        return;
+      }
+      if (res.ok) { collab.outbox.shift(); continue; }
+      if (res.status === 409) {
+        // Epoch changed under us: drop the stale queue and push the full state.
+        collab.outbox.length = 0;
+        await collabCompact();
+        return;
+      }
+      setCollabStatus(`Offline — ${collab.outbox.length} unsent`, true);
+      scheduleCollabFlush();
+      return;
+    }
+    setCollabStatus('Live · connected', false);
+  } finally {
+    collab.flushing = false;
+  }
 }
 async function collabCompact() {
   if (!collab.doc || !collab.key || !collab.noteId) return;
@@ -5536,7 +5998,8 @@ async function collabCompact() {
     const Y = await loadYjs();
     const state = Y.encodeStateAsUpdate(collab.doc);
     const payload = await collabEncrypt(collab.key, state);
-    await apiFetch(`/api/collab/notes/${collab.noteId}/compact`, { method: 'POST', body: JSON.stringify({ state: payload }) });
+    const res = await apiFetch(`/api/collab/notes/${collab.noteId}/compact`, { method: 'POST', body: JSON.stringify({ state: payload, keyVersion: collab.keyVersion }) });
+    if (res && res.ok) collab.outbox.length = 0; // full state covers every queued update
   } catch (error) {}
 }
 function collabConnect(noteId, keyRaw, Y, doc) {
@@ -5545,15 +6008,40 @@ function collabConnect(noteId, keyRaw, Y, doc) {
   try { es = new EventSource(`/api/collab/notes/${noteId}/stream`); }
   catch (error) { setCollabStatus('Could not connect', true); return; }
   collab.es = es;
-  es.onopen = () => setCollabStatus('Live · connected', false);
+  es.onopen = () => { setCollabStatus('Live · connected', false); flushCollabOutbox(); };
   es.onmessage = async (event) => {
     let msg; try { msg = JSON.parse(event.data); } catch (error) { return; }
     if (msg.type === 'closed') { setCollabStatus('This note was closed', true); return; }
+    if (msg.type === 'rekey') {
+      // Owner rotated the section key: adopt the new epoch so our edits are
+      // encrypted under the key the removed member does not have.
+      await collabAdoptRekey(msg.version);
+      return;
+    }
+    if (msg.type === 'presence') { collabPresenceReceive(msg); return; }
     if (msg.type !== 'state' && msg.type !== 'update') return;
-    try { Y.applyUpdate(doc, await collabDecrypt(keyRaw, msg.payload), 'remote'); } catch (error) {}
+    const key = collabKeyFor(msg.version);
+    if (!key) return;
+    try { Y.applyUpdate(doc, await collabDecrypt(key, msg.payload), 'remote'); } catch (error) {}
   };
   // EventSource auto-reconnects; the stream replays state + backlog on reconnect.
   es.onerror = () => { if (collab.noteId === noteId) setCollabStatus('Offline — retrying…', true); };
+}
+
+// Fetch and unlock the new epoch key after the owner rotates, and switch to it.
+async function collabAdoptRekey(version) {
+  if (!collab.groupId) return;
+  try {
+    const res = await apiFetch(`/api/collab/groups/${collab.groupId}`);
+    if (!res.ok) return;
+    const g = await res.json();
+    const key = await unwrapMyKey(g.myKey, collab.groupId, cachedProfile && cachedProfile.username, g.myKeyVersion);
+    const v = Number(g.keyVersion || g.myKeyVersion || version || (collab.keyVersion + 1));
+    collab.keys.set(v, key);
+    collab.keyVersion = v;
+    collab.key = key;
+    setCollabStatus(`Rekeyed · v${v}`, false);
+  } catch (error) {}
 }
 async function openCollabNote(noteId) {
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
@@ -5563,21 +6051,32 @@ async function openCollabNote(noteId) {
   if (!res || !res.ok) { showToast('Cannot open that shared note'); return; }
   const meta = await res.json();
   let keyRaw;
-  try { keyRaw = await unwrapRawKey(meta.myKey.wrappedKey, meta.myKey.ephPub, meta.myKey.wrapIv); }
-  catch (error) { showToast('You no longer have access to this note'); return; }
+  try { keyRaw = await unwrapMyKey(meta.myKey, meta.groupId, cachedProfile && cachedProfile.username, meta.myKeyVersion); }
+  catch (error) { showToast(error && error.message ? error.message : 'You no longer have access to this note'); return; }
   // Group metadata gives the section name + members.
   let group = { name: '', members: [] };
   try { const g = await apiFetch(`/api/collab/groups/${meta.groupId}`); if (g.ok) group = await g.json(); } catch (error) {}
+  // Section-level tags/folders (owner-curated) so the tag editor can suggest them.
+  if (group.encMeta) {
+    try {
+      const gm = await collabDecryptGroupMeta(keyRaw, group.encMeta);
+      sharedGroupTags.set(meta.groupId, gm.tags || []);
+      if (!sharedGroupFolders.has(meta.groupId)) sharedGroupFolders.set(meta.groupId, gm.folders || []);
+      sharedGroupOwners.set(meta.groupId, meta.owner);
+    } catch (error) {}
+  }
   const Y = await loadYjs();
   closeCollabNote();
   const doc = new Y.Doc();
-  let noteMeta = { title: '', folder: '', template: '' };
+  let noteMeta = { title: '', folder: '', template: '', tags: [] };
   try { noteMeta = await collabDecryptMeta(keyRaw, meta.encMeta || ''); } catch (error) {}
   Object.assign(collab, {
     noteId, groupId: meta.groupId, doc,
     title: doc.getText('title'), body: doc.getText('body'), desc: doc.getText('desc'),
-    assets: doc.getMap('assets'), recipe: doc.getMap('recipe'), cover: '', description: '',
-    es: null, key: keyRaw, members: group.members || [], owner: meta.owner, groupName: group.name || '',
+    assets: doc.getMap('assets'), recipe: doc.getMap('recipe'), tags: doc.getArray('tags'), cover: '', description: '',
+    es: null, key: keyRaw, keyVersion: Number(meta.keyVersion) || 1,
+    keys: new Map([[Number(meta.keyVersion) || 1, keyRaw]]),
+    members: group.members || [], pending: group.pending || [], owner: meta.owner, groupName: group.name || '',
     folder: noteMeta.folder || '', template: noteMeta.template || '', updates: 0,
   });
   doc.on('update', (update, origin) => {
@@ -5591,8 +6090,12 @@ async function openCollabNote(noteId) {
   collab.desc.observe(collabSyncDom);
   collab.assets.observe(collabAssetsChanged);
   collab.recipe.observe((event, transaction) => { if (transaction && transaction.origin === 'remote') renderRecipeBody(null); });
+  collab.tags.observe(() => { renderSharedTags(); scheduleCollabMeta(); });
+  collab.body.observe(() => { if (collab.noteId != null) sharedBodyCache.set(String(collab.noteId), collab.body.toString()); });
+  sharedBodyCache.set(String(noteId), collab.body.toString());
+  renderSharedTags();
   const delBtn = document.getElementById('collab-delete');
-  if (delBtn) delBtn.hidden = false;
+  if (delBtn) delBtn.hidden = !(collab.owner === (cachedProfile && cachedProfile.username));
   // Bind the standard editor to the shared doc (title + Markdown body).
   writeMode = 'edit';
   if (titleInput) titleInput.value = collab.title.toString();
@@ -5608,7 +6111,18 @@ async function openCollabNote(noteId) {
   try { collabAssetsChanged(); } catch (error) {}
   try { renderPreview(null); } catch (error) {}
   try { markdownInput.focus({ preventScroll: true }); } catch (error) {}
-  renderCollabMembers();
+  renderCollabMembersModal();
+  // Presence: a stable per-open client id + colour, then a heartbeat loop that
+  // broadcasts our cursor and prunes stale peers.
+  collab.clientId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : `c${Date.now()}${Math.random()}`;
+  collab.color = collabPresenceColor(cachedProfile && cachedProfile.username);
+  collab.typing = false;
+  collab.presence.clear();
+  if (collab.presenceTimer) { clearTimeout(collab.presenceTimer); collab.presenceTimer = null; }
+  collabPresenceHeartbeat();
+  // Only the owner may invite members.
+  const inviteBtn = document.getElementById('collab-invite');
+  if (inviteBtn) inviteBtn.hidden = !(collab.owner === (cachedProfile && cachedProfile.username));
   setCollabStatus('Connecting…', false);
   const collabTop = document.getElementById('collab-top');
   if (collabTop) collabTop.hidden = false;
@@ -5620,6 +6134,8 @@ async function openCollabNote(noteId) {
 }
 function closeCollabNote() {
   if (collab.reconnect) { clearTimeout(collab.reconnect); collab.reconnect = null; }
+  // Tell peers we left (best-effort; reads current key/note before clearing).
+  try { collabSendPresence(true); } catch (error) {}
   const statusEl = document.getElementById('collab-status');
   const statusSep = document.getElementById('collab-status-sep');
   if (statusEl) statusEl.hidden = true;
@@ -5632,12 +6148,19 @@ function closeCollabNote() {
   if (collab.doc) { try { collab.doc.destroy(); } catch (error) {} }
   collab.noteId = null; collab.groupId = null; collab.doc = null; collab.title = null; collab.body = null;
   collab.desc = null; collab.assets = null; collab.recipe = null; collab.cover = ''; collab.description = '';
-  collab.es = null; collab.key = null; collab.members = []; collab.owner = null; collab.groupName = ''; collab.template = '';
+  collab.es = null; collab.key = null; collab.keyVersion = 1; collab.keys = new Map();
+  collab.members = []; collab.owner = null; collab.groupName = ''; collab.template = '';
+  if (collab.flushTimer) { clearTimeout(collab.flushTimer); collab.flushTimer = null; }
+  if (collab.presenceTimer) { clearTimeout(collab.presenceTimer); collab.presenceTimer = null; }
+  collab.outbox = []; collab.flushing = false;
+  collab.presence.clear(); collab.clientId = null; collab.color = null;
+  renderCollabPresence();
   try { renderRecipeHero(null); } catch (error) {}
 }
-async function collabAddGroupMember(groupId, keyRaw, name) {
+async function collabAddGroupMember(groupId, keyRaw, name, keyVersion) {
   const pub = await sharingRecipientPublicKey(name);
   const wrap = await wrapRawKeyFor(pub, keyRaw);
+  wrap.sig = await signWrap(groupId, name, keyVersion, wrap);
   const res = await apiFetch(`/api/collab/groups/${groupId}/members`, { method: 'POST', body: JSON.stringify({ username: name, ...wrap }) });
   if (!res.ok) {
     let message = 'Could not add member';
@@ -5654,13 +6177,16 @@ async function collabCreateSection(members) {
   try { selfPub = await sharingRecipientPublicKey(cachedProfile.username); }
   catch (error) { showToast('Could not load your public key'); return null; }
   const wrap = await wrapRawKeyFor(selfPub, keyRaw);
+  // Self-wrap: signed over an empty group id (the group does not exist yet);
+  // verification is skipped for one's own wrap.
+  wrap.sig = await signWrap('', cachedProfile.username, 1, wrap);
   const name = names[0] || 'Connection';
   const res = await apiFetch('/api/collab/groups', { method: 'POST', body: JSON.stringify({ name, ...wrap }) });
   if (!res.ok) { showToast('Could not start the connection'); return null; }
   const data = await res.json();
   const failed = [];
   for (const who of names) {
-    try { await collabAddGroupMember(data.id, keyRaw, who); }
+    try { await collabAddGroupMember(data.id, keyRaw, who, 1); }
     catch (error) { failed.push(`${who}: ${error && error.message ? error.message : 'failed'}`); }
   }
   if (activeView === 'shared') renderSharedView();
@@ -5733,7 +6259,7 @@ async function addSubfolder(groupId, parentFolder) {
   const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
   if (existing.some((f) => f.toLowerCase() === folder.toLowerCase())) { showToast('That subfolder already exists'); return; }
   try {
-    const encMeta = await collabEncryptGroupMeta(key, [...existing, folder]);
+    const encMeta = await collabEncryptGroupMeta(key, [...existing, folder], sharedGroupTagList(groupId));
     const res = await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
     if (!res.ok) { showToast('Could not add the subfolder'); return; }
     showToast(`Subfolder \u201c${name}\u201d added`);
@@ -5742,31 +6268,212 @@ async function addSubfolder(groupId, parentFolder) {
 }
 async function collabInvite() {
   if (!collab.groupId || !collab.key) return;
+  const me = cachedProfile && cachedProfile.username;
+  if (collab.owner !== me) { showToast('Only the owner can add members'); return; }
   const value = await askInput({ eyebrow: 'Invite', title: 'Add a member', desc: 'They need a Notely account and must have logged in once.', label: 'Username', password: false, placeholder: 'their-username', okText: 'Invite' });
   if (value == null) return;
   const target = String(value).trim();
   if (!/^[A-Za-z0-9_-]{3,32}$/.test(target)) { showToast('Invalid username'); return; }
   try {
-    await collabAddGroupMember(collab.groupId, collab.key, target);
-    if (!collab.members.includes(target)) collab.members.push(target);
-    renderCollabMembers();
-    showToast(`Added ${target}`);
+    await collabAddGroupMember(collab.groupId, collab.key, target, collab.keyVersion);
+    collab.pending = collab.pending || [];
+    if (!collab.pending.includes(target)) collab.pending.push(target);
+    renderCollabMembersModal();
+    showToast(`Invited ${target}`);
   } catch (error) { showToast(error && error.message ? error.message : 'Could not add member'); }
 }
 async function collabRemoveMember(name) {
   if (!collab.groupId) return;
+  const me = cachedProfile && cachedProfile.username;
+  if (collab.owner === me && collab.key) {
+    // Owner removing a peer: the server rotates the section key in the same
+    // request, so a removal can never leave the old key live for the person just
+    // cut off. Keys never leave the members' devices.
+    setCollabStatus('Rotating section key…', false);
+    const ok = await collabRotateSectionKey(name);
+    renderCollabMembersModal();
+    showToast(ok ? `Removed ${name} — section key rotated` : `Could not remove ${name}`);
+    return;
+  }
   const res = await apiFetch(`/api/collab/groups/${collab.groupId}/members/${encodeURIComponent(name)}`, { method: 'DELETE' });
-  if (res.ok) { collab.members = collab.members.filter((m) => m !== name); renderCollabMembers(); showToast(`Removed ${name}`); }
-  else showToast('Could not remove member');
+  if (!res.ok) { showToast('Could not remove member'); return; }
+  collab.members = collab.members.filter((m) => m !== name);
+  renderCollabMembersModal();
+  showToast(`Removed ${name}`);
+}
+
+// Owner-side key rotation: generate a new epoch key, re-encrypt every note in
+// the section under it, publish a wrap per remaining member, then commit the new
+// version. Reusing the server only as blob storage; the key itself is never sent.
+// When `remove` names a member, the server removes them and bumps the epoch in a
+// single transaction, so the two can never diverge.
+async function collabRotateSectionKey(remove) {
+  if (!collab.groupId || !collab.key) return false;
+  const Y = await loadYjs();
+  const newVersion = (collab.keyVersion || 1) + 1;
+  const newKey = e2eeRandomBytes(32);
+  const oldKey = collab.key;
+  // 1) Publish the new epoch: wrap the new key to every remaining accepted
+  //    member (self included) and, when removing, do it in the same request.
+  const remaining = (collab.members || []).filter((m) => m !== remove);
+  const keys = [];
+  for (const member of [...new Set(remaining)]) {
+    try {
+      const pub = await sharingRecipientPublicKey(member);
+      const w = await wrapRawKeyFor(pub, newKey);
+      w.sig = await signWrap(collab.groupId, member, newVersion, w);
+      keys.push({ username: member, ...w });
+    } catch (error) {}
+  }
+  const url = remove
+    ? `/api/collab/groups/${collab.groupId}/members/${encodeURIComponent(remove)}`
+    : `/api/collab/groups/${collab.groupId}/rotate`;
+  const rr = await apiFetch(url, {
+    method: remove ? 'DELETE' : 'POST', body: JSON.stringify({ keyVersion: newVersion, keys }) });
+  if (!rr.ok) { showToast('Could not rotate the section key'); return false; }
+  collab.keys.set(newVersion, newKey);
+  collab.keyVersion = newVersion;
+  collab.key = newKey;
+  if (remove) collab.members = remaining;
+  // 2) Re-encrypt every note in the section under the new key (the old key is
+  //    still in collab.keys, so we can decrypt each note's existing ciphertext),
+  //    including each note's title/folder meta and the section's folder list —
+  //    otherwise meta stays locked to the old epoch. Compacting replaces the
+  //    snapshot and drops the old update log.
+  let groupNotes = [];
+  let groupEncMeta = '';
+  try {
+    const res = await apiFetch('/api/collab/groups');
+    if (res.ok) {
+      const data = await res.json();
+      const g = (data.groups || []).find((x) => String(x.id) === String(collab.groupId));
+      groupNotes = g ? (g.notes || []) : [];
+      groupEncMeta = g ? (g.encMeta || '') : '';
+    }
+  } catch (error) {}
+  for (const n of groupNotes) {
+    try {
+      const res = await apiFetch(`/api/collab/notes/${n.id}/state`);
+      if (res.ok) {
+        const data = await res.json();
+        const doc = new Y.Doc();
+        if (data.encState) {
+          try { Y.applyUpdate(doc, await collabDecrypt(collabKeyFor(data.keyVersion), data.encState), 'rotate'); } catch (error) {}
+        }
+        for (const u of (data.updates || [])) {
+          try { Y.applyUpdate(doc, await collabDecrypt(collabKeyFor(u.version), u.payload), 'rotate'); } catch (error) {}
+        }
+        const packed = await collabEncrypt(newKey, Y.encodeStateAsUpdate(doc));
+        await apiFetch(`/api/collab/notes/${n.id}/compact`, { method: 'POST', body: JSON.stringify({ state: packed, keyVersion: newVersion }) });
+        doc.destroy();
+      }
+      if (n.encMeta) {
+        const meta = await collabDecryptMeta(oldKey, n.encMeta);
+        await apiFetch(`/api/collab/notes/${n.id}/meta`, { method: 'POST', body: JSON.stringify({ encMeta: await collabEncryptMeta(newKey, meta) }) });
+      }
+    } catch (error) {}
+  }
+  if (groupEncMeta) {
+    try {
+      const gf = await collabDecryptGroupMeta(oldKey, groupEncMeta);
+      await apiFetch(`/api/collab/groups/${collab.groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta: await collabEncryptGroupMeta(newKey, gf.folders || [], gf.tags || []) }) });
+    } catch (error) {}
+  }
+  return true;
+}
+// Section-scoped rotation used when a section is flagged rekey_needed: a member
+// left or deleted their account. Any remaining member holding the key can rotate
+// — new epoch, re-wrap for everyone still in the section, re-encrypt the notes.
+async function rotateGroupSection({ groupId, key, version, members, notes, folderMeta, remove }) {
+  const Y = await loadYjs();
+  const newVersion = (Number(version) || 1) + 1;
+  const newKey = e2eeRandomBytes(32);
+  const remaining = (members || []).filter((m) => m !== remove);
+  const keys = [];
+  for (const member of [...new Set(remaining)]) {
+    try {
+      const pub = await sharingRecipientPublicKey(member);
+      const w = await wrapRawKeyFor(pub, newKey);
+      w.sig = await signWrap(groupId, member, newVersion, w);
+      keys.push({ username: member, ...w });
+    } catch (error) {}
+  }
+  const url = remove
+    ? `/api/collab/groups/${groupId}/members/${encodeURIComponent(remove)}`
+    : `/api/collab/groups/${groupId}/rotate`;
+  const rr = await apiFetch(url, {
+    method: remove ? 'DELETE' : 'POST', body: JSON.stringify({ keyVersion: newVersion, keys }) });
+  if (!rr.ok) return false;
+  for (const n of (notes || [])) {
+    try {
+      const res = await apiFetch(`/api/collab/notes/${n.id}/state`);
+      if (res.ok) {
+        const data = await res.json();
+        const doc = new Y.Doc();
+        if (data.encState) { try { Y.applyUpdate(doc, await collabDecrypt(key, data.encState), 'rotate'); } catch (error) {} }
+        for (const u of (data.updates || [])) { try { Y.applyUpdate(doc, await collabDecrypt(key, u.payload), 'rotate'); } catch (error) {} }
+        const packed = await collabEncrypt(newKey, Y.encodeStateAsUpdate(doc));
+        await apiFetch(`/api/collab/notes/${n.id}/compact`, { method: 'POST', body: JSON.stringify({ state: packed, keyVersion: newVersion }) });
+        doc.destroy();
+      }
+      if (n.encMeta) {
+        const meta = await collabDecryptMeta(key, n.encMeta);
+        await apiFetch(`/api/collab/notes/${n.id}/meta`, { method: 'POST', body: JSON.stringify({ encMeta: await collabEncryptMeta(newKey, meta) }) });
+      }
+    } catch (error) {}
+  }
+  if (folderMeta) {
+    try {
+      const gf = await collabDecryptGroupMeta(key, folderMeta);
+      await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta: await collabEncryptGroupMeta(newKey, gf.folders || [], gf.tags || []) }) });
+    } catch (error) {}
+  }
+  return true;
+}
+const rekeyInFlight = new Set();
+async function rekeyGroupIfNeeded(group, key) {
+  if (!group || !key || !group.rekeyNeeded || rekeyInFlight.has(group.id)) return;
+  // Only a member holding the current epoch may rotate. A stale wrap (e.g. an
+  // invite accepted after a rekey) must not rotate — it would re-encrypt with an
+  // old key and lose content. Another member rotates and re-wraps us instead.
+  if (Number(group.myKeyVersion) !== Number(group.keyVersion)) return;
+  rekeyInFlight.add(group.id);
+  try {
+    const ok = await rotateGroupSection({
+      groupId: group.id, key, version: group.keyVersion,
+      members: group.members || [], notes: group.notes || [], folderMeta: group.encMeta || '' });
+    if (ok) showToast('Section key rotated after a member left');
+  } finally {
+    rekeyInFlight.delete(group.id);
+  }
+}
+// A member leaves a shared section: remove ourselves. The server flags the
+// section so a remaining member rotates the key on next open (the server holds
+// no key to rotate with).
+async function leaveSharedSection(groupId) {
+  const me = cachedProfile && cachedProfile.username;
+  if (!me) return;
+  const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(me)}`, { method: 'DELETE' });
+  if (res.ok) { showToast('Left the section'); renderSharedView(); }
+  else showToast('Could not leave the section');
 }
 async function collabDeleteNote(noteId) {
+  const me = cachedProfile && cachedProfile.username;
+  if (collab.noteId != null && String(collab.noteId) === String(noteId) && collab.owner !== me) {
+    showToast('Only the owner can delete a shared note');
+    return;
+  }
   const res = await apiFetch(`/api/collab/notes/${encodeURIComponent(noteId)}`, { method: 'DELETE' });
   if (res.ok) {
     if (collab.noteId === Number(noteId) || String(collab.noteId) === String(noteId)) closeCollabNote();
     openTabs = openTabs.filter((tab) => !(tab.shared && String(tab.id) === String(noteId)));
     try { renderTabs(); } catch (error) {}
     if (activeView === 'shared') renderSharedView();
-  } else showToast('Could not delete the note');
+  } else {
+    let msg = 'Could not delete the note';
+    try { const d = await res.json(); if (d && d.error) msg = d.error; } catch (error) {}
+    showToast(msg);
+  }
 }
 async function collabDeleteGroup(groupId) {
   const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' });
@@ -5787,7 +6494,8 @@ function confirmDeleteGroup(groupId) {
 }
 // Popup: ask who the new shared section is for.
 function parseUsernames(raw) {
-  return String(raw || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean).slice(0, 20);
+  // Owner + invitees must stay within the 4-member section cap.
+  return String(raw || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean).slice(0, 3);
 }
 function openCollabNewDialog() {
   const overlay = document.getElementById('collab-new-overlay');
@@ -5831,18 +6539,30 @@ function collabCreate() { openCollabNewDialog(); }
 // The Shared view: one section per person, each holding automatically-shared notes.
 const sharedGroupKeys = new Map(); // groupId -> unwrapped group key
 const sharedGroupFolders = new Map(); // groupId -> [folder, ...]
-const sharedNoteMeta = new Map();  // noteId -> { title, folder, groupId }
+const sharedGroupTags = new Map(); // groupId -> [tag, ...] (owner-curated, section-level)
+const sharedGroupOwners = new Map(); // groupId -> owner username
+function sharedGroupTagList(groupId) {
+  return sharedGroupTags.get(groupId) || sharedGroupTags.get(Number(groupId)) || [];
+}
+function sharedGroupOwnerOf(groupId) {
+  return sharedGroupOwners.get(groupId) || sharedGroupOwners.get(Number(groupId)) || null;
+}
+const sharedNoteMeta = new Map();  // noteId -> { title, folder, tags, groupId }
+const sharedBodyCache = new Map(); // noteId -> plaintext body (session cache for body: search)
 
-function sharedNoteRow(n, groupId) {
+function sharedNoteRow(n, groupId, canDelete) {
   const title = (n.title && n.title.trim()) ? n.title.trim() : 'Untitled note';
   // Align the note's icon under its folder's icon (folder rows carry a chevron).
   const indent = n.folder ? 8 + folderDepth(n.folder) * 14 + 23 : 8;
   const glyph = (n.template && NOTE_TEMPLATES[n.template] && NOTE_TEMPLATES[n.template].icon) ? NOTE_TEMPLATES[n.template].icon : 'file';
+  const deleteAction = canDelete
+    ? `<span class="tree-action danger" data-collab-note-delete="${n.id}" role="button" title="Delete note" aria-label="Delete ${escapeHtml(title)}">${icon('trash')}</span>`
+    : '';
   return `<button class="tree-file shared-view-row" draggable="true" data-collab-open="${n.id}" data-collab-group="${groupId}" style="padding-left:${indent}px" title="${escapeHtml(title)}">
       <span class="tree-file-icon">${icon(glyph)}</span>
       <span class="tree-file-name">${escapeHtml(title)}</span>
       <span class="tree-action" data-note-folder="${n.id}" data-note-group="${groupId}" role="button" title="Move to folder" aria-label="Move ${escapeHtml(title)} to a folder">${icon('folder-plus')}</span>
-      <span class="tree-action danger" data-collab-note-delete="${n.id}" role="button" title="Delete note" aria-label="Delete ${escapeHtml(title)}">${icon('trash')}</span>
+      ${deleteAction}
     </button>`;
 }
 
@@ -5863,7 +6583,7 @@ function sharedAllFolderKeys() {
   return [...keys];
 }
 
-function sharedFolderTree(notesDec, groupId, folderList) {
+function sharedFolderTree(notesDec, groupId, folderList, canDelete) {
   const set = new Set((folderList || []).filter(Boolean));
   notesDec.forEach((n) => { if (n.folder) set.add(n.folder); });
   const folders = new Set();
@@ -5894,11 +6614,11 @@ function sharedFolderTree(notesDec, groupId, folderList) {
       </div>`);
     if (collapsed) return;
     // A folder's own notes come first, directly under it, then its subfolders.
-    notesDec.filter((n) => n.folder === folder).forEach((n) => parts.push(sharedNoteRow(n, groupId)));
+    notesDec.filter((n) => n.folder === folder).forEach((n) => parts.push(sharedNoteRow(n, groupId, canDelete)));
     (childrenOf.get(folder) || []).forEach(emit);
   };
   roots.forEach(emit);
-  notesDec.filter((n) => !n.folder).forEach((n) => parts.push(sharedNoteRow(n, groupId)));
+  notesDec.filter((n) => !n.folder).forEach((n) => parts.push(sharedNoteRow(n, groupId, canDelete)));
   return parts.join('') || '<p class="modal-desc" style="padding:2px 10px 6px">No notes yet — use + New note in this section.</p>';
 }
 
@@ -5951,8 +6671,10 @@ async function renderSharedView() {
   const invites = Array.isArray(data.invites) ? data.invites : [];
   setSharedNavCount(groups.length + invites.length);
   const me = cachedProfile && cachedProfile.username;
-  // Invitations render first and independently of key handling.
-  const invitesHtml = invites.length ? `<div class="list-section">
+  const query = searchQuery.trim();
+  const searching = query !== '';
+  // Invitations render first and independently of key handling (hidden while searching).
+  const invitesHtml = (!searching && invites.length) ? `<div class="list-section">
       <div class="list-section-head"><span class="list-section-title">Invitations</span><span class="shared-group-count">${invites.length}</span></div>
       ${invites.map((inv) => `<div class="shared-invite">
         <span class="shared-invite-text"><strong>${escapeHtml(inv.owner)}</strong> wants to connect with you</span>
@@ -5976,6 +6698,7 @@ async function renderSharedView() {
   sharedGroupFolders.clear();
   sharedNoteMeta.clear();
   const groupBlocks = [];
+  let totalMatches = 0;
   for (const g of groups) {
     const isOwner = g.owner === me;
     const displayName = isOwner ? (g.name || 'Shared') : g.owner;
@@ -5983,28 +6706,42 @@ async function renderSharedView() {
     try { key = (await collabGroupKey(g.id)).key; sharedGroupKeys.set(g.id, key); }
     catch (error) { /* cannot decrypt (rare) */ }
     let groupFolders = [];
-    if (key) { try { groupFolders = (await collabDecryptGroupMeta(key, g.encMeta || '')).folders; } catch (error) {} }
+    let groupTags = [];
+    if (key) { try { const gm = await collabDecryptGroupMeta(key, g.encMeta || ''); groupFolders = gm.folders; groupTags = gm.tags; } catch (error) {} }
     sharedGroupFolders.set(g.id, groupFolders);
+    sharedGroupTags.set(g.id, groupTags);
+    sharedGroupOwners.set(g.id, g.owner);
     const rawNotes = Array.isArray(g.notes) ? g.notes : [];
     const decoded = [];
     for (const n of rawNotes) {
       let meta = { title: '', folder: '', template: '' };
       if (key) { try { meta = await collabDecryptMeta(key, n.encMeta || ''); } catch (error) {} }
-      const entry = { id: n.id, title: meta.title, folder: meta.folder, template: meta.template, groupId: g.id };
+      const entry = { id: n.id, title: meta.title, folder: meta.folder, template: meta.template, tags: meta.tags || [], groupId: g.id };
       sharedNoteMeta.set(String(n.id), entry);
       decoded.push(entry);
     }
+    // After decoding this render, a flagged section (member left / account
+    // deleted) is re-keyed in the background by a remaining member.
+    if (key && g.rekeyNeeded) rekeyGroupIfNeeded(g, key);
+    const visible = searching ? decoded.filter((entry) => sharedNoteMatchesSearch(entry, query)) : decoded;
+    if (searching && !visible.length) continue;
+    totalMatches += visible.length;
     groupBlocks.push(`<div class="shared-group">
       <div class="shared-group-head">
         <span class="shared-group-name">${escapeHtml(displayName)}</span>
-        <span class="shared-group-count">${decoded.length}</span>
+        <span class="shared-group-count">${searching ? visible.length : decoded.length}</span>
         <button type="button" class="shared-group-add" data-group-addfolder="${g.id}" title="Add a folder to ${escapeHtml(displayName)}" aria-label="Add a folder to ${escapeHtml(displayName)}">${icon('folder-plus')}</button>
-        ${isOwner ? `<button type="button" class="shared-icon danger" data-group-delete="${g.id}" title="Delete section" aria-label="Delete section">${icon('trash')}</button>` : ''}
+        ${isOwner
+          ? `<button type="button" class="shared-icon" data-group-settings="${g.id}" title="Section settings" aria-label="Section settings for ${escapeHtml(displayName)}">${icon('settings')}</button>`
+            + `<button type="button" class="shared-icon danger" data-group-delete="${g.id}" title="Delete section" aria-label="Delete section">${icon('trash')}</button>`
+          : `<button type="button" class="shared-icon" data-group-leave="${g.id}" title="Leave section" aria-label="Leave section">${icon('logout')}</button>`}
       </div>
-      ${sharedFolderTree(decoded, g.id, groupFolders)}
+      ${sharedFolderTree(visible, g.id, searching ? [] : groupFolders, isOwner)}
     </div>`);
   }
-  box.innerHTML = invitesHtml + groupBlocks.join('');
+  let html = invitesHtml + groupBlocks.join('');
+  if (searching && totalMatches === 0) html = `<p class="modal-desc" style="padding:6px 10px">No shared notes match “${escapeHtml(query)}”.</p>`;
+  box.innerHTML = html;
   updateFoldToggle();
   try { renderTabs(); } catch (error) {}
 }
@@ -6019,7 +6756,7 @@ async function addSharedFolder(groupId) {
   const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
   if (existing.some((f) => f.toLowerCase() === folder.toLowerCase())) { showToast('That folder already exists'); return; }
   try {
-    const encMeta = await collabEncryptGroupMeta(key, [...existing, folder]);
+    const encMeta = await collabEncryptGroupMeta(key, [...existing, folder], sharedGroupTagList(groupId));
     const res = await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
     if (!res.ok) { showToast('Could not add the folder'); return; }
     showToast(`Folder \u201c${folder}\u201d added`);
@@ -6081,13 +6818,79 @@ async function reparentSharedFolder(groupId, folder, newParent) {
 
 async function saveGroupFolders(groupId, key, folders) {
   try {
-    const encMeta = await collabEncryptGroupMeta(key, folders);
+    const encMeta = await collabEncryptGroupMeta(key, folders, sharedGroupTagList(groupId));
     await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
   } catch (error) {}
 }
+
+// ---- Owner-only section settings: a section-level tag list -----------------
+let sectionSettingsGroupId = null;
+function renderSectionSettingsTags() {
+  const box = document.getElementById('section-tags-current');
+  if (!box) return;
+  const tags = sharedGroupTagList(sectionSettingsGroupId);
+  box.innerHTML = tags.length
+    ? tags.map((tag) => `<button type="button" class="tag-chip" data-section-tag-remove="${escapeHtml(tag)}" title="Remove ${escapeHtml(tag)}">${escapeHtml(tag)}<span aria-hidden="true">×</span></button>`).join('')
+    : '<span class="tag-editor-empty">No section tags yet — add one below.</span>';
+}
+async function saveSectionTags(groupId, tags) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showToast('Reload the Shared list and try again'); return false; }
+  const folders = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
+  try {
+    const encMeta = await collabEncryptGroupMeta(key, folders, tags);
+    const res = await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
+    return res.ok;
+  } catch (error) { return false; }
+}
+function openSectionSettings(groupId) {
+  const me = cachedProfile && cachedProfile.username;
+  // Owner-only; the cog is only rendered for owners, this is the safety net.
+  if (!me || sharedGroupOwnerOf(groupId) !== me) { showToast('Only the owner can change section settings'); return; }
+  const overlay = document.getElementById('section-settings-overlay');
+  if (!overlay) return;
+  sectionSettingsGroupId = Number(groupId) || groupId;
+  renderSectionSettingsTags();
+  overlay.hidden = false;
+  const input = document.getElementById('section-tags-input');
+  if (input) { input.value = ''; try { input.focus(); } catch (error) {} }
+}
+function closeSectionSettings() {
+  const overlay = document.getElementById('section-settings-overlay');
+  if (overlay) overlay.hidden = true;
+  sectionSettingsGroupId = null;
+}
+function sectionTagAdd(raw) {
+  if (sectionSettingsGroupId == null) return;
+  const tag = normalizeTagName(raw);
+  if (!tag) return;
+  const tags = sharedGroupTagList(sectionSettingsGroupId);
+  if (tags.some((t) => String(t).toLowerCase() === tag.toLowerCase())) return;
+  if (tags.length >= 100) { showToast('Section tag limit reached (100)'); return; }
+  const next = [...tags, tag];
+  sharedGroupTags.set(sectionSettingsGroupId, next);
+  renderSectionSettingsTags();
+  saveSectionTags(sectionSettingsGroupId, next).then((ok) => { if (!ok) showToast('Could not save section tags'); });
+}
+function sectionTagRemove(name) {
+  if (sectionSettingsGroupId == null) return;
+  const tags = sharedGroupTagList(sectionSettingsGroupId);
+  const next = tags.filter((t) => String(t).toLowerCase() !== String(name).toLowerCase());
+  if (next.length === tags.length) return;
+  sharedGroupTags.set(sectionSettingsGroupId, next);
+  renderSectionSettingsTags();
+  saveSectionTags(sectionSettingsGroupId, next).then((ok) => { if (!ok) showToast('Could not save section tags'); });
+}
 async function updateSharedNoteMeta(key, noteId, meta) {
   try {
-    const encMeta = await collabEncryptMeta(key, meta);
+    // Callers rename/move notes and don't carry tags; preserve them from the
+    // last decode so the encrypted meta mirror isn't wiped.
+    let tags = meta.tags;
+    if (tags === undefined) {
+      const existing = sharedNoteMeta.get(String(noteId));
+      tags = existing && Array.isArray(existing.tags) ? existing.tags : [];
+    }
+    const encMeta = await collabEncryptMeta(key, { ...meta, tags });
     await apiFetch(`/api/collab/notes/${noteId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
   } catch (error) {}
 }
@@ -7489,11 +8292,14 @@ document.getElementById('tag-editor-input').addEventListener('keydown', (event) 
   }
 });
 // Note view: the inline "+" next to a note's tags opens the tag editor for the
-// open note (same modal as the note menu's "Tags…").
+// exact note the button was rendered for (same modal as the note menu's
+// "Tags…"). Binding by id means a stale/other view can never tag a wrong note.
 tagList.addEventListener('click', (event) => {
-  if (!event.target.closest('.tag-add')) return;
-  const open = activeEditorNote();
-  if (open) openTagEditor(open.id);
+  const btn = event.target.closest('.tag-add');
+  if (!btn) return;
+  if (btn.dataset.sharedTagAdd || collab.noteId) { openSharedTagEditor(); return; }
+  const id = btn.dataset.noteId;
+  if (id) openTagEditor(id);
 });
 // Shared view wiring: sections create notes; rows open the live editor.
 noteList.addEventListener('click', (event) => {
@@ -7518,6 +8324,10 @@ noteList.addEventListener('click', (event) => {
   if (gdel) { event.preventDefault(); event.stopPropagation(); confirmDeleteGroup(gdel.dataset.groupDelete); return; }
   const gadd = event.target.closest('[data-group-addfolder]');
   if (gadd) { event.preventDefault(); event.stopPropagation(); addSharedFolder(gadd.dataset.groupAddfolder); return; }
+  const gleave = event.target.closest('[data-group-leave]');
+  if (gleave) { event.preventDefault(); event.stopPropagation(); leaveSharedSection(gleave.dataset.groupLeave); return; }
+  const gset = event.target.closest('[data-group-settings]');
+  if (gset) { event.preventDefault(); event.stopPropagation(); openSectionSettings(gset.dataset.groupSettings); return; }
   const fnote = event.target.closest('[data-folder-note]');
   if (fnote) { event.preventDefault(); event.stopPropagation(); openSharedNewNote(fnote.dataset.folderGroup, fnote.dataset.folderNote); return; }
   const fsub = event.target.closest('[data-folder-sub]');
@@ -7634,22 +8444,44 @@ function refreshCurrent() {
   const refreshBtn = document.getElementById('refresh-view');
   if (refreshBtn) refreshBtn.addEventListener('click', () => { try { refreshCurrent(); } catch (error) {} });
 }
-document.getElementById('close-collab').addEventListener('click', () => {
-  const closedId = collab.noteId;
-  closeCollabNote();
-  if (closedId != null) {
-    openTabs = openTabs.filter((tab) => !(tab.shared && String(tab.id) === String(closedId)));
-    try { renderTabs(); } catch (error) {}
-  }
-  // Return the standard editor to the previously open note (or empty state).
-  if (currentId && notes.some((n) => n.id === currentId)) selectNote(currentId);
-  else clearEditor();
-});
 document.getElementById('close-collab-new').addEventListener('click', closeCollabNewDialog);
 document.getElementById('collab-new-cancel').addEventListener('click', closeCollabNewDialog);
 document.getElementById('collab-new-create').addEventListener('click', confirmCollabNew);
 document.getElementById('collab-new-overlay').addEventListener('click', (event) => {
   if (event.target.id === 'collab-new-overlay') closeCollabNewDialog();
+});
+document.getElementById('collab-pending').addEventListener('click', openCollabPending);
+document.getElementById('close-collab-pending').addEventListener('click', closeCollabPending);
+document.getElementById('collab-pending-done').addEventListener('click', closeCollabPending);
+document.getElementById('collab-pending-overlay').addEventListener('click', (event) => {
+  if (event.target.id === 'collab-pending-overlay') closeCollabPending();
+});
+document.getElementById('collab-pending-list').addEventListener('click', (event) => {
+  const cancel = event.target.closest('[data-cancel-invite]');
+  if (cancel) { event.preventDefault(); cancelCollabInvite(cancel.dataset.cancelInvite); return; }
+  const remove = event.target.closest('[data-remove-member]');
+  if (remove) { event.preventDefault(); collabRemoveMember(remove.dataset.removeMember); }
+});
+document.getElementById('close-section-settings').addEventListener('click', closeSectionSettings);
+document.getElementById('section-settings-done').addEventListener('click', closeSectionSettings);
+document.getElementById('section-settings-overlay').addEventListener('click', (event) => {
+  if (event.target.id === 'section-settings-overlay') closeSectionSettings();
+});
+document.getElementById('section-tags-current').addEventListener('click', (event) => {
+  const rm = event.target.closest('[data-section-tag-remove]');
+  if (rm) sectionTagRemove(rm.dataset.sectionTagRemove);
+});
+document.getElementById('section-tags-add-btn').addEventListener('click', () => {
+  const input = document.getElementById('section-tags-input');
+  if (input) { sectionTagAdd(input.value); input.value = ''; input.focus(); }
+});
+document.getElementById('section-tags-input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ',') {
+    event.preventDefault();
+    event.stopPropagation();
+    sectionTagAdd(event.target.value);
+    event.target.value = '';
+  }
 });
 document.getElementById('collab-new-members').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') { event.preventDefault(); confirmCollabNew(); }
@@ -7668,10 +8500,6 @@ document.getElementById('collab-delete').addEventListener('click', () => {
     const confirmBtn = document.getElementById('confirm-delete');
     if (confirmBtn) confirmBtn.focus();
   }
-});
-document.getElementById('collab-members').addEventListener('click', (event) => {
-  const remove = event.target.closest('[data-collab-remove]');
-  if (remove) collabRemoveMember(remove.dataset.collabRemove);
 });
 // Settings → Tags: rename / delete across all notes.
 document.getElementById('settings-tag-list').addEventListener('click', (event) => {
@@ -7739,6 +8567,10 @@ document.getElementById('delete-overlay').addEventListener('click', (event) => {
 });
 titleInput.addEventListener('input', saveCurrentNote);
 markdownInput.addEventListener('input', saveCurrentNote);
+markdownInput.addEventListener('input', () => collabPresenceLocal(true));
+markdownInput.addEventListener('keyup', () => collabPresenceLocal(true));
+markdownInput.addEventListener('click', () => collabPresenceLocal(false));
+markdownInput.addEventListener('select', () => collabPresenceLocal(false));
 document.getElementById('recipe-desc').addEventListener('input', saveCurrentNote);
 document.getElementById('recipe-photo-btn').addEventListener('click', () => { if (collab.noteId) requestCollabCoverUpload(); else requestCoverUpload(); });
 // Structured recipe body: toggle, edit, add and remove Ingredients / Method.

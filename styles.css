@@ -1018,13 +1018,23 @@ body.is-panel-resizing { cursor: col-resize; user-select: none; }
 .collab-member { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-muted); background: var(--panel-bg); font-size: 11px; }
 .collab-member-remove { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; color: var(--ink-muted); background: transparent; cursor: pointer; font-size: 13px; line-height: 1; }
 .collab-member-remove:hover { color: #c0453e; background: var(--tree-hover-bg); }
+/* Invited-members popup */
+.collab-pending-list { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; margin: 4px 0 2px; }
+.collab-pending-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-bg); }
+.collab-pending-name { color: var(--ink); font-size: 13px; }
+.collab-pending-empty { padding: 6px 2px; color: var(--ink-muted); font-size: 12px; }
+.collab-members-section { margin: 10px 2px 2px; color: var(--ink-muted); font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.section-tags-add { display: flex; gap: 8px; margin-top: 8px; }
+.section-tags-add input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--input-bg); font-size: 13px; }
+#collab-pending.has-pending { position: relative; }
+#collab-pending.has-pending::after { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--coral); content: ''; }
 .collab-body { width: 100%; min-height: 52vh; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; outline: none; color: var(--ink); background: var(--input-bg); font-family: 'DM Mono', monospace; font-size: 13px; line-height: 1.7; resize: vertical; }
 .collab-body:focus { border-color: var(--search-focus-border); box-shadow: var(--search-focus-ring); }
 /* Shared note members + actions live in the tab row while a shared note is open */
-.collab-top { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; min-width: 0; max-width: 55%; }
+.collab-top { display: flex; flex: 0 1 auto; align-items: center; gap: 10px; min-width: 0; max-width: 70%; }
 .collab-top[hidden] { display: none; }
 .collab-panel-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
-.collab-top .collab-members { margin: 0; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+.collab-top .collab-members { margin: 0; min-width: 0; flex: 0 1 auto; flex-wrap: nowrap; overflow: hidden; }
 .editor-panel.collab-mode .editor-topbar .breadcrumbs,
 .editor-panel.collab-mode .editor-topbar .editor-actions { display: none; }
 /* Shared view inbox rows */
@@ -1057,6 +1067,12 @@ body.is-panel-resizing { cursor: col-resize; user-select: none; }
 /* Live status sits inline in the note meta, before "Edited today". */
 .collab-status-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-muted); font-size: 11px; }
 .collab-status-inline .live-dot { width: 6px; height: 6px; }
+/* Live presence: online/typing chips in the collab top bar. */
+.collab-presence { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; min-width: 0; flex-wrap: nowrap; }
+.collab-presence:empty { display: none; }
+.collab-presence-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 150px; overflow: hidden; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-muted); background: var(--panel-bg); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+.collab-presence-chip.is-typing { color: var(--ink); }
+.collab-presence-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
 /* Pending invitations in the Shared view */
 .shared-invite { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-bg); }
 .shared-invite-text { flex: 1; min-width: 0; overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -1258,6 +1274,10 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
    and both share identical font/padding so glyphs line up exactly. */
 .code-wrap { position: relative; }
 .syntax-layer { position: absolute; inset: 0; margin: 0; padding: 6px 0 24px; overflow: hidden; pointer-events: none; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; color: var(--source-ink); font-family: 'DM Mono', monospace; font-size: 12px; line-height: 1.85; tab-size: 2; }
+/* Live presence: remote carets overlaid on the editor. */
+.collab-caret-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.collab-caret { position: absolute; width: 2px; border-radius: 1px; transition: top .08s linear, left .08s linear; }
+.collab-caret-label { position: absolute; top: -1.05em; left: 0; padding: 1px 5px; border-radius: 4px; color: #fff; font-family: 'DM Mono', monospace; font-size: 9px; font-weight: 600; white-space: nowrap; }
 .markdown-input.is-highlighted { color: transparent; caret-color: var(--source-ink); }
 .syntax-layer .tok-key { color: var(--json-icon); }
 .syntax-layer.lang-yaml .tok-key { color: var(--yaml-icon); }

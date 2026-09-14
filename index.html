@@ -132,11 +132,11 @@
           <div class="tab-bar" id="tab-bar" aria-label="Open notes"></div>
           <!-- Shared note members + actions, shown in the tab row while a shared note is open -->
           <div class="collab-top" id="collab-top" hidden>
-            <div class="collab-members" id="collab-members"></div>
+            <div class="collab-presence" id="collab-presence" aria-live="polite"></div>
             <div class="collab-panel-actions">
+              <button class="icon-button" id="collab-pending" aria-label="Members" title="Members" data-icon="hash"></button>
               <button class="icon-button" id="collab-invite" aria-label="Invite member" title="Invite member" data-icon="share"></button>
               <button class="icon-button" id="collab-delete" aria-label="Delete shared note" title="Delete shared note" data-icon="trash" hidden></button>
-              <button class="icon-button" id="close-collab" aria-label="Close shared note" title="Close" data-icon="x"></button>
             </div>
           </div>
           <div class="editor-actions">
@@ -231,6 +231,7 @@
             <div class="code-wrap" id="code-wrap">
               <pre class="syntax-layer" id="syntax-layer" aria-hidden="true" hidden></pre>
               <textarea class="markdown-input" id="markdown-input" rows="18" spellcheck="true" aria-label="Markdown editor"></textarea>
+              <div class="collab-caret-layer" id="collab-caret-layer" aria-hidden="true"></div>
             </div>
             <article class="markdown-preview unified-preview" id="markdown-preview" tabindex="0" aria-label="Rendered preview — click or focus to keep writing" hidden></article>
           </div>
@@ -546,6 +547,45 @@
         </div>
       </div>
     </div>
+    <!-- Shared note: members who were invited but have not accepted yet -->
+    <div class="modal-overlay" id="collab-pending-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="collab-pending-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Shared note</p>
+            <h2 id="collab-pending-title">Members</h2>
+          </div>
+          <button class="icon-button" id="close-collab-pending" aria-label="Close" data-icon="x"></button>
+        </div>
+        <p class="modal-desc">Everyone in this section, plus people who were invited but have not accepted yet.</p>
+        <div class="collab-pending-list" id="collab-pending-list"></div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="collab-pending-done" type="button">Done</button>
+        </div>
+      </div>
+    </div>
+    <!-- Shared section settings (owner only): section-level tag list -->
+    <div class="modal-overlay" id="section-settings-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="section-settings-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Shared section</p>
+            <h2 id="section-settings-title">Section settings</h2>
+          </div>
+          <button class="icon-button" id="close-section-settings" aria-label="Close" data-icon="x"></button>
+        </div>
+        <p class="collab-members-section">Tags</p>
+        <p class="modal-desc" style="margin:0 0 6px">A shared set of tags for this section, offered as suggestions when tagging its notes.</p>
+        <div class="tag-editor-current" id="section-tags-current"></div>
+        <div class="section-tags-add">
+          <input id="section-tags-input" type="text" placeholder="Add a tag" autocomplete="off" />
+          <button class="btn btn-secondary" id="section-tags-add-btn" type="button">Add</button>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="section-settings-done" type="button">Done</button>
+        </div>
+      </div>
+    </div>
     <!-- Shared delete-confirm popup (note / folder / Bin variants, filled by setDeleteDialog) -->
     <div class="modal-overlay" id="delete-overlay" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title">
@@ -743,6 +783,6 @@
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
-    <script src="app.js?v=dev81"></script>
+    <script type="module" src="js/app.js?v=dev81"></script>
   </body>
 </html>

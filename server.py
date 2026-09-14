@@ -115,6 +115,11 @@ NOTES_MAX_BODY_CHARS = 500000
 NOTES_MAX_TOTAL_BYTES = 6 * 1024 * 1024
 # Collaborative note shares/updates reuse the notes size cap (opaque blobs).
 SHARE_MAX_BYTES = NOTES_MAX_TOTAL_BYTES
+# Shared-section administration: at most SHARE_MAX_MEMBERS people (owner
+# included) may share a section, and the sharing surface is throttled per user.
+SHARE_MAX_MEMBERS = 4
+SHARE_ADMIN_WINDOW_SECONDS = 3600
+SHARE_ADMIN_MAX = 60
 NOTES_MAX_REQUEST_BYTES = 7 * 1024 * 1024
 
 # Password policy — aligned to NIST SP 800-63B (800-63-4): length is the
@@ -951,6 +956,15 @@ def init_db():
         'username TEXT PRIMARY KEY, pubkey BLOB NOT NULL, enc_priv BLOB NOT NULL, '
         'algo TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
     )
+    # Signing keys authenticate ECDH wraps: a warp that a member supplies for
+    # another member is signed by the wrapper, so the recipient can detect a
+    # server that substitutes a wrap it controls. Private signing key is wrapped
+    # under the account master key like the ECDH one.
+    _ukcols = {row['name'] for row in conn.execute('PRAGMA table_info(user_keys)')}
+    if 'sig_pubkey' not in _ukcols:
+        conn.execute('ALTER TABLE user_keys ADD COLUMN sig_pubkey BLOB')
+    if 'sig_enc_priv' not in _ukcols:
+        conn.execute('ALTER TABLE user_keys ADD COLUMN sig_enc_priv BLOB')
     # Collaborative notes are grouped into per-person "shared sections": a
     # group owns one key wrapped to each member, and any note created under the
     # group is automatically shared with them. The server never sees the key.
@@ -975,6 +989,13 @@ def init_db():
         'accepted INTEGER NOT NULL DEFAULT 0, '
         'PRIMARY KEY (group_id, username))'
     )
+    # wrap_sig: signature by wrap_signer over the wrap tuple (see wrapSigMessage
+    # on the client); lets the recipient detect a substituted wrap.
+    _mcols0 = {row['name'] for row in conn.execute('PRAGMA table_info(collab_members)')}
+    if 'wrap_sig' not in _mcols0:
+        conn.execute('ALTER TABLE collab_members ADD COLUMN wrap_sig BLOB')
+    if 'wrap_signer' not in _mcols0:
+        conn.execute('ALTER TABLE collab_members ADD COLUMN wrap_signer TEXT')
     # Invites must be accepted by the recipient before the section appears.
     _cmcols = {row['name'] for row in conn.execute('PRAGMA table_info(collab_members)')}
     if 'accepted' not in _cmcols:
@@ -997,6 +1018,30 @@ def init_db():
     conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_updates ON collab_updates (note_id, id)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_members_user ON collab_members (username)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_notes_group ON collab_notes (group_id, id)')
+    # Key epochs: a membership change rotates the section key. The owner
+    # re-encrypts note content under the new key and re-wraps it to the
+    # remaining members, so a removed member can no longer read the section
+    # while a newly added member (given the current key) can read its history.
+    # key_version is the current epoch; every stored blob records the epoch that
+    # encrypted it so stale-epoch writes are rejected.
+    _gk = {row['name'] for row in conn.execute('PRAGMA table_info(collab_groups)')}
+    if 'key_version' not in _gk:
+        conn.execute('ALTER TABLE collab_groups ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1')
+    _mk = {row['name'] for row in conn.execute('PRAGMA table_info(collab_members)')}
+    if 'key_version' not in _mk:
+        conn.execute('ALTER TABLE collab_members ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1')
+    _nk = {row['name'] for row in conn.execute('PRAGMA table_info(collab_notes)')}
+    if 'key_version' not in _nk:
+        conn.execute('ALTER TABLE collab_notes ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1')
+    _uk = {row['name'] for row in conn.execute('PRAGMA table_info(collab_updates)')}
+    if 'key_version' not in _uk:
+        conn.execute('ALTER TABLE collab_updates ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1')
+    # rekey_needed: a member left (or deleted their account) without a rotation.
+    # The server cannot rotate by itself — it never holds the key — so it flags
+    # the section and a remaining member rotates the epoch on next open.
+    _gk2 = {row['name'] for row in conn.execute('PRAGMA table_info(collab_groups)')}
+    if 'rekey_needed' not in _gk2:
+        conn.execute('ALTER TABLE collab_groups ADD COLUMN rekey_needed INTEGER NOT NULL DEFAULT 0')
     # Retired schemas (pre-group collab + async snapshot shares).
     for stale in ('shared_notes',):
         conn.execute(f'DROP TABLE IF EXISTS {stale}')
@@ -1405,7 +1450,8 @@ def root():
 @app.route('/<path:filename>')
 def public_files(filename):
     # Vendored modules (argon2, qrcode, yjs + lib0) are served from vendor/.
-    if filename in PUBLIC_FILES or filename.startswith('vendor/'):
+    # The front-end is split into ES modules under js/ (entry: js/app.js).
+    if filename in PUBLIC_FILES or filename.startswith('vendor/') or filename.startswith('js/'):
         response = send_from_directory(BASE_DIR, filename)
         response.cache_control.no_store = True
         return response
@@ -3091,8 +3137,35 @@ def api_account_delete():
     conn.execute('DELETE FROM account_recovery WHERE username = ?', (uname,))
     conn.execute('DELETE FROM passkey_creds WHERE username = ?', (uname,))
     conn.execute('DELETE FROM passkey_challenges WHERE username = ?', (uname,))
+    # Shared sections: drop the deleted user's memberships, hand off any section
+    # they owned to a remaining member, and flag the rest so remaining members
+    # rotate the section key on next open — the server holds no key and cannot
+    # rotate by itself, and a deleted account must not keep decrypting.
+    gone_note_ids = []
+    for gr in conn.execute('SELECT id FROM collab_groups WHERE owner = ?', (uname,)).fetchall():
+        gid = gr['id']
+        successor = conn.execute(
+            'SELECT username FROM collab_members WHERE group_id = ? AND username != ? AND accepted = 1'
+            ' ORDER BY added_at LIMIT 1', (gid, uname)).fetchone()
+        if successor:
+            conn.execute('UPDATE collab_groups SET owner = ?, rekey_needed = 1 WHERE id = ?',
+                         (successor['username'], gid))
+        else:
+            gone_note_ids += [nr['id'] for nr in conn.execute(
+                'SELECT id FROM collab_notes WHERE group_id = ?', (gid,)).fetchall()]
+            conn.execute('DELETE FROM collab_notes WHERE group_id = ?', (gid,))
+            conn.execute('DELETE FROM collab_members WHERE group_id = ?', (gid,))
+            conn.execute('DELETE FROM collab_groups WHERE id = ?', (gid,))
+    for mr in conn.execute('SELECT DISTINCT group_id FROM collab_members WHERE username = ?', (uname,)).fetchall():
+        conn.execute('DELETE FROM collab_members WHERE group_id = ? AND username = ?', (mr['group_id'], uname))
+        conn.execute('UPDATE collab_groups SET rekey_needed = 1 WHERE id = ?', (mr['group_id'],))
+    for nid in gone_note_ids:
+        conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (nid,))
     conn.commit()
     conn.close()
+    _close_user_streams(uname)
+    for nid in gone_note_ids:
+        _close_streams(nid)
     resp = jsonify({'ok': True})
     resp.delete_cookie(SESSION_COOKIE, path='/', httponly=True, samesite='Lax', secure=session_cookie_secure())
     resp.delete_cookie(LEGACY_SESSION_COOKIE, path='/', httponly=True, samesite='Lax', secure=session_cookie_secure())
@@ -3113,22 +3186,34 @@ def api_keys_publish():
     try:
         pubkey = base64.b64decode(str(data.get('pubkey', '')).encode('ascii'), validate=True)
         enc_priv = base64.b64decode(str(data.get('encPriv', '')).encode('ascii'), validate=True)
+        raw_sig_pub = str(data.get('sigPubkey', '')).strip()
+        raw_sig_priv = str(data.get('sigEncPriv', '')).strip()
+        sig_pubkey = base64.b64decode(raw_sig_pub.encode('ascii'), validate=True) if raw_sig_pub else None
+        sig_enc_priv = base64.b64decode(raw_sig_priv.encode('ascii'), validate=True) if raw_sig_priv else None
     except (base64.binascii.Error, ValueError, AttributeError):
         return jsonify({'error': 'Invalid key payload.'}), 400
-    # Raw P-256 point is 65 bytes; wrapped private key is nonce(12)+ct(>=48).
+    # Raw P-256 point is 65 bytes; wrapped private keys are nonce(12)+ct(>=48).
     if len(pubkey) != 65 or not (60 <= len(enc_priv) <= 4096):
         return jsonify({'error': 'Invalid key payload.'}), 400
+    if sig_pubkey is not None and len(sig_pubkey) != 65:
+        return jsonify({'error': 'Invalid signing key.'}), 400
+    if sig_enc_priv is not None and not (60 <= len(sig_enc_priv) <= 4096):
+        return jsonify({'error': 'Invalid signing key.'}), 400
     now = int(time.time())
     conn = get_db()
     conn.execute(
-        'INSERT INTO user_keys (username, pubkey, enc_priv, algo, created_at, updated_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?)'
+        'INSERT INTO user_keys (username, pubkey, enc_priv, algo, sig_pubkey, sig_enc_priv, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
         ' ON CONFLICT(username) DO UPDATE SET pubkey = excluded.pubkey,'
-        ' enc_priv = excluded.enc_priv, algo = excluded.algo, updated_at = excluded.updated_at',
-        (user['username'], pubkey, enc_priv, algo, now, now),
+        ' enc_priv = excluded.enc_priv, algo = excluded.algo,'
+        ' sig_pubkey = COALESCE(excluded.sig_pubkey, user_keys.sig_pubkey),'
+        ' sig_enc_priv = COALESCE(excluded.sig_enc_priv, user_keys.sig_enc_priv),'
+        ' updated_at = excluded.updated_at',
+        (user['username'], pubkey, enc_priv, algo, sig_pubkey, sig_enc_priv, now, now),
     )
     conn.commit()
     conn.close()
+    security_event('keys.publish', severity='info', actor=user['username'], algo=algo)
     return jsonify({'ok': True})
 
 
@@ -3138,7 +3223,7 @@ def api_keys_me():
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    row = conn.execute('SELECT pubkey, enc_priv, algo, updated_at FROM user_keys WHERE username = ?',
+    row = conn.execute('SELECT pubkey, enc_priv, algo, updated_at, sig_pubkey, sig_enc_priv FROM user_keys WHERE username = ?',
                        (user['username'],)).fetchone()
     conn.close()
     if not row:
@@ -3148,6 +3233,8 @@ def api_keys_me():
         'algo': row['algo'],
         'pubkey': base64.b64encode(bytes(row['pubkey'])).decode('ascii'),
         'encPriv': base64.b64encode(bytes(row['enc_priv'])).decode('ascii'),
+        'sigPubkey': base64.b64encode(bytes(row['sig_pubkey'])).decode('ascii') if row['sig_pubkey'] else '',
+        'sigEncPriv': base64.b64encode(bytes(row['sig_enc_priv'])).decode('ascii') if row['sig_enc_priv'] else '',
         'updated_at': row['updated_at'],
     })
 
@@ -3165,7 +3252,7 @@ def api_keys_lookup():
         conn.close()
         return jsonify({'error': 'Too many lookups — slow down.'}), 429
     rate_hit(conn, ip_user_bucket('keylookup', user['username']))
-    row = conn.execute('SELECT pubkey, algo FROM user_keys WHERE username = ?', (target,)).fetchone()
+    row = conn.execute('SELECT pubkey, algo, sig_pubkey FROM user_keys WHERE username = ?', (target,)).fetchone()
     conn.commit()
     conn.close()
     if not row:
@@ -3174,6 +3261,7 @@ def api_keys_lookup():
         'username': target,
         'algo': row['algo'],
         'pubkey': base64.b64encode(bytes(row['pubkey'])).decode('ascii'),
+        'sigPubkey': base64.b64encode(bytes(row['sig_pubkey'])).decode('ascii') if row['sig_pubkey'] else '',
     })
 
 
@@ -3182,7 +3270,9 @@ def api_keys_lookup():
 # under a group and inherit its key; live Yjs updates are AES-GCM encrypted
 # with that key and relayed over a WebSocket. The server reads nothing.
 
-collab_streams = {}  # note_id -> list of queue.Queue (SSE subscribers)
+# note_id -> list of (username, queue.Queue) SSE subscribers. The username is
+# tracked so a removed member's live streams can be closed when access is revoked.
+collab_streams = {}
 
 
 def _is_group_member(conn, group_id, username, require_accepted=True):
@@ -3193,7 +3283,7 @@ def _is_group_member(conn, group_id, username, require_accepted=True):
 
 
 def _note_group(conn, note_id):
-    return conn.execute('SELECT id, group_id, owner, updated_at, enc_state FROM collab_notes WHERE id = ?',
+    return conn.execute('SELECT id, group_id, owner, updated_at, enc_state, key_version FROM collab_notes WHERE id = ?',
                         (note_id,)).fetchone()
 
 
@@ -3203,12 +3293,18 @@ def _decode_wrap(data):
     wrap_iv = base64.b64decode(str(data.get('wrapIv', '')).encode('ascii'), validate=True)
     if len(eph_pub) != 65 or len(wrap_iv) != 12 or not (48 <= len(wrapped_key) <= 80):
         raise ValueError('bad wrap')
-    return wrapped_key, eph_pub, wrap_iv
+    sig = b''
+    raw_sig = str(data.get('sig', '')).strip()
+    if raw_sig:
+        sig = base64.b64decode(raw_sig.encode('ascii'), validate=True)
+        if not (60 <= len(sig) <= 80):  # ECDSA P-256 raw r||s is 64 bytes
+            raise ValueError('bad wrap sig')
+    return wrapped_key, eph_pub, wrap_iv, sig
 
 
 def _broadcast(note_id, message_dict):
     payload = json.dumps(message_dict)
-    for q in list(collab_streams.get(note_id, ())):
+    for _username, q in list(collab_streams.get(note_id, ())):
         try:
             q.put_nowait(payload)
         except Exception:
@@ -3216,11 +3312,65 @@ def _broadcast(note_id, message_dict):
 
 
 def _close_streams(note_id):
-    for q in list(collab_streams.get(note_id, ())):
+    """End every subscriber's stream for a note (note/section deleted).
+
+    The None sentinel wakes the generator, which emits a final 'closed' message
+    and exits; the subscriber entry is then dropped."""
+    for _username, q in list(collab_streams.get(note_id, ())):
         try:
-            q.put_nowait(json.dumps({'type': 'closed'}))
+            q.put_nowait(None)
         except Exception:
             pass
+    collab_streams.pop(note_id, None)
+
+
+def _close_user_streams(username, note_ids=None):
+    """Close only the named user's open streams (used when access is revoked).
+
+    note_ids limits the scope to one section's notes; None means every note.
+    Other members' streams are left untouched."""
+    try:
+        name = str(username or '').strip()
+    except Exception:
+        return
+    if not name:
+        return
+    allow = None if note_ids is None else {int(n) for n in note_ids}
+    for note_id, subs in list(collab_streams.items()):
+        if allow is not None and note_id not in allow:
+            continue
+        kept = []
+        for sub_user, q in subs:
+            if sub_user == name:
+                try:
+                    q.put_nowait(None)
+                except Exception:
+                    pass
+            else:
+                kept.append((sub_user, q))
+        if kept:
+            collab_streams[note_id] = kept
+        else:
+            collab_streams.pop(note_id, None)
+
+
+def _broadcast_group(group_id, message_dict):
+    """Fan a control message (e.g. rekey) out to every note stream in a section."""
+    conn = get_db()
+    note_ids = [r['id'] for r in conn.execute('SELECT id FROM collab_notes WHERE group_id = ?', (group_id,))]
+    conn.close()
+    for note_id in note_ids:
+        _broadcast(note_id, message_dict)
+
+
+def _share_rate_limited(conn, username):
+    """True (and records nothing) when a user has spent their sharing-action
+    budget; otherwise records the hit and returns False."""
+    bucket = ip_user_bucket('share', username)
+    if rate_exceeded(conn, [bucket], SHARE_ADMIN_MAX, SHARE_ADMIN_WINDOW_SECONDS):
+        return True
+    rate_hit(conn, bucket)
+    return False
 
 
 @app.route('/api/collab/groups', methods=['POST'])
@@ -3231,20 +3381,25 @@ def api_group_create():
     data = json_object()
     name = str(data.get('name', '')).strip()[:40] or 'Shared'
     try:
-        wrapped_key, eph_pub, wrap_iv = _decode_wrap(data)
+        wrapped_key, eph_pub, wrap_iv, wrap_sig = _decode_wrap(data)
     except (ValueError, AttributeError, base64.binascii.Error):
         return jsonify({'error': 'Invalid key payload.'}), 400
-    now = int(time.time())
     conn = get_db()
-    cur = conn.execute('INSERT INTO collab_groups (owner, name, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='group.create')
+        return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
+    now = int(time.time())
+    cur = conn.execute('INSERT INTO collab_groups (owner, name, created_at, updated_at, key_version) VALUES (?, ?, ?, ?, 1)',
                        (user['username'], name, now, now))
     group_id = cur.lastrowid
-    conn.execute('INSERT OR REPLACE INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, added_at, accepted)'
-                 ' VALUES (?, ?, ?, ?, ?, ?, 1)',
-                 (group_id, user['username'], wrapped_key, eph_pub, wrap_iv, now))
+    conn.execute('INSERT OR REPLACE INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, wrap_sig, wrap_signer, added_at, accepted, key_version)'
+                 ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)',
+                 (group_id, user['username'], wrapped_key, eph_pub, wrap_iv, wrap_sig or None, user['username'], now))
     conn.commit()
     conn.close()
-    return jsonify({'ok': True, 'id': group_id, 'name': name})
+    security_event('collab.group.create', severity='info', actor=user['username'], group=group_id)
+    return jsonify({'ok': True, 'id': group_id, 'name': name, 'keyVersion': 1})
 
 
 @app.route('/api/collab/groups', methods=['GET'])
@@ -3254,7 +3409,8 @@ def api_group_list():
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
     groups = conn.execute(
-        'SELECT g.id, g.owner, g.name, g.updated_at, g.enc_meta FROM collab_groups g'
+        'SELECT g.id, g.owner, g.name, g.updated_at, g.enc_meta, g.key_version, g.rekey_needed,'
+        ' m.key_version AS my_key_version FROM collab_groups g'
         ' JOIN collab_members m ON m.group_id = g.id'
         ' WHERE m.username = ? AND m.accepted = 1 ORDER BY g.updated_at DESC LIMIT 200',
         (user['username'],),
@@ -3266,6 +3422,9 @@ def api_group_list():
                   'encMeta': base64.b64encode(bytes(r['enc_meta'])).decode('ascii') if r['enc_meta'] else ''}
                  for r in conn.execute('SELECT id, updated_at, enc_meta FROM collab_notes WHERE group_id = ? ORDER BY id', (g['id'],))]
         out.append({'id': g['id'], 'owner': g['owner'], 'name': g['name'], 'updatedAt': g['updated_at'],
+                    'keyVersion': g['key_version'] or 1,
+                    'myKeyVersion': g['my_key_version'] or 1,
+                    'rekeyNeeded': 1 if (g['rekey_needed'] or 0) else 0,
                     'members': members, 'notes': notes,
                     'encMeta': base64.b64encode(bytes(g['enc_meta'])).decode('ascii') if g['enc_meta'] else ''})
     # Pending invitations: sections shared with me that I have not accepted yet.
@@ -3285,16 +3444,25 @@ def api_group_accept(group_id):
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    row = conn.execute('SELECT accepted FROM collab_members WHERE group_id = ? AND username = ?',
+    row = conn.execute('SELECT accepted, key_version FROM collab_members WHERE group_id = ? AND username = ?',
                        (group_id, user['username'])).fetchone()
     if not row:
         conn.close()
         return jsonify({'error': 'No invitation for this account.'}), 404
+    # A section re-keyed while this invite was pending leaves our wrap on an old
+    # epoch. Flag the section so a member holding the current key rotates and
+    # re-wraps us — we must not rotate with the stale key ourselves.
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    stale = bool(grow) and (row['key_version'] or 1) < ((grow['key_version'] or 1))
     conn.execute('UPDATE collab_members SET accepted = 1 WHERE group_id = ? AND username = ?',
                  (group_id, user['username']))
+    if stale:
+        conn.execute('UPDATE collab_groups SET rekey_needed = 1 WHERE id = ?', (group_id,))
     conn.commit()
     conn.close()
-    return jsonify({'ok': True})
+    security_event('collab.group.accept', severity='info', actor=user['username'],
+                   group=group_id, stale_key=bool(stale))
+    return jsonify({'ok': True, 'rekeyNeeded': bool(stale)})
 
 
 @app.route('/api/collab/groups/<int:group_id>', methods=['GET'])
@@ -3306,19 +3474,26 @@ def api_group_get(group_id):
     if not _is_group_member(conn, group_id, user['username']):
         conn.close()
         return jsonify({'error': 'Not a member of this shared section.'}), 403
-    g = conn.execute('SELECT id, owner, name FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
-    mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv FROM collab_members WHERE group_id = ? AND username = ?',
+    g = conn.execute('SELECT id, owner, name, key_version, rekey_needed, enc_meta FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv, key_version, wrap_sig, wrap_signer FROM collab_members WHERE group_id = ? AND username = ?',
                         (group_id, user['username'])).fetchone()
-    members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? ORDER BY added_at', (group_id,))]
+    members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? AND accepted = 1 ORDER BY added_at', (group_id,))]
+    pending = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? AND accepted = 0 ORDER BY added_at', (group_id,))]
     conn.close()
     if not g or not mine:
         return jsonify({'error': 'Not found.'}), 404
     return jsonify({
-        'id': g['id'], 'owner': g['owner'], 'name': g['name'], 'members': members,
+        'id': g['id'], 'owner': g['owner'], 'name': g['name'], 'members': members, 'pending': pending,
+        'encMeta': base64.b64encode(bytes(g['enc_meta'])).decode('ascii') if g['enc_meta'] else '',
+        'keyVersion': g['key_version'] or 1,
+        'rekeyNeeded': 1 if (g['rekey_needed'] or 0) else 0,
+        'myKeyVersion': mine['key_version'] or 1,
         'myKey': {
             'wrappedKey': base64.b64encode(bytes(mine['wrapped_key'])).decode('ascii'),
             'ephPub': base64.b64encode(bytes(mine['eph_pub'])).decode('ascii'),
             'wrapIv': base64.b64encode(bytes(mine['wrap_iv'])).decode('ascii'),
+            'sig': base64.b64encode(bytes(mine['wrap_sig'])).decode('ascii') if mine['wrap_sig'] else '',
+            'signer': mine['wrap_signer'] or '',
         },
     })
 
@@ -3356,43 +3531,202 @@ def api_group_add_member(group_id):
     if not validate_username(target):
         return jsonify({'error': 'Invalid username.'}), 400
     try:
-        wrapped_key, eph_pub, wrap_iv = _decode_wrap(data)
+        wrapped_key, eph_pub, wrap_iv, wrap_sig = _decode_wrap(data)
     except (ValueError, AttributeError, base64.binascii.Error):
         return jsonify({'error': 'Invalid key payload.'}), 400
     conn = get_db()
-    if not _is_group_member(conn, group_id, user['username']):
+    grow = conn.execute('SELECT owner, key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    if not grow:
         conn.close()
-        return jsonify({'error': 'Not a member of this shared section.'}), 403
+        return jsonify({'error': 'Not found.'}), 404
+    # Only the section owner may invite people.
+    if grow['owner'] != user['username']:
+        conn.close()
+        return jsonify({'error': 'Only the owner can add members.'}), 403
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='member.add')
+        return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
     if not conn.execute('SELECT 1 FROM users WHERE username = ?', (target,)).fetchone():
         conn.close()
         return jsonify({'error': 'No such account.'}), 404
-    conn.execute('INSERT INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, added_at, accepted)'
-                 ' VALUES (?, ?, ?, ?, ?, ?, 0)'
+    already = conn.execute('SELECT 1 FROM collab_members WHERE group_id = ? AND username = ?',
+                           (group_id, target)).fetchone()
+    if not already:
+        count = conn.execute('SELECT COUNT(*) AS n FROM collab_members WHERE group_id = ?',
+                             (group_id,)).fetchone()['n']
+        if count >= SHARE_MAX_MEMBERS:
+            conn.close()
+            return jsonify({'error': f'This section is full (max {SHARE_MAX_MEMBERS} members).'}), 409
+    cur_ver = (grow['key_version'] if grow else 1) or 1
+    conn.execute('INSERT INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, wrap_sig, wrap_signer, added_at, accepted, key_version)'
+                 ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)'
                  ' ON CONFLICT(group_id, username) DO UPDATE SET wrapped_key = excluded.wrapped_key,'
-                 ' eph_pub = excluded.eph_pub, wrap_iv = excluded.wrap_iv',
-                 (group_id, target, wrapped_key, eph_pub, wrap_iv, int(time.time())))
+                 ' eph_pub = excluded.eph_pub, wrap_iv = excluded.wrap_iv,'
+                 ' wrap_sig = excluded.wrap_sig, wrap_signer = excluded.wrap_signer, key_version = excluded.key_version',
+                 (group_id, target, wrapped_key, eph_pub, wrap_iv, wrap_sig or None, user['username'], int(time.time()), cur_ver))
     conn.commit()
     conn.close()
-    return jsonify({'ok': True})
+    security_event('collab.member.add', severity='info', actor=user['username'], group=group_id, target=target)
+    return jsonify({'ok': True, 'keyVersion': cur_ver})
+
+
+class _RotationError(Exception):
+    """Invalid section-key rotation; carries the HTTP status to return."""
+
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+def _apply_group_rotation(conn, group_id, current_version, new_version, keys, exclude=(), signer=None):
+    """Validate and apply a section key-epoch bump in the caller's transaction.
+
+    The owner supplies one ECDH wrap of the new key per remaining accepted
+    member; the server only ever stores them and never sees the key. Raises
+    _RotationError on invalid input. Does NOT commit — the caller does, so the
+    version bump and any accompanying membership change land atomically."""
+    if new_version != ((current_version or 1) + 1):
+        raise _RotationError('Stale key version.', 409)
+    if not isinstance(keys, list) or not keys:
+        raise _RotationError('Missing key wraps.')
+    accepted = {r['username'] for r in conn.execute(
+        'SELECT username FROM collab_members WHERE group_id = ? AND accepted = 1', (group_id,))}
+    accepted -= {str(x) for x in exclude}
+    parsed = {}
+    try:
+        for item in keys:
+            name = str((item or {}).get('username', '')).strip()
+            if not validate_username(name) or name in parsed:
+                raise ValueError('bad member')
+            parsed[name] = _decode_wrap(item or {})
+    except (ValueError, AttributeError, base64.binascii.Error):
+        raise _RotationError('Invalid key wraps.')
+    if set(parsed) != accepted:
+        raise _RotationError('Wraps must cover exactly the current members.')
+    for name, (wrapped_key, eph_pub, wrap_iv, sig) in parsed.items():
+        conn.execute('UPDATE collab_members SET wrapped_key = ?, eph_pub = ?, wrap_iv = ?, key_version = ?,'
+                     ' wrap_sig = ?, wrap_signer = ? WHERE group_id = ? AND username = ?',
+                     (wrapped_key, eph_pub, wrap_iv, new_version, sig or None, signer, group_id, name))
+    conn.execute('UPDATE collab_groups SET key_version = ?, updated_at = ?, rekey_needed = 0 WHERE id = ?',
+                 (new_version, int(time.time()), group_id))
+    return parsed
+
+
+@app.route('/api/collab/groups/<int:group_id>/rotate', methods=['POST'])
+def api_group_rotate(group_id):
+    """Publish a new section-key epoch.
+
+    Any current member may rotate (needed when the owner is offline or has left):
+    the caller has already re-encrypted the section's notes under the new key and
+    supplies one ECDH wrap per currently-accepted member. The server stores the
+    wraps, bumps key_version, clears the rekey flag and tells live collaborators
+    to rekey. It never sees the key. Content written under an older epoch is
+    rejected by the note endpoints, so a removed/left member (who kept the old
+    key and has no wrap for the new one) cannot read the section going forward."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        new_version = int(data.get('keyVersion'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid key version.'}), 400
+    conn = get_db()
+    g = conn.execute('SELECT owner, key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    if not g:
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    if not _is_group_member(conn, group_id, user['username']):
+        conn.close()
+        return jsonify({'error': 'Not a member of this shared section.'}), 403
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='group.rotate')
+        return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
+    try:
+        _apply_group_rotation(conn, group_id, g['key_version'], new_version, data.get('keys'),
+                              signer=user['username'])
+    except _RotationError as error:
+        conn.close()
+        return jsonify({'error': error.message}), error.status
+    conn.commit()
+    conn.close()
+    _broadcast_group(group_id, {'type': 'rekey', 'version': new_version})
+    security_event('collab.group.rotate', severity='info', actor=user['username'],
+                   group=group_id, key_version=new_version)
+    return jsonify({'ok': True, 'keyVersion': new_version})
 
 
 @app.route('/api/collab/groups/<int:group_id>/members/<username>', methods=['DELETE'])
 def api_group_remove_member(group_id, username):
+    """Remove a member.
+
+    The owner removing an accepted peer must rotate the section key in the same
+    transaction, so a removal can never leave the old key live for the person cut
+    off; the owner's client supplies the new-epoch wraps. A member leaving on
+    their own may also rotate (any member may), but if they don't the section is
+    flagged rekey_needed so a remaining member rotates on next open — the server
+    holds no key and cannot rotate by itself."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
     conn = get_db()
-    g = conn.execute('SELECT owner FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    g = conn.execute('SELECT owner, key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
     if not g:
         conn.close()
         return jsonify({'ok': True})
-    if g['owner'] != user['username'] and username != user['username']:
+    username = str(username)
+    removing_self = username == user['username']
+    if g['owner'] != user['username'] and not removing_self:
         conn.close()
         return jsonify({'error': 'Only the owner can remove members.'}), 403
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='member.remove')
+        return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
+    target = conn.execute('SELECT accepted FROM collab_members WHERE group_id = ? AND username = ?',
+                          (group_id, username)).fetchone()
+    was_accepted = bool(target and (target['accepted'] or 0))
+    note_ids = [r['id'] for r in conn.execute('SELECT id FROM collab_notes WHERE group_id = ?', (group_id,))]
+    rotated = False
+    new_version = None
+    if was_accepted:
+        has_payload = data.get('keyVersion') is not None and data.get('keys') is not None
+        if has_payload:
+            try:
+                new_version = int(data.get('keyVersion'))
+            except (TypeError, ValueError):
+                conn.close()
+                return jsonify({'error': 'Invalid key version.'}), 400
+            try:
+                _apply_group_rotation(conn, group_id, g['key_version'], new_version, data.get('keys'),
+                                      exclude={username}, signer=user['username'])
+            except _RotationError as error:
+                conn.close()
+                return jsonify({'error': error.message}), error.status
+            rotated = True
+        elif g['owner'] == user['username'] and not removing_self:
+            conn.close()
+            return jsonify({'error': 'Key rotation is required to remove a member.'}), 400
+        else:
+            # A member left without rotating: flag the section so a remaining
+            # member rotates the epoch on next open.
+            conn.execute('UPDATE collab_groups SET rekey_needed = 1 WHERE id = ?', (group_id,))
     conn.execute('DELETE FROM collab_members WHERE group_id = ? AND username = ?', (group_id, username))
     conn.commit()
     conn.close()
-    return jsonify({'ok': True})
+    # Revocation is immediate: cut the removed user's open streams so they stop
+    # receiving ciphertext, then tell the remaining members to adopt the new
+    # epoch (the removed member has no wrap for it).
+    _close_user_streams(username, note_ids)
+    if rotated:
+        _broadcast_group(group_id, {'type': 'rekey', 'version': new_version})
+    security_event('collab.member.remove', severity='warning', actor=user['username'],
+                   group=group_id, target=username, self_leave=bool(removing_self), rotated=rotated)
+    return jsonify({'ok': True, 'keyVersion': new_version, 'rekeyNeeded': (not rotated and was_accepted)})
 
 
 @app.route('/api/collab/groups/<int:group_id>', methods=['DELETE'])
@@ -3408,6 +3742,10 @@ def api_group_delete(group_id):
     if g['owner'] != user['username']:
         conn.close()
         return jsonify({'error': 'Only the owner can delete this section.'}), 403
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='group.delete')
+        return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
     note_ids = [r['id'] for r in conn.execute('SELECT id FROM collab_notes WHERE group_id = ?', (group_id,))]
     conn.execute('DELETE FROM collab_groups WHERE id = ?', (group_id,))
     conn.execute('DELETE FROM collab_members WHERE group_id = ?', (group_id,))
@@ -3418,6 +3756,7 @@ def api_group_delete(group_id):
     conn.close()
     for nid in note_ids:
         _close_streams(nid)
+    security_event('collab.group.delete', severity='warning', actor=user['username'], group=group_id)
     return jsonify({'ok': True})
 
 
@@ -3441,13 +3780,15 @@ def api_group_note_create(group_id):
         conn.close()
         return jsonify({'error': 'Not a member of this shared section.'}), 403
     now = int(time.time())
-    cur = conn.execute('INSERT INTO collab_notes (group_id, owner, created_at, updated_at, enc_state, enc_meta) VALUES (?, ?, ?, ?, NULL, ?)',
-                       (group_id, user['username'], now, now, enc_meta))
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    cur_ver = (grow['key_version'] if grow else 1) or 1
+    cur = conn.execute('INSERT INTO collab_notes (group_id, owner, created_at, updated_at, enc_state, enc_meta, key_version) VALUES (?, ?, ?, ?, NULL, ?, ?)',
+                       (group_id, user['username'], now, now, enc_meta, cur_ver))
     note_id = cur.lastrowid
     conn.execute('UPDATE collab_groups SET updated_at = ? WHERE id = ?', (now, group_id))
     conn.commit()
     conn.close()
-    return jsonify({'ok': True, 'id': note_id})
+    return jsonify({'ok': True, 'id': note_id, 'keyVersion': cur_ver})
 
 
 @app.route('/api/collab/notes/<int:note_id>/meta', methods=['POST'])
@@ -3484,18 +3825,50 @@ def api_note_get(note_id):
     if not note or not _is_group_member(conn, note['group_id'], user['username']):
         conn.close()
         return jsonify({'error': 'Not found.'}), 404
-    mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv FROM collab_members WHERE group_id = ? AND username = ?',
+    mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv, key_version, wrap_sig, wrap_signer FROM collab_members WHERE group_id = ? AND username = ?',
                         (note['group_id'], user['username'])).fetchone()
     meta = conn.execute('SELECT enc_meta FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (note['group_id'],)).fetchone()
     conn.close()
     return jsonify({
         'id': note_id, 'groupId': note['group_id'], 'owner': note['owner'], 'updatedAt': note['updated_at'],
+        'keyVersion': (grow['key_version'] if grow else 1) or 1,
+        'myKeyVersion': mine['key_version'] or 1,
         'encMeta': base64.b64encode(bytes(meta['enc_meta'])).decode('ascii') if meta and meta['enc_meta'] else '',
         'myKey': {
             'wrappedKey': base64.b64encode(bytes(mine['wrapped_key'])).decode('ascii'),
             'ephPub': base64.b64encode(bytes(mine['eph_pub'])).decode('ascii'),
             'wrapIv': base64.b64encode(bytes(mine['wrap_iv'])).decode('ascii'),
+            'sig': base64.b64encode(bytes(mine['wrap_sig'])).decode('ascii') if mine['wrap_sig'] else '',
+            'signer': mine['wrap_signer'] or '',
         },
+    })
+
+
+@app.route('/api/collab/notes/<int:note_id>/state', methods=['GET'])
+def api_note_state(note_id):
+    """Full ciphertext of a note (snapshot + update log) so a member can decrypt,
+    re-encode and re-encrypt it under a new epoch during key rotation."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (note['group_id'],)).fetchone()
+    updates = [{'payload': base64.b64encode(bytes(r['payload'])).decode('ascii'), 'version': r['key_version'] or 1}
+               for r in conn.execute('SELECT payload, key_version FROM collab_updates WHERE note_id = ? ORDER BY id', (note_id,))]
+    conn.close()
+    return jsonify({
+        'id': note_id, 'groupId': note['group_id'],
+        # keyVersion is the epoch that encrypted encState (the snapshot);
+        # groupKeyVersion is the section's current epoch for new writes.
+        'keyVersion': note['key_version'] or 1,
+        'groupKeyVersion': (grow['key_version'] if grow else 1) or 1,
+        'encState': base64.b64encode(bytes(note['enc_state'])).decode('ascii') if note['enc_state'] else '',
+        'updates': updates,
     })
 
 
@@ -3512,6 +3885,10 @@ def api_note_delete(note_id):
     if not _is_group_member(conn, note['group_id'], user['username']):
         conn.close()
         return jsonify({'error': 'Not allowed.'}), 403
+    grow = conn.execute('SELECT owner FROM collab_groups WHERE id = ?', (note['group_id'],)).fetchone()
+    if not grow or grow['owner'] != user['username']:
+        conn.close()
+        return jsonify({'error': 'Only the owner can delete a shared note.'}), 403
     conn.execute('DELETE FROM collab_notes WHERE id = ?', (note_id,))
     conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (note_id,))
     conn.commit()
@@ -3528,7 +3905,8 @@ def api_note_compact(note_id):
     data = json_object()
     try:
         payload = base64.b64decode(str(data.get('state', '')).encode('ascii'), validate=True)
-    except (ValueError, AttributeError, base64.binascii.Error):
+        key_version = int(data.get('keyVersion'))
+    except (ValueError, TypeError, AttributeError, base64.binascii.Error):
         return jsonify({'error': 'Invalid state.'}), 400
     if not (1 <= len(payload) <= SHARE_MAX_BYTES):
         return jsonify({'error': 'State too large.'}), 413
@@ -3537,13 +3915,18 @@ def api_note_compact(note_id):
     if not note or not _is_group_member(conn, note['group_id'], user['username']):
         conn.close()
         return jsonify({'error': 'Not found.'}), 404
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (note['group_id'],)).fetchone()
+    if key_version != ((grow['key_version'] if grow else 1) or 1):
+        conn.close()
+        return jsonify({'error': 'Stale key version.'}), 409
     now = int(time.time())
-    conn.execute('UPDATE collab_notes SET enc_state = ?, updated_at = ? WHERE id = ?', (payload, now, note_id))
+    conn.execute('UPDATE collab_notes SET enc_state = ?, key_version = ?, updated_at = ? WHERE id = ?',
+                 (payload, key_version, now, note_id))
     conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (note_id,))
     conn.execute('UPDATE collab_groups SET updated_at = ? WHERE id = ?', (now, note['group_id']))
     conn.commit()
     conn.close()
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'keyVersion': key_version})
 
 
 # Live sync transport: Server-Sent Events for receiving (works with the dev
@@ -3558,28 +3941,36 @@ def api_note_stream(note_id):
     if not note or not _is_group_member(conn, note['group_id'], user['username']):
         conn.close()
         return jsonify({'error': 'Not found.'}), 404
-    backlog = [bytes(r['payload']) for r in conn.execute('SELECT payload FROM collab_updates WHERE note_id = ? ORDER BY id', (note_id,))]
+    backlog = [(bytes(r['payload']), r['key_version'] or 1)
+               for r in conn.execute('SELECT payload, key_version FROM collab_updates WHERE note_id = ? ORDER BY id', (note_id,))]
     state_blob = bytes(note['enc_state']) if note['enc_state'] else None
+    state_version = note['key_version'] or 1
     conn.close()
     q = queue.Queue()
-    collab_streams.setdefault(note_id, []).append(q)
+    collab_streams.setdefault(note_id, []).append((user['username'], q))
 
     def generate():
         try:
             yield 'retry: 2000\n\n'
             if state_blob:
-                yield 'data: ' + json.dumps({'type': 'state', 'payload': base64.b64encode(state_blob).decode('ascii')}) + '\n\n'
-            for u in backlog:
-                yield 'data: ' + json.dumps({'type': 'update', 'payload': base64.b64encode(u).decode('ascii')}) + '\n\n'
+                yield 'data: ' + json.dumps({'type': 'state', 'version': state_version, 'payload': base64.b64encode(state_blob).decode('ascii')}) + '\n\n'
+            for u, version in backlog:
+                yield 'data: ' + json.dumps({'type': 'update', 'version': version, 'payload': base64.b64encode(u).decode('ascii')}) + '\n\n'
             while True:
                 try:
                     item = q.get(timeout=20)
-                    yield 'data: ' + item + '\n\n'
                 except queue.Empty:
                     yield ': ping\n\n'
+                    continue
+                if item is None:
+                    # Access revoked or note/section deleted: tell the client and
+                    # end the stream so no further ciphertext is delivered.
+                    yield 'data: ' + json.dumps({'type': 'closed'}) + '\n\n'
+                    break
+                yield 'data: ' + item + '\n\n'
         finally:
             try:
-                collab_streams.get(note_id, []).remove(q)
+                collab_streams.get(note_id, []).remove((user['username'], q))
             except ValueError:
                 pass
     return app.response_class(generate(), mimetype='text/event-stream',
@@ -3594,7 +3985,8 @@ def api_note_updates(note_id):
     data = json_object()
     try:
         payload = base64.b64decode(str(data.get('payload', '')).encode('ascii'), validate=True)
-    except (ValueError, AttributeError, base64.binascii.Error):
+        key_version = int(data.get('keyVersion'))
+    except (ValueError, TypeError, AttributeError, base64.binascii.Error):
         return jsonify({'error': 'Invalid update.'}), 400
     if not (1 <= len(payload) <= SHARE_MAX_BYTES):
         return jsonify({'error': 'Update too large.'}), 413
@@ -3603,15 +3995,48 @@ def api_note_updates(note_id):
     if not note or not _is_group_member(conn, note['group_id'], user['username']):
         conn.close()
         return jsonify({'error': 'Not allowed.'}), 403
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (note['group_id'],)).fetchone()
+    if key_version != ((grow['key_version'] if grow else 1) or 1):
+        conn.close()
+        return jsonify({'error': 'Stale key version.'}), 409
     now = int(time.time())
-    conn.execute('INSERT INTO collab_updates (note_id, payload, created_at) VALUES (?, ?, ?)', (note_id, payload, now))
+    conn.execute('INSERT INTO collab_updates (note_id, payload, created_at, key_version) VALUES (?, ?, ?, ?)',
+                 (note_id, payload, now, key_version))
     conn.execute('UPDATE collab_notes SET updated_at = ? WHERE id = ?', (now, note_id))
     conn.execute('DELETE FROM collab_updates WHERE note_id = ? AND id NOT IN '
                  '(SELECT id FROM collab_updates WHERE note_id = ? ORDER BY id DESC LIMIT 5000)',
                  (note_id, note_id))
     conn.commit()
     conn.close()
-    _broadcast(note_id, {'type': 'update', 'payload': data['payload']})
+    _broadcast(note_id, {'type': 'update', 'version': key_version, 'payload': data['payload']})
+    return jsonify({'ok': True, 'keyVersion': key_version})
+
+
+@app.route('/api/collab/notes/<int:note_id>/presence', methods=['POST'])
+def api_note_presence(note_id):
+    """Ephemeral presence relay (who is here, where their cursor is).
+
+    Presence is never stored: the encrypted blob is fanned out to the note's
+    live subscribers and forgotten. The server cannot read it (it is encrypted
+    under the section key)."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        payload = base64.b64decode(str(data.get('payload', '')).encode('ascii'), validate=True)
+        key_version = int(data.get('keyVersion'))
+    except (ValueError, TypeError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid presence.'}), 400
+    if not (1 <= len(payload) <= 2048):
+        return jsonify({'error': 'Presence too large.'}), 413
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not allowed.'}), 403
+    conn.close()
+    _broadcast(note_id, {'type': 'presence', 'version': key_version, 'payload': data['payload']})
     return jsonify({'ok': True})
 
 
