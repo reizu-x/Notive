@@ -26,6 +26,7 @@ import { renderMarkdown, inlineMarkdown, splitTableRow, tableAligns, renderTable
 import { highlightJson, yamlCommentAt, highlightYamlValue, highlightYaml, beautifyJsonText, beautifyYamlText } from './core/syntax.js';
 import { NOTE_EXTS, COVER_ACCEPT, COVER_MAX_CHARS, MIGRATED_COLLECTIONS_SECTION_ID, normalizeExt, isImageFile, parseRecipeBody, migrateNote, sanitizeIngredients, sanitizeSteps, cleanCoverSrc, sanitizeFilename, parseTitleExtension, EXT_LABELS, EXT_MIME, COVER_MAX_DIM } from './core/schema.js';
 import { THEMES, THEME_META_COLORS, THEME_LABELS, FONTS } from './ui/theme.js';
+import { showToast, askInput } from './ui/modal.js';
 import { state } from './domain/state.js';
 import { noteList, listEmpty, listHeading, titleInput, markdownInput, preview, breadcrumbTitle, wordCount, tagList, saveLabel, typeBadge, editorToolbar, allCount, recentCountEl, starredCountEl, totalCount, importInput, modeLabel, modeToggle, beautifyBtn, tabBarEl, tabOverflowMenuEl, stripBoxEl, stripBackEl, syntaxLayer, recipeBodyEl, foldToggle, importNotesBtn, panelResizer, notesPanel, sidebar, sidebarToggle, workspaceToggle, settingsOverlay, tabLogin, tabRegister, registerForm, passkeyLoginBtn, changeBtn, mfaSetupBtn, closeMfaQrBtn, mfaQrOverlay, mfaConfirmBtn, mfaDisableBtn, passkeyAddBtn, accountSaveBtn, accountDeleteBtn, accountSaveNameBtn, profileOverlay, profileCardEl, closeProfileBtn, profileEditBtn, profilePhotoBtn, profilePhotoRemove, avatarInputEl, acctRecBtn, acctRecDownloadBtn, acctRecDoneBtn, acctRecViewBtn, recoverLink, recoverBack, closeRecoverModalBtn, recoverModalOverlay, recoverOptEmail, recoverOptCode, recoverEmailBtn, recoverVerifyBtn, recoverBtn, settingsNewTagBtn, deviceOnlyBox, themeSelect, fontSelect, loginThemeToggle, loginThemeMenu, recoverTokenBtn } from './core/elements.js';
 import { newNoteId, isValidNoteId } from './core/ids.js';
@@ -7400,63 +7401,10 @@ function closeFolderPicker() {
 }
 
 // Show a transient bottom-right status message (single timer, latest wins).
-function showToast(message) {
-  const toast = document.getElementById('toast');
-  toast.textContent = message;
-  toast.classList.add('show');
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => toast.classList.remove('show'), 2200);
-}
-
 // In-app input prompt (replaces window.prompt everywhere: native prompts are
 // unmasked plaintext, unstyled, and block automation/testing). One-shot
 // promise: resolves the typed string, or null on cancel/Esc/overlay click.
 // A second call while open resolves the first waiter with null.
-let askInputPending = null;
-function askInput({ eyebrow = 'Notely', title = 'Input needed', desc = '', label = 'Value', password = true, placeholder = '', okText = 'Confirm' } = {}) {
-  if (askInputPending) {
-    try { askInputPending(null); } catch (error) {}
-    askInputPending = null;
-  }
-  return new Promise((resolve) => {
-    const modal = document.getElementById('prompt-modal');
-    const input = document.getElementById('prompt-input');
-    const okBtn = document.getElementById('prompt-ok');
-    const cancelBtn = document.getElementById('prompt-cancel');
-    const cancelX = document.getElementById('prompt-cancel-x');
-    if (!modal || !input || !okBtn) { resolve(null); return; }
-    document.getElementById('prompt-eyebrow').textContent = eyebrow;
-    document.getElementById('prompt-title').textContent = title;
-    document.getElementById('prompt-desc').textContent = desc;
-    document.getElementById('prompt-label').textContent = label;
-    okBtn.textContent = okText;
-    input.type = password ? 'password' : 'text';
-    input.placeholder = placeholder;
-    input.value = '';
-    askInputPending = resolve;
-    const settle = (value) => {
-      okBtn.onclick = null;
-      if (cancelBtn) cancelBtn.onclick = null;
-      if (cancelX) cancelX.onclick = null;
-      input.onkeydown = null;
-      modal.onclick = null;
-      modal.hidden = true;
-      if (askInputPending === resolve) askInputPending = null;
-      resolve(value);
-    };
-    okBtn.onclick = () => settle(input.value);
-    if (cancelBtn) cancelBtn.onclick = () => settle(null);
-    if (cancelX) cancelX.onclick = () => settle(null);
-    input.onkeydown = (event) => {
-      if (event.key === 'Enter') settle(input.value);
-      else if (event.key === 'Escape') settle(null);
-    };
-    modal.onclick = (event) => { if (event.target === modal) settle(null); };
-    modal.hidden = false;
-    setTimeout(() => { try { input.focus(); } catch (error) {} }, 30);
-  });
-}
-
 // True when the open note is not Markdown (formatting tools stay disabled).
 function isPlainTextNote() {
   const note = activeEditorNote();

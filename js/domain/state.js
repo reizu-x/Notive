@@ -25,4 +25,6 @@ export const state = {
   collabPresenceLocalTimer: null,
   collabTypingTimer: null,
   pendingSharedTemplate: null,
+  // Resolve fn of the open prompt modal (js/ui/modal.js); null when closed.
+  askInputPending: null,
 };
