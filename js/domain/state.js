@@ -29,4 +29,6 @@ export const state = {
   yjsPromise: null,
   // Resolve fn of the open prompt modal (js/ui/modal.js); null when closed.
   askInputPending: null,
+  // Open vault modal mode: 'setup' | 'unlock' | 'reset-confirm' | null.
+  vaultModalMode: null,
 };

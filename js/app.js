@@ -28,6 +28,8 @@ import { NOTE_EXTS, COVER_ACCEPT, COVER_MAX_CHARS, MIGRATED_COLLECTIONS_SECTION_
 import { THEMES, THEME_META_COLORS, THEME_LABELS, FONTS } from './ui/theme.js';
 import { showToast, askInput } from './ui/modal.js';
 import { sharingFingerprint, sharingPinsLoad, sharingPinsSave, wrapSigMessage, signWrap, verifyWrap, sharingSignerPublicKey, sharingUnwrapAccountKey, sharingWrapAccountKey, sharingRecipientPublicKey, wrapRawKeyFor, unwrapRawKey, unwrapMyKey, collabGroupKey, collabKeyFor, collabEncrypt, collabDecrypt, collabEncryptMeta, collabDecryptMeta, collabEncryptGroupMeta, collabDecryptGroupMeta, commonPrefixLen, commonSuffixLen, applyTextDiff, bufToB64url, b64urlToBuf, sha256Hex } from './data/collab-crypto.js';
+import { updateVaultUI, setVaultModal, closeVaultModal, vaultFail } from './ui/vault.js';
+import { e2eeUnlockWithPassword, e2eeUpgradeKdf, refreshMfaStatus, passwordPolicyCheck, setAuthTab, loginFail, showLogin, hideLogin, refreshSession, fullNameOf, initialsFor, cleanAvatarSrc, AVATAR_MAX_CHARS } from './ui/auth.js';
 import { validVaultBlob, cleanVaultFolders, timingSafeEqualStr, vaultEncryptNote, vaultDecryptItem, decryptAllVaultBlobs, currentVaultBlobs, uniqueVaultTitle, cleanVaultFolderInput } from './data/vault.js';
 import { state } from './domain/state.js';
 import { noteList, listEmpty, listHeading, titleInput, markdownInput, preview, breadcrumbTitle, wordCount, tagList, saveLabel, typeBadge, editorToolbar, allCount, recentCountEl, starredCountEl, totalCount, importInput, modeLabel, modeToggle, beautifyBtn, tabBarEl, tabOverflowMenuEl, stripBoxEl, stripBackEl, syntaxLayer, recipeBodyEl, foldToggle, importNotesBtn, panelResizer, notesPanel, sidebar, sidebarToggle, workspaceToggle, settingsOverlay, tabLogin, tabRegister, registerForm, passkeyLoginBtn, changeBtn, mfaSetupBtn, closeMfaQrBtn, mfaQrOverlay, mfaConfirmBtn, mfaDisableBtn, passkeyAddBtn, accountSaveBtn, accountDeleteBtn, accountSaveNameBtn, profileOverlay, profileCardEl, closeProfileBtn, profileEditBtn, profilePhotoBtn, profilePhotoRemove, avatarInputEl, acctRecBtn, acctRecDownloadBtn, acctRecDoneBtn, acctRecViewBtn, recoverLink, recoverBack, closeRecoverModalBtn, recoverModalOverlay, recoverOptEmail, recoverOptCode, recoverEmailBtn, recoverVerifyBtn, recoverBtn, settingsNewTagBtn, deviceOnlyBox, themeSelect, fontSelect, loginThemeToggle, loginThemeMenu, recoverTokenBtn } from './core/elements.js';
@@ -6229,7 +6231,6 @@ function bindNoteContextMenu() {
 // while unlocked (wiped on lock/logout/reload).
 state.vault = { unlocked: false, dek: null, notes: [], blobs: [], meta: null, folders: [] };
 let currentVaultId = null;
-let vaultModalMode = null; // 'setup' | 'unlock' | 'reset-confirm'
 
 
 // Vault folder names: flat, trimmed, no slashes, capped. Shared by envelope
@@ -6589,30 +6590,6 @@ function renderVaultList() {
 }
 
 // Toggle the vault-only action buttons and the nav lock icon.
-function updateVaultUI() {
-  const inVault = state.activeView === 'vault';
-  const showVaultTools = inVault && state.vault.unlocked;
-  const newVaultBtn = document.getElementById('new-vault-note');
-  const lockVaultBtn = document.getElementById('lock-vault');
-  if (newVaultBtn) newVaultBtn.hidden = !showVaultTools;
-  if (lockVaultBtn) lockVaultBtn.hidden = !showVaultTools;
-  if (inVault) {
-    // The vault has its own actions; never show the normal ones here.
-    const newNoteBtn = document.getElementById('new-note');
-    const importBtn = document.getElementById('import-notes');
-    if (newNoteBtn) newNoteBtn.hidden = true;
-    if (importBtn) importBtn.hidden = true;
-  }
-  if (inVault) {
-    // The vault has its own actions; never show the normal ones here.
-    const newNoteBtn = document.getElementById('new-note');
-    const importBtn = document.getElementById('import-notes');
-    if (newNoteBtn) newNoteBtn.hidden = true;
-    if (importBtn) importBtn.hidden = true;
-  }
-  const vaultNavIcon = document.querySelector('.nav-item[data-view="vault"] .nav-icon');
-  if (vaultNavIcon) vaultNavIcon.innerHTML = icon(state.vault.unlocked ? 'unlock' : 'lock');
-}
 
 function enterVaultView() {
   if (!state.vault.unlocked) { openVaultModal(); return; }
@@ -6647,25 +6624,6 @@ async function lockVault() {
 // Vault password modal: 'setup' (first run), 'unlock', or 'reset-confirm'.
 // reset-confirm reuses the masked unlock password field for the LOGIN
 // password proof (no window.prompt plaintext shoulder-surfing).
-function setVaultModal(mode, message) {
-  vaultModalMode = mode;
-  document.getElementById('vault-title').textContent = mode === 'setup' ? 'Set Vault Password' : mode === 'reset-confirm' ? 'Reset Vault?' : 'Unlock Vault';
-  document.getElementById('vault-desc').textContent = mode === 'setup'
-    ? 'Choose a password just for your vault. It is separate from your login and cannot be recovered.'
-    : mode === 'reset-confirm'
-      ? 'Enter your LOGIN password to confirm. This permanently deletes every note inside the vault. This cannot be undone.'
-      : 'Enter your vault password to reveal your secret notes.';
-  document.getElementById('vault-setup-block').hidden = mode !== 'setup';
-  document.getElementById('vault-unlock-block').hidden = (mode !== 'unlock' && mode !== 'reset-confirm');
-  const confirmBtn = document.getElementById('vault-confirm');
-  confirmBtn.textContent = mode === 'setup' ? 'Set password' : mode === 'reset-confirm' ? 'Reset vault' : 'Unlock';
-  confirmBtn.className = mode === 'unlock' ? 'btn btn-primary' : 'btn btn-danger';
-  const errorEl = document.getElementById('vault-error');
-  if (errorEl) {
-    if (message) { errorEl.textContent = message; errorEl.hidden = false; }
-    else errorEl.hidden = true;
-  }
-}
 
 async function openVaultModal() {
   if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to open the Vault'); return; }
@@ -6681,29 +6639,11 @@ async function openVaultModal() {
   state.vault.meta = meta;
   setVaultModal(meta && meta.exists ? 'unlock' : 'setup');
   document.getElementById('vault-overlay').hidden = false;
-  const focusInput = document.querySelector(vaultModalMode === 'setup' ? '#vault-new-password' : '#vault-password');
+  const focusInput = document.querySelector(state.vaultModalMode === 'setup' ? '#vault-new-password' : '#vault-password');
   if (focusInput) focusInput.focus();
 }
 
-function closeVaultModal() {
-  document.getElementById('vault-overlay').hidden = true;
-  vaultModalMode = null;
-  ['vault-password', 'vault-new-password', 'vault-confirm-password'].forEach((id) => {
-    const input = document.getElementById(id);
-    if (input) input.value = '';
-  });
-}
 
-function vaultFail(message) {
-  const errorEl = document.getElementById('vault-error');
-  const card = document.querySelector('#vault-overlay .modal');
-  if (errorEl) { errorEl.textContent = message; errorEl.hidden = false; }
-  if (card) {
-    card.classList.remove('shake');
-    void card.offsetWidth;
-    card.classList.add('shake');
-  }
-}
 
 async function setupVaultFromModal() {
   const password = String(document.getElementById('vault-new-password').value || '');
@@ -6809,8 +6749,8 @@ async function resetVault() {
 }
 
 document.getElementById('vault-confirm').addEventListener('click', async () => {
-  if (vaultModalMode === 'setup') await setupVaultFromModal();
-  else if (vaultModalMode === 'reset-confirm') await resetVault();
+  if (state.vaultModalMode === 'setup') await setupVaultFromModal();
+  else if (state.vaultModalMode === 'reset-confirm') await resetVault();
   else await unlockVaultFromModal();
 });
 document.getElementById('vault-cancel').addEventListener('click', closeVaultModal);
@@ -8036,20 +7976,6 @@ state.cachedProfile = null;
 // apiFetch() now lives in js/data/api.js (imported above).
 
 // Ask the server who holds the cookie; caches the profile in memory (null when signed out).
-async function refreshSession() {
-  try {
-    const response = await apiFetch('/api/me');
-    if (!response.ok) {
-      state.cachedProfile = null;
-      return null;
-    }
-    state.cachedProfile = await response.json();
-    return state.cachedProfile;
-  } catch (error) {
-    state.cachedProfile = null;
-    return null;
-  }
-}
 
 // --- Per-browser-session unlock -------------------------------------------
 // The master key never touches persistent storage. To survive a page refresh
@@ -8125,9 +8051,6 @@ async function enterWorkspace() {
 }
 
 // Display name from an E2EE profile (first + last, falls back to username).
-function fullNameOf(profile) {
-  return `${profile.firstName || ''} ${profile.lastName || ''}`.trim() || profile.username || '?';
-}
 
 // Synchronous view of the in-memory session for render code (null when signed out).
 function getSessionUser() {
@@ -8136,21 +8059,11 @@ function getSessionUser() {
 }
 
 // Avatar initials: first letters of the first two name words, uppercased.
-function initialsFor(name) {
-  return String(name || '').trim().split(/\s+/).map((word) => word[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?';
-}
 
 // --- Profile avatar --------------------------------------------------------
 // Optional user picture. Stored inside the E2EE UI vault (never plaintext on
 // disk/server), rendered as an image in place of the initials.
 let profileAvatar = '';
-const AVATAR_MAX_CHARS = 400000;
-function cleanAvatarSrc(raw) {
-  if (typeof raw !== 'string') return null;
-  const s = raw.trim();
-  if (s.length > AVATAR_MAX_CHARS) return null;
-  return /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(s) ? s : null;
-}
 // Paint a round avatar element with the picture when set, else its initials.
 function paintAvatar(el, fallbackInitials) {
   if (!el) return;
@@ -8186,21 +8099,8 @@ function applyProfile() {
 }
 
 // Show the login gate and focus the username field.
-function showLogin() {
-  const overlay = document.getElementById('login-overlay');
-  if (!overlay) return;
-  overlay.hidden = false;
-  const errorEl = document.getElementById('login-error');
-  if (errorEl) errorEl.hidden = true;
-  const userInput = document.getElementById('login-username');
-  if (userInput) userInput.focus();
-}
 
 // Hide the login gate.
-function hideLogin() {
-  const overlay = document.getElementById('login-overlay');
-  if (overlay) overlay.hidden = true;
-}
 
 // Server logout, then wipe keys/notes/editor/selection from memory and reset the UI to the gate.
 // Pending edits are flushed to the server FIRST so nothing made in this
@@ -8274,63 +8174,12 @@ async function logout() {
 }
 
 // Show the login error message with a shake; defaults to the generic (non-enumerating) text.
-function loginFail(message) {
-  const errorEl = document.getElementById('login-error');
-  const card = document.querySelector('.login-card');
-  if (errorEl) {
-    errorEl.textContent = message || 'Incorrect username or password.';
-    errorEl.hidden = false;
-  }
-  if (card) {
-    card.classList.remove('shake');
-    void card.offsetWidth;
-    card.classList.add('shake');
-  }
-}
 
 // Client-side password rules (12+ chars, upper, lower, digit, special). The server never sees passwords, so this is the enforcement point for new ones.
-function passwordPolicyCheck(password) {
-  // NIST SP 800-63B: length-based, no composition rules; long passwords allowed.
-  const failures = [];
-  if (typeof password !== 'string' || password.length < 15) failures.push('at least 15 characters');
-  if (typeof password === 'string' && password.length > 256) failures.push('at most 256 characters');
-  return failures;
-}
 
 // Switch the gate between Log in and Create account forms. The single tab
 // below the submit button doubles as the way back: it reads "Create account"
 // on the login form and "Log in" on the register form.
-function setAuthTab(mode) {
-  const isRegister = mode === 'register';
-  const isRecover = mode === 'recover';
-  document.getElementById('login-form').hidden = isRegister || isRecover;
-  document.getElementById('register-form').hidden = !isRegister;
-  // Passkey / recovery helpers belong to signing in, never to registering.
-  // Recovery mode shows only the recovery options (no password, login,
-  // passkey or forgot-link chrome).
-  const helpers = document.getElementById('login-helpers');
-  if (helpers) helpers.hidden = isRegister;
-  const passkeyBtn = document.getElementById('passkey-login-btn');
-  if (passkeyBtn) passkeyBtn.hidden = isRecover;
-  const linkWrap = document.getElementById('recover-link-wrap');
-  if (linkWrap) linkWrap.hidden = isRecover;
-  const block = document.getElementById('recover-block');
-  if (block) block.hidden = !isRecover;
-  const tabs = document.querySelector('.auth-tabs');
-  if (tabs) tabs.hidden = isRecover;
-  const tabLoginEl = document.getElementById('tab-login');
-  if (tabLoginEl) {
-    tabLoginEl.classList.toggle('active', !isRegister);
-    tabLoginEl.setAttribute('aria-selected', String(!isRegister));
-  }
-  const tabRegisterEl = document.getElementById('tab-register');
-  if (tabRegisterEl) {
-    tabRegisterEl.classList.toggle('active', isRegister);
-    tabRegisterEl.setAttribute('aria-selected', String(isRegister));
-    tabRegisterEl.textContent = isRegister ? 'Log in' : 'Create account';
-  }
-  document.getElementById('login-title').textContent = isRecover ? 'Recover account' : isRegister ? 'Create account' : 'Log in';
-}
 
 
 
@@ -8345,54 +8194,10 @@ let authBusy = false;
 // within this page so it can be re-wrapped on rotation/upgrade). Throws on
 // wrong password (vault stays locked). Bundle shape: {kdf, saltAuth,
 // saltEnc, iterations?, encMasterKey} with base64 salts/wrap.
-async function e2eeUnlockWithPassword(username, password, bundle) {
-  const saltEncBytes = e2eeB64ToBytes(bundle.saltEnc);
-  let masterKey;
-  if (bundle.kdf === 'argon2id') {
-    const rawKek = await argon2id32(password, saltEncBytes);
-    const kek = await window.crypto.subtle.importKey('raw', rawKek, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-    const rawMk = await window.crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: e2eeB64ToBytes(bundle.encMasterKey.iv) }, kek, e2eeB64ToBytes(bundle.encMasterKey.data));
-    masterKey = await window.crypto.subtle.importKey('raw', rawMk, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
-  } else {
-    masterKey = await e2eeUnwrapMasterKey(password, saltEncBytes, bundle.iterations, bundle.encMasterKey);
-  }
-  const saltAuthBytes = e2eeB64ToBytes(bundle.saltAuth);
-  e2ee.masterKey = masterKey;
-  e2ee.kdf = bundle.kdf || 'pbkdf2';
-  e2ee.saltAuth = saltAuthBytes;
-  e2ee.saltEnc = saltEncBytes;
-  e2ee.iterations = bundle.iterations || 0;
-}
 
 // One-shot PBKDF2 -> Argon2id lift: re-wraps the SAME master key (exported
 // while unlocked) under a fresh Argon2id KEK. Notes are untouched, so this
 // cannot strand data; failures simply retry on the next login.
-async function e2eeUpgradeKdf(username, password) {
-  const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
-  const saltAuthBytes = e2eeRandomBytes(16);
-  const saltEncBytes = e2eeRandomBytes(16);
-  const authBits = await argon2id32(password, saltAuthBytes);
-  const wrapped = await e2eeWrapMasterKeyArgon2id(password, saltEncBytes, masterRaw);
-  const oldAuthBits = await e2eeDeriveBits(password, e2ee.saltAuth, e2ee.iterations);
-  const response = await apiFetch('/api/upgrade-kdf', {
-    method: 'POST',
-    body: JSON.stringify({
-      oldAuthHash: e2eeBytesToB64(oldAuthBits),
-      kdf: 'argon2id',
-      params: { t: E2EE_KDF_ARGON2ID.t, m: E2EE_KDF_ARGON2ID.m, p: E2EE_KDF_ARGON2ID.p },
-      saltAuth: e2eeBytesToB64(saltAuthBytes),
-      saltEnc: e2eeBytesToB64(saltEncBytes),
-      authHash: e2eeBytesToB64(authBits),
-      encMasterKey: wrapped,
-    }),
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  e2ee.kdf = 'argon2id';
-  e2ee.saltAuth = saltAuthBytes;
-  e2ee.saltEnc = saltEncBytes;
-  e2ee.iterations = 0;
-}
 
 // Password reveal: any .password-eye button toggles its target input between
 // masked and visible. Delegated so it works for every field that opts in.
@@ -8911,23 +8716,6 @@ document.getElementById('logout-button').addEventListener('click', logout);
 // --- MFA settings (Two-Factor pane) ---
 // Lost the authenticator? Recover the account (email/recovery code) — that
 // clears MFA, so no separate MFA bypass codes exist by design.
-async function refreshMfaStatus() {
-  const statusEl = document.getElementById('mfa-status');
-  const setupBtn = document.getElementById('mfa-setup-btn');
-  const disableBtn = document.getElementById('mfa-disable-btn');
-  try {
-    const r = await apiFetch('/api/mfa/status');
-    if (!r.ok) throw new Error();
-    const s = await r.json();
-    if (statusEl) statusEl.textContent = s.enabled
-      ? 'MFA is ON. Logins need your password plus a 6-digit code.'
-      : 'MFA is OFF. Logins need only your password.';
-    if (setupBtn) setupBtn.hidden = Boolean(s.enabled);
-    if (disableBtn) disableBtn.hidden = !s.enabled;
-  } catch (error) {
-    if (statusEl) statusEl.textContent = 'Could not load MFA status.';
-  }
-}
 
 function openMfaQrModal() {
   const modal = document.getElementById('mfa-qr-modal');
