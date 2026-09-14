@@ -19,3 +19,4 @@ export function relativeEditedLabel(note) {
   if (diff < 7 * day) return `Edited ${Math.floor(diff / day)}d ago`;
   return `Edited ${new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
 }
+export const BIN_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;

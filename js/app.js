@@ -29,6 +29,7 @@ import { THEMES, THEME_META_COLORS, THEME_LABELS, FONTS } from './ui/theme.js';
 import { showToast, askInput } from './ui/modal.js';
 import { sharingFingerprint, sharingPinsLoad, sharingPinsSave, wrapSigMessage, signWrap, verifyWrap, sharingSignerPublicKey, sharingUnwrapAccountKey, sharingWrapAccountKey, sharingRecipientPublicKey, wrapRawKeyFor, unwrapRawKey, unwrapMyKey, collabGroupKey, collabKeyFor, collabEncrypt, collabDecrypt, collabEncryptMeta, collabDecryptMeta, collabEncryptGroupMeta, collabDecryptGroupMeta, commonPrefixLen, commonSuffixLen, applyTextDiff, bufToB64url, b64urlToBuf, sha256Hex } from './data/collab-crypto.js';
 import { updateVaultUI, setVaultModal, closeVaultModal, vaultFail } from './ui/vault.js';
+import { setSaveLabel, syncAgoText, viewLabel, binRemainingText, noteGlyphFor, makeStripScrollButton, updateStripScrollButton, clearTabDropMarks } from './ui/feedback.js';
 import { e2eeUnlockWithPassword, e2eeUpgradeKdf, refreshMfaStatus, passwordPolicyCheck, setAuthTab, loginFail, showLogin, hideLogin, refreshSession, fullNameOf, initialsFor, cleanAvatarSrc, AVATAR_MAX_CHARS } from './ui/auth.js';
 import { validVaultBlob, cleanVaultFolders, timingSafeEqualStr, vaultEncryptNote, vaultDecryptItem, decryptAllVaultBlobs, currentVaultBlobs, uniqueVaultTitle, cleanVaultFolderInput } from './data/vault.js';
 import { state } from './domain/state.js';
@@ -536,7 +537,6 @@ async function loadNotesFromServer() {
   }
 }
 
-const BIN_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 // Default folders carried over from the removed built-in Collections section.
 // New custom sections share the same folder palette/behavior (same value).
 const DEFAULT_CUSTOM_FOLDERS = ['Work', 'Personal', 'Reading list'];
@@ -2133,37 +2133,12 @@ function bindFolderDragDrop() {
 // One helper drives the topbar indicator: dot colour (green synced / gray
 // offline / red error) plus label text. Sync timestamps feed the
 // "Synced X min ago" wording and a ticker keeps it current.
-let lastSyncedAt = 0;
-function setSaveLabel(text, mode = 'green') {
-  if (saveLabel) saveLabel.textContent = text;
-  const dot = document.querySelector('.save-state .save-dot');
-  if (dot) {
-    dot.classList.toggle('is-offline', mode === 'gray');
-    dot.classList.toggle('is-error', mode === 'red');
-  }
-  // Sidebar footer mirror: drives the Settings/Help-area indicator too so
-  // the two can never show different states.
-  const syncDot = document.querySelector('.sync-status .sync-dot');
-  const syncText = document.querySelector('.sync-status .sync-text');
-  if (syncDot) {
-    syncDot.classList.toggle('is-offline', mode === 'gray');
-    syncDot.classList.toggle('is-error', mode === 'red');
-  }
-  if (syncText) syncText.textContent = text;
-}
-function syncAgoText() {
-  const seconds = Math.max(0, Math.floor((Date.now() - lastSyncedAt) / 1000));
-  if (seconds < 15) return 'Synced just now';
-  if (seconds < 120) return 'Synced 1 min ago';
-  if (seconds < 3600) return `Synced ${Math.floor(seconds / 60)} min ago`;
-  return `Synced at ${new Date(lastSyncedAt).toTimeString().slice(0, 5)}`;
-}
 function markSynced() {
-  lastSyncedAt = Date.now();
+  state.lastSyncedAt = Date.now();
   setSaveLabel(syncAgoText(), 'green');
 }
 setInterval(() => {
-  if (lastSyncedAt && saveLabel && saveLabel.textContent.startsWith('Synced')) {
+  if (state.lastSyncedAt && saveLabel && saveLabel.textContent.startsWith('Synced')) {
     setSaveLabel(syncAgoText(), 'green');
   }
 }, 30000);
@@ -2320,15 +2295,6 @@ state.openTabs = []; // [{ id, vault }] in opening order, capped
 const MAX_OPEN_TABS = 20;
 // List glyph shared by the note list, tabs and strip. Recipes and to-dos keep
 // their distinctive glyphs; everything else gets its file-type icon.
-function noteGlyphFor(note) {
-  if (note && note.template === 'recipe') return 'cooking';
-  if (note && note.template === 'todo') return 'todo';
-  const ext = note && note.ext;
-  if (ext === 'txt') return 'type-txt';
-  if (ext === 'json') return 'type-json';
-  if (ext === 'yaml') return 'type-yaml';
-  return 'type-md';
-}
 function findTabbedNote(id, isVault, isShared) {
   if (isShared) {
     const meta = sharedNoteMeta.get(String(id)) || sharedNoteMeta.get(id);
@@ -2546,10 +2512,6 @@ if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
 let dragTabEl = null;
 let dragTabIndex = null;
 let tabClickSuppressed = false;
-function clearTabDropMarks() {
-  if (!tabBarEl) return;
-  tabBarEl.querySelectorAll('.tab-drop-before, .tab-drop-after').forEach((el) => el.classList.remove('tab-drop-before', 'tab-drop-after'));
-}
 function endTabDrag() {
   if (dragTabEl) dragTabEl.classList.remove('dragging');
   clearTabDropMarks();
@@ -2747,47 +2709,10 @@ if (stripBackEl) stripBackEl.addEventListener('click', (event) => {
 // scroll buttons appear above/below the strip (never a scrollbar): a down
 // arrow when there is more below, and an up arrow once scrolled down. Clicking
 // pages one viewport of items; both hide automatically at their ends.
-function makeStripScrollButton(id, dir, glyphName, label) {
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = `strip-scroll-btn strip-scroll-${dir}`;
-  btn.id = id;
-  btn.setAttribute('aria-label', label);
-  btn.setAttribute('title', label);
-  btn.innerHTML = icon(glyphName);
-  return btn;
-}
-const stripScrollUp = makeStripScrollButton('strip-scroll-up', 'up', 'chevron-up', 'Scroll up');
-const stripScrollDown = makeStripScrollButton('strip-scroll-down', 'down', 'chevron-down', 'Scroll down');
-if (stripBoxEl && stripBoxEl.parentElement) {
-  stripBoxEl.insertAdjacentElement('beforebegin', stripScrollUp);
-  stripBoxEl.insertAdjacentElement('afterend', stripScrollDown);
-  stripScrollUp.addEventListener('click', () => {
-    stripBoxEl.scrollBy({ top: -stripBoxEl.clientHeight, behavior: 'smooth' });
-  });
-  stripScrollDown.addEventListener('click', () => {
-    stripBoxEl.scrollBy({ top: stripBoxEl.clientHeight, behavior: 'smooth' });
-  });
-}
-function updateStripScrollButton() {
-  if (!stripBoxEl) return;
-  const collapsible = document.querySelector('.app-shell.workspace-collapsed:not(.workspace-focus)');
-  const canUp = stripBoxEl.scrollTop > 1;
-  const canDown = stripBoxEl.scrollTop + stripBoxEl.clientHeight < stripBoxEl.scrollHeight - 1;
-  if (stripScrollUp) stripScrollUp.classList.toggle('is-visible', Boolean(collapsible && canUp));
-  if (stripScrollDown) stripScrollDown.classList.toggle('is-visible', Boolean(collapsible && canDown));
-}
 
 // Rebuild the clickable breadcrumb trail: [view] [/ folder] / [note title].
 // The title element itself is persistent (editor writes to it directly); only
 // the trail prefix is re-rendered here.
-function viewLabel(view) {
-  if (view === 'favorites') return 'Starred notes';
-  if (view === 'archive') return 'Archive';
-  if (view === 'bin') return 'Bin';
-  if (view === 'vault') return 'Vault';
-  return 'All Notes';
-}
 
 function updateBreadcrumbs() {
   const trail = document.getElementById('breadcrumb-trail');
@@ -2987,16 +2912,6 @@ function scopeNotes() {
 }
 
 // Human countdown ("2d left") until a binned note is purged.
-function binRemainingText(note) {
-  if (!note.deleted || typeof note.deletedAt !== 'number') return '';
-  const remaining = BIN_RETENTION_MS - (Date.now() - note.deletedAt);
-  if (remaining <= 0) return 'Expires soon';
-  const days = Math.floor(remaining / (24 * 60 * 60 * 1000));
-  if (days >= 1) return `${days}d left`;
-  const hours = Math.floor(remaining / (60 * 60 * 1000));
-  if (hours >= 1) return `${hours}h left`;
-  return 'Expires soon';
-}
 
 // Resize the Markdown textarea to its content (skipped in preview mode).
 function autogrow() {
