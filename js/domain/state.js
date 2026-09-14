@@ -31,4 +31,7 @@ export const state = {
   askInputPending: null,
   // Open vault modal mode: 'setup' | 'unlock' | 'reset-confirm' | null.
   vaultModalMode: null,
+  // Signer.username -> signing-key fingerprint pin cache (localStorage-backed).
+  sharingPins: new Map(),
+  sharingPinsLoaded: false,
 };

@@ -4679,8 +4679,6 @@ async function sharingEnsureKeysOnce() {
 
 // ---- Signed wraps: a member signs the key they hand a peer, so the recipient
 // can detect a server that substitutes a wrap it controls. ------------------------------------------------------------------
-let sharingPinsLoaded = false;
-const sharingPins = new Map(); // signer username -> signing-key fingerprint
 // Throws if a wrap we did not make fails verification (legacy unsigned wraps are
 // allowed through so existing sections keep working).
 
@@ -4692,7 +4690,7 @@ const sharingPins = new Map(); // signer username -> signing-key fingerprint
 // relayed over a WebSocket. The server only relays ciphertext.
 function loadYjs() {
   if (!state.yjsPromise) state.yjsPromise = import('/vendor/yjs/yjs.mjs');
-  return yjsPromise;
+  return state.yjsPromise;
 }
 
 // Note "meta" (title + folder) is encrypted under the group key so the server
@@ -5244,7 +5242,7 @@ async function createSharedNoteWithTemplate(groupId, folder, templateKey) {
     const update = Y.encodeStateAsUpdate(doc);
     doc.destroy();
     const payload = await collabEncrypt(key, update);
-    await apiFetch(`/api/collab/notes/${note.id}/updates`, { method: 'POST', body: JSON.stringify({ payload }) });
+    await apiFetch(`/api/collab/notes/${note.id}/updates`, { method: 'POST', body: JSON.stringify({ payload, keyVersion: 1 }) });
   } catch (error) {}
   await openCollabNote(note.id);
   if (state.activeView === 'shared') renderSharedView();

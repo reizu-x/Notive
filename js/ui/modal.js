@@ -3,6 +3,8 @@
 // The shell is static (index.html); nodes are looked up lazily so this module
 // also works for dynamically opened dialogs.
 
+import { state } from '../domain/state.js';
+
 // Transient toast in the top-right corner; auto-dismisses after 2.2 s.
 export function showToast(message) {
   const toast = document.getElementById('toast');

@@ -14,16 +14,16 @@ export async function sharingFingerprint(pubRawBytes) {
 }
 
 export function sharingPinsLoad() {
-  if (sharingPinsLoaded) return;
-  sharingPinsLoaded = true;
+  if (state.sharingPinsLoaded) return;
+  state.sharingPinsLoaded = true;
   try {
     const obj = JSON.parse(localStorage.getItem('notely-keypins') || '{}');
-    Object.keys(obj).forEach((k) => sharingPins.set(k, String(obj[k])));
+    Object.keys(obj).forEach((k) => state.sharingPins.set(k, String(obj[k])));
   } catch (error) {}
 }
 
 export function sharingPinsSave() {
-  try { localStorage.setItem('notely-keypins', JSON.stringify(Object.fromEntries(sharingPins))); } catch (error) {}
+  try { localStorage.setItem('notely-keypins', JSON.stringify(Object.fromEntries(state.sharingPins))); } catch (error) {}
 }
 
 export function wrapSigMessage(groupId, recipient, keyVersion, w) {
@@ -54,11 +54,11 @@ export async function sharingSignerPublicKey(signer) {
   const raw = e2eeB64ToBytes(data.sigPubkey);
   const fp = await sharingFingerprint(raw);
   sharingPinsLoad();
-  const pinned = sharingPins.get(signer);
+  const pinned = state.sharingPins.get(signer);
   if (pinned && pinned !== fp) {
     throw new Error(`Signing key for ${signer} changed (${pinned} → ${fp}). Refusing to trust it.`);
   }
-  if (!pinned) { sharingPins.set(signer, fp); sharingPinsSave(); }
+  if (!pinned) { state.sharingPins.set(signer, fp); sharingPinsSave(); }
   return window.crypto.subtle.importKey('raw', raw, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
 }
 
