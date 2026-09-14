@@ -9,6 +9,11 @@ export const AVATAR_MAX_CHARS = 400000;
 import { apiFetch } from '../data/api.js';
 import { state } from '../domain/state.js';
 import { E2EE_KDF_ARGON2ID, argon2id32, e2ee, e2eeB64ToBytes, e2eeBytesToB64, e2eeDeriveBits, e2eeRandomBytes, e2eeUnwrapMasterKey, e2eeWrapMasterKeyArgon2id } from '../data/crypto.js';
+import { b64urlToBuf } from '../data/collab-crypto.js';
+import { clearRecoveryCodesLocal, loadRecoveryCodesLocal } from './editor.js';
+import { showToast } from './modal.js';
+import { applyProfile } from './shell.js';
+
 
 export async function e2eeUnlockWithPassword(username, password, bundle) {
   const saltEncBytes = e2eeB64ToBytes(bundle.saltEnc);
@@ -171,4 +176,161 @@ export function cleanAvatarSrc(raw) {
   const s = raw.trim();
   if (s.length > AVATAR_MAX_CHARS) return null;
   return /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(s) ? s : null;
+}
+
+
+export async function refreshAcctRecStatus() {
+  // Count display only; plaintext codes are never re-fetchable by design.
+  // While unused codes exist the SAME set stays viewable (no regenerate);
+  // generating again is only offered once the set is exhausted.
+  const genBtn = document.getElementById('acct-rec-generate-btn');
+  const viewBtn = document.getElementById('acct-rec-view-btn');
+  try {
+    const r = await apiFetch('/api/recovery/account/count');
+    if (!r.ok) return;
+    const data = await r.json();
+    const n = data.count || 0;
+    const st = document.getElementById('acct-rec-status');
+    if (n > 0) {
+      const local = await loadRecoveryCodesLocal();
+      if (st) st.textContent = local
+        ? `${n} unused codes stored. Same set as generated — view anytime.`
+        : `${n} unused codes stored (generated on another device). Use one, or replace the whole set.`;
+      if (genBtn) {
+        genBtn.hidden = Boolean(local);
+        genBtn.textContent = local ? 'Generate recovery codes' : 'Replace codes…';
+      }
+      if (viewBtn) viewBtn.hidden = !local;
+    } else {
+      clearRecoveryCodesLocal();
+      if (st) st.textContent = 'No recovery codes stored on this account.';
+      if (genBtn) { genBtn.hidden = false; genBtn.textContent = 'Generate recovery codes'; }
+      if (viewBtn) viewBtn.hidden = true;
+    }
+  } catch (error) {}
+}
+
+export function closeAcctRecModal() {
+  // One-shot display: wipe plaintext codes from memory and DOM on close.
+  state.acctRecShownCodes = [];
+  renderAcctRecCodes();
+  const modal = document.getElementById('acct-rec-modal');
+  if (modal) modal.hidden = true;
+}
+
+export function openAcctRecModal() {
+  renderAcctRecCodes();
+  const err = document.getElementById('acct-rec-modal-error');
+  if (err) err.hidden = true;
+  const modal = document.getElementById('acct-rec-modal');
+  if (modal) modal.hidden = false;
+}
+
+export function renderAcctRecCodes() {
+  const list = document.getElementById('acct-rec-codes');
+  if (!list) return;
+  list.innerHTML = '';
+  state.acctRecShownCodes.forEach((code) => {
+    const item = document.createElement('li');
+    item.textContent = code;
+    list.appendChild(item);
+  });
+}
+
+// Plaintext codes live ONLY here (memory) and in one encrypted on-device
+// cache below. The server keeps hashes + wraps, so a second device can never
+// re-display them — it must replace the set (invalidating the old codes).
+export function acctRecCacheKey() {
+  try {
+    const name = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
+    if (name) return `notely-recovery-codes:${name}`;
+  } catch (error) {}
+  return null;
+}
+
+// --- Name editing (stored inside the server-encrypted profile) ---
+export async function saveAccountName() {
+  const errEl = document.getElementById('account-error');
+  const first = String(document.getElementById('account-first').value || '').trim().slice(0, 60);
+  const last = String(document.getElementById('account-last').value || '').trim().slice(0, 60);
+  try {
+    const r = await apiFetch('/api/account/profile', { method: 'POST', body: JSON.stringify({ firstName: first, lastName: last }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'Could not save name.');
+    if (state.cachedProfile) { state.cachedProfile.firstName = data.firstName || first; state.cachedProfile.lastName = data.lastName || last; }
+    if (errEl) errEl.hidden = true;
+    applyProfile();
+    showToast('Name saved');
+  } catch (error) {
+    if (errEl) { errEl.textContent = error.message; errEl.hidden = false; }
+  }
+}
+
+// --- Account pane (username/email/delete) ---
+export function refreshAccountPane() {
+  try {
+    const u = document.getElementById('account-username');
+    if (u) u.value = (state.cachedProfile && state.cachedProfile.username) || '';
+    const f = document.getElementById('account-first');
+    if (f && document.activeElement !== f) f.value = (state.cachedProfile && state.cachedProfile.firstName) || '';
+    const l = document.getElementById('account-last');
+    if (l && document.activeElement !== l) l.value = (state.cachedProfile && state.cachedProfile.lastName) || '';
+    const e = document.getElementById('account-email');
+    if (e && document.activeElement !== e) e.value = (state.cachedProfile && state.cachedProfile.email) || '';
+  } catch (error) {}
+}
+
+// Many authenticators evaluate the PRF only during an assertion (get), not
+// during creation. Run a throwaway get() against the just-created credential to
+// obtain its PRF output, so passwordless unlock works on far more devices. The
+// challenge is local — nothing is sent to the server; only the PRF output is
+// used, to wrap the master key under SHA-256(PRF).
+export async function prfSecretViaAssertion(credentialId, rpId, prfSaltB64) {
+  if (!window.PublicKeyCredential || !navigator.credentials || !navigator.credentials.get) return null;
+  try {
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: e2eeRandomBytes(32),
+        ...(rpId ? { rpId } : {}),
+        allowCredentials: [{ type: 'public-key', id: credentialId }],
+        userVerification: 'required',
+        timeout: 60000,
+        extensions: { prf: { eval: { first: b64urlToBuf(prfSaltB64) } } },
+      },
+    });
+    return prfFirstResult(assertion);
+  } catch (error) {
+    return null;
+  }
+}
+
+export function prfFirstResult(cred) {
+  try {
+    const ext = cred.getClientExtensionResults ? cred.getClientExtensionResults() : null;
+    const first = ext && ext.prf && ext.prf.results && ext.prf.results.first;
+    return first ? new Uint8Array(first) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+export function closeMfaQrModal() {
+  const modal = document.getElementById('mfa-qr-modal');
+  if (modal) modal.hidden = true;
+}
+
+export function openMfaQrModal() {
+  const modal = document.getElementById('mfa-qr-modal');
+  if (modal) modal.hidden = false;
+}
+
+// ---- Desktop copy / cloud opt-out ----
+// "This device only" mode: server sync is off and the E2EE envelope is saved
+// to a per-account encrypted localStorage slot instead. Same key-zeroing
+// rules as the UI vault — never plaintext, never shared between accounts.
+export function accountScopeKey(base) {
+  try {
+    const name = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
+    return `${base}:${name}`;
+  } catch (error) { return base; }
 }

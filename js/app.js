@@ -38,6 +38,17 @@ import { newNoteId, isValidNoteId } from './core/ids.js';
 import { FOLDER_SEP, MAX_SUBFOLDER_PARENT_DEPTH, CONTROL_CHARS, splitFolderPath, folderParent, folderLeaf,
   folderDepth, folderIconForDepth, isFolderOrSub, cleanFolderPath, joinLeafRename } from './core/paths.js';
 import { isRecentNote, relativeEditedLabel } from './core/dates.js';
+import { cancelCollabInvite, closeCollabNewDialog, closeCollabNote, closeCollabPending, closeSharedContextMenu, collabAddGroupMember, collabAdoptRekey, collabAssetsChanged, collabCompact, collabCreate, collabInvite, collabPresenceColor, collabPresenceHeartbeat, collabPresenceLocal, collabPresenceReceive, collabRemoveMember, collabSyncDom, loadYjs, openCollabPending, refreshSharedNavCount, renderCollabMembersModal, renderCollabPresence, scheduleCollabMeta, setCollabNewStatus, setCollabStatus, setSharedNavCount, sharedNoteMatchesSearch, sharedUniqueTitle, showSharedContextMenu, updateSharedNoteMeta } from './data/collab-crypto.js';
+import { COLLAPSED_FOLDERS_KEY, IMPORTANT_TAG, NOTE_TEMPLATES, SECTION_DATA_KEY, SECTION_ICONS, UI_VAULT_KEY, sharedBodyCache, sharedCollapsed, sharedGroupFolders, sharedGroupKeys, sharedGroupOwners, sharedGroupTags, sharedNoteMeta } from './domain/constants.js';
+import { closeAcctRecModal, closeMfaQrModal, openAcctRecModal, openMfaQrModal, prfFirstResult, prfSecretViaAssertion, refreshAccountPane, refreshAcctRecStatus, renderAcctRecCodes, saveAccountName } from './ui/auth.js';
+import { clearRecoveryCodesLocal, closeRecoverModal, downscaleCover, enterCoverRepos, findTreeWrap, focusRecipeField, handleCollabCoverFile, loadRecoveryCodesLocal, moveCoverOnNote, newRecoveryCode, openRecoverModal, prfUnwrapMasterKey, prfWrapMasterKey, recipeDataForActive, renderCover, renderPreview, renderRecipeBody, renderRecipeHero, saveRecoveryCodesLocal, setCoverReposUI } from './ui/editor.js';
+import { cleanUiSnapshot, closeDeleteConfirm, closeTemplatePicker, confirmDeleteGroup, e2eeLock, findCustomItem, isUnlocked, openDeleteConfirm, openPermanentDeleteConfirm, parseUsernames, readFileAsDataUrl, readLegacyUiKeys, refreshEditorLock, rekeyGroupIfNeeded, renderTemplateOptions, repathList, sharingEnsureKeys, uniqueTitle, updateListHeading, updateMeta } from './ui/misc.js';
+import { activeEditorNote, buildNotesEnvelope, clearSearch, closeNoteContextMenu, currentNote, deviceOnlyPref, downloadNoteById, ensureNoteFiled, exportAllNotes, firstFilingOf, getNoteContextMenu, isImportant, isPlainTextNote, localNotesKey, markSynced, openEmptyBinConfirm, openNoteContextMenu, readLegacyLocalNotes, saveNotesToDevice, scopeNotes, setDeleteDialog, setDeviceOnlyPref, updateBinUI, visibleNotes, wipeLegacyLocalNotes } from './ui/notes.js';
+import { clearSectionSelection, closeFolderContextMenu, closeFolderPicker, closeSectionContextMenu, closeSectionIconPicker, closeSectionSettings, confirmDeleteSharedFolder, customFolderColor, customNoteFolder, folderListOf, getFolderContextMenu, insertFolderAfterParent, isFolderDrag, isSectionEmpty, openCustomFolderDeleteConfirm, openCustomSectionDeleteConfirm, openFolderContextMenu, openSectionContextMenu, openSectionIconPicker, openSectionSettings, openVaultFolderDeleteConfirm, orderFoldersLikeWorkspace, renderCustomSections, resolveListFolderTarget, saveGroupFolders, sectionDisplayName, sectionTagAdd, sectionTagRemove, sharedAllFolderKeys, sharedFolderKey, sharedFolderTree, sidebarFolderTarget, takenSectionNames, uniqueCustomFolderName, uniqueSectionId, uniqueSectionName, updateFoldToggle, visibleFolderPaths } from './ui/sections.js';
+import { applyFont, applyPanelWidth, applyProfile, clearSessionUnlock, closeProfilePopup, closeSettings, downscaleAvatar, openProfilePopup, openSettings, paintAvatar, refreshProfilePopup, restorePanelWidth, restoreSessionUnlock, restoreWorkspaceCollapsed, saveSessionUnlock, seedFromTemplate, setLoginThemeMenu, setSidebarCollapsed, setWorkspaceCollapsed, slideMenuCollapsed, startCollapsedPref, welcomeSeedNotes, welcomeSeedUi } from './ui/shell.js';
+import { clearSharedDropTargets, closeTabOverflow, coverDragStart, endCoverDrag, endTabDrag, findTabbedNote, fitTabStrip, renderStripItems, setSettingsTab, toggleTabOverflow, trackTab, updateBreadcrumbs } from './ui/tabs.js';
+import { addNoteTag, cleanTagList, closeTagEditor, normalizeTagName, openSharedTagEditor, openTagEditor, removeNoteTag, renderSettingsTags, renderSharedTags, renderTagEditor, sharedGroupTagList, sharedTagList } from './ui/tags.js';
+import { decryptUiVaultRaw, openVaultModal, openVaultNoteDeleteConfirm, uiVaultKey, writeUiVaultLocal } from './ui/vault.js';
 
 'use strict';
 (() => {
@@ -48,7 +59,7 @@ import { isRecentNote, relativeEditedLabel } from './core/dates.js';
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev82') {
+  if (build !== 'dev83') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -115,117 +126,23 @@ document.querySelectorAll('[data-icon]').forEach((element) => {
 // device-local copy from another account.
 
 // One-time read of pre-server localStorage note keys. Returns null when absent or invalid.
-function readLegacyLocalNotes() {
-  try {
-    const raw = JSON.parse(localStorage.getItem('notely-notes') || localStorage.getItem('quietly-notes') || 'null');
-    if (!Array.isArray(raw) || !raw.length) return null;
-    return raw.map(migrateNote).slice(0, 2000);
-  } catch (error) {
-    return null;
-  }
-}
+
 
 // Delete legacy plaintext note keys after server migration (CWE-312: no plaintext notes lingering on disk).
-function wipeLegacyLocalNotes() {
-  try {
-    localStorage.removeItem('notely-notes');
-    localStorage.removeItem('quietly-notes');
-  } catch (error) {}
-}
+
 
 // Onboarding workspace for brand-new accounts: a "Notes" section with
 // General/Personal folders plus welcome notes that explain the app. Ids are
 // stable (`welcome-*`) so this runs at most once per account — any saved
 // envelope (even an empty one) means the server row exists and this never fires.
-const WELCOME_SECTION_ID = 'section-notes';
-const WELCOME_FOLDERS = ['General', 'Personal'];
 
-function welcomeSeedNotes() {
-  const generalWelcome = `# Welcome to Notely
 
-This is your private, end-to-end encrypted notebook. Everything you write is
-encrypted on this device before it ever reaches the server — nobody else can
-read it, not even the server itself.
 
-## The basics
 
-- **New note** — the button at the top of the list creates a note.
-- **Write** — the left pane is your editor, the right pane previews as you type.
-- **Organise** — every note can live in a folder. This workspace starts with
-  two: **General** and **Personal**, inside the **Notes** section.
-- **Search** — the search bar finds note titles, contents and folders. To find a
-  tag, type \`tag: <name>\` (for example, \`tag: recipe\`).
-
-## Sections and folders
-
-The sidebar holds **sections** (think of them as shelves). Each section contains
-**folders**, and folders can nest — type \`Work / Projects\` to create a folder
-inside a folder. Create new sections with **+ Add section**, and add folders
-with the **+** next to a section.
-
-## Note types
-
-When creating a note you can pick a template:
-
-- **Note** — free-form markdown, the default.
-- **Recipe** — ingredients and steps with a tidy layout.
-- **To-do** — checkboxes that track progress as you go.
-
-## Safety net
-
-- **Favorite** notes (right-click) to pin them for quick access.
-- **Archive** notes you want out of the way but not gone.
-- **Delete** moves a note to the **Bin**, where it waits for a grace period
-  before being removed for good — mistakes are recoverable.
-
-> Everything here is yours alone. Change these notes, rename the folders, or
-> delete them — this workspace is yours to shape.`;
-
-  const personalWelcome = `# Your personal space
-
-This folder is for the everyday things: journal entries, ideas, lists, plans,
-drafts, anything that is yours.
-
-## Ideas to get you started
-
-- A **daily journal** — one note per day, or one running note.
-- **Lists** — books to read, films to watch, places to go.
-- **Projects** — plan something you care about, one step at a time.
-- **Recipes** — switch the template to *Recipe* for ingredients and steps.
-
-## Tips
-
-1. **Tags** — add tags like \`ideas\` or \`todo\` to find notes across folders.
-2. **Markdown** — \`#\` makes headings, \`-\` makes lists, \`>\` makes quotes.
-3. **Drag notes** onto a folder in the sidebar to file them.
-
-> There is no wrong way to take notes. Start messy, organise later.`;
-
-  return [
-    {
-      id: 'welcome-general', title: 'Welcome to Notely', date: 'Today',
-      tags: ['welcome'], favorite: true, ext: 'md',
-      sections: { [WELCOME_SECTION_ID]: 'General' },
-      body: generalWelcome,
-    },
-    {
-      id: 'welcome-personal', title: 'Your personal space', date: 'Today',
-      tags: ['welcome'], favorite: false, ext: 'md',
-      sections: { [WELCOME_SECTION_ID]: 'Personal' },
-      body: personalWelcome,
-    },
-  ];
-}
 
 // The sidebar section that ships with new accounts. Only applied when the
 // account has no sidebar state of its own (server or device cache).
-function welcomeSeedUi() {
-  return {
-    collapsed: [],
-    customSections: [{ id: WELCOME_SECTION_ID, name: 'Notes', folders: [...WELCOME_FOLDERS], icon: 'book' }],
-    deletedCustomSections: [],
-  };
-}
+
 
 
 // --- End-to-end encryption -------------------------------------------------
@@ -278,116 +195,33 @@ function welcomeSeedUi() {
 // encrypted blobs until the vault password unlocks them). Throws otherwise.
 
 // Wipe all key material from memory (logout, failed unlock). Display/session state is cleared separately.
-function e2eeLock() {
-  e2ee.masterKey = null;
-  e2ee.kdf = null;
-  e2ee.saltAuth = null;
-  e2ee.saltEnc = null;
-  e2ee.iterations = 0;
-}
+
 // True when a session exists AND the master key is in memory (vault unlocked, notes readable).
-function isUnlocked() {
-  return Boolean(state.cachedProfile && e2ee.masterKey);
-}
+
 // The note the editor is bound to, whether it lives in the workspace or the
 // unlocked Vault. Editor chrome (favorite/share/type/download/preview) goes
 // through this so vault notes behave like normal ones.
-function activeEditorNote() {
-  if (state.activeView === 'vault') {
-    if (!state.vault.unlocked || !state.currentVaultId) return null;
-    return state.vault.notes.find((item) => item.id === state.currentVaultId) || null;
-  }
-  return currentNote();
-}
+
 // Central lock switch: disables editor inputs and hides New/Import while logged out or locked; otherwise defers to the note deleted/archived state. Runs after every list/selection render.
-function refreshEditorLock() {
-  // A shared note is always editable while it is open in the standard editor.
-  if (state.collab.noteId) {
-    titleInput.disabled = false;
-    markdownInput.disabled = false;
-    return;
-  }
-  let note = null;
-  let locked = !isUnlocked();
-  if (state.activeView === 'vault') {
-    locked = locked || !state.vault.unlocked;
-    if (!locked && state.currentVaultId) note = state.vault.notes.find((item) => item.id === state.currentVaultId) || null;
-  } else if (state.currentId) {
-    note = state.notes.find((item) => item.id === state.currentId) || null;
-  }
-  const readOnly = locked || !note || Boolean(note.deleted) || Boolean(note.archived);
-  titleInput.disabled = readOnly;
-  markdownInput.disabled = readOnly;
-  const newNoteBtn = document.getElementById('new-note');
-  const importBtn = document.getElementById('import-notes');
-  if (newNoteBtn) newNoteBtn.hidden = locked || state.activeView === 'bin' || state.activeView === 'vault' || state.activeView === 'shared';
-  if (importBtn) importBtn.hidden = locked || state.activeView === 'bin' || state.activeView === 'vault' || state.activeView === 'shared';
-  const coverAddBtn = document.getElementById('cover-add');
-  if (coverAddBtn) setCoverAddHidden(readOnly || state.activeView === 'vault' || !note || Boolean(note.cover) || note.template === 'recipe');
-  const coverChangeBtn = document.getElementById('cover-change');
-  if (coverChangeBtn) coverChangeBtn.disabled = readOnly;
-  const coverRemoveBtn = document.getElementById('cover-remove');
-  if (coverRemoveBtn) coverRemoveBtn.disabled = readOnly;
-  const coverReposBtn = document.getElementById('cover-repos');
-  if (coverReposBtn) coverReposBtn.disabled = readOnly;
-  const coverDoneBtn = document.getElementById('cover-done');
-  if (coverDoneBtn) coverDoneBtn.disabled = readOnly;
-  const recipeDesc = document.getElementById('recipe-desc');
-  if (recipeDesc) recipeDesc.disabled = readOnly;
-  const recipePhotoBtn = document.getElementById('recipe-photo-btn');
-  if (recipePhotoBtn) recipePhotoBtn.disabled = readOnly;
-}
+
 
 // ---- Desktop copy / cloud opt-out ----
 // "This device only" mode: server sync is off and the E2EE envelope is saved
 // to a per-account encrypted localStorage slot instead. Same key-zeroing
 // rules as the UI vault — never plaintext, never shared between accounts.
-function accountScopeKey(base) {
-  try {
-    const name = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
-    return `${base}:${name}`;
-  } catch (error) { return base; }
-}
-function deviceOnlyKey() { return accountScopeKey('notely-device-only'); }
-function localNotesKey() { return accountScopeKey('notely-local-notes'); }
-function deviceOnlyPref() {
-  try { return localStorage.getItem(deviceOnlyKey()) === '1'; } catch (error) { return false; }
-}
-function setDeviceOnlyPref(on) {
-  try {
-    if (on) localStorage.setItem(deviceOnlyKey(), '1');
-    else localStorage.removeItem(deviceOnlyKey());
-  } catch (error) {}
-}
+
+
+
+
+
 
 // Build the outgoing workspace envelope (notes + vault ciphertext + UI state)
 // shared by server sync and device-only saves.
-async function buildNotesEnvelope() {
-  const envelope = { v: 2, notes: state.notes, vault: await currentVaultBlobs(), vaultFolders: [...state.vault.folders] };
-  try {
-    if (typeof uiSnapshot === 'function') envelope.ui = uiSnapshot();
-  } catch (error) {}
-  return envelope;
-}
+
 
 // Encrypted local save in device-only mode: same E2EE payload the server
 // would get, parked in this browser's per-account slot.
-async function saveNotesToDevice() {
-  if (!e2ee.masterKey) {
-    setSaveLabel('Locked', 'gray');
-    return;
-  }
-  try {
-    const payload = await e2eeEncryptNotes(await buildNotesEnvelope());
-    try { localStorage.setItem(localNotesKey(), JSON.stringify(payload)); } catch (error) {
-      setSaveLabel('Save failed', 'red');
-      return;
-    }
-    setSaveLabel('Offline · saved', 'gray');
-  } catch (error) {
-    setSaveLabel('Save failed', 'red');
-  }
-}
+
 
 // Apply a decrypted {v,notes,vault,vaultFolders,ui} envelope (or legacy array)
 // to live state. Shared by the server blob path and the device-only local path.
@@ -536,10 +370,10 @@ async function loadNotesFromServer() {
 // Default folders carried over from the removed built-in Collections section.
 // New custom sections share the same folder palette/behavior (same value).
 const DEFAULT_CUSTOM_FOLDERS = ['Work', 'Personal', 'Reading list'];
-const FOLDER_COLORS = ['coral', 'yellow', 'blue', 'mint', 'violet', 'rose'];
-const COLLECTION_COLORS = FOLDER_COLORS;
-const COLLAPSED_FOLDERS_KEY = 'notely-tree-collapsed';
-const SECTION_DATA_KEY = 'notely-section-data';
+
+
+
+
 // Built-in Collections section removed: all sections are custom sections.
 // The former Collections folders/notes migrate into MIGRATED_COLLECTIONS_SECTION_ID.
 
@@ -548,24 +382,12 @@ const SECTION_DATA_KEY = 'notely-section-data';
 // envelope (`ui` field, v2) so every account keeps its own sidebar across
 // relogs and devices. A per-account encrypted localStorage copy is only a
 // fast offline cache — never plaintext, never shared between accounts.
-const UI_VAULT_KEY = 'notely-ui-vault';
+
 
 // Locked-boot defaults: folder names stay unreadable until the vault unlocks.
 state.collapsedFolders = new Set();
 // User-created tags that may not be attached to any note yet (Settings → Tags).
-function cleanTagList(value) {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set();
-  const out = [];
-  value.slice(0, 500).forEach((raw) => {
-    const tag = normalizeTagName(raw);
-    const key = tag.toLowerCase();
-    if (!tag || seen.has(key)) return;
-    seen.add(key);
-    out.push(tag);
-  });
-  return out;
-}
+
 // Sidebar sections: [{ id, name, folders: [...] }]. Notes point at
 // them via note.sections = { sectionId: folderPath }. All sections (including
 // the migrated former Collections) share the same implementation/value.
@@ -576,82 +398,14 @@ state.deletedCustomSections = [];
 
 // Device-local cache key, namespaced per account so two logins on one device
 // can never decrypt (or overwrite) each other's sidebar.
-function uiVaultKey() {
-  try {
-    const name = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
-    if (name) return `${UI_VAULT_KEY}:${name}`;
-  } catch (error) {}
-  return UI_VAULT_KEY;
-}
+
 
 // Plain-object snapshot of the whole sidebar state for the server envelope.
-function uiSnapshot() {
-  let theme = 'light';
-  try {
-    const current = document.documentElement.dataset.theme
-      || localStorage.getItem('notely-theme') || 'light';
-    if (THEMES.includes(current)) theme = current;
-  } catch (error) {}
-  return {
-    collapsed: [...state.collapsedFolders],
-    customSections: state.customSections.map((section) => ({ id: section.id, name: section.name, folders: [...section.folders], icon: sectionIconName(section) })),
-    deletedCustomSections: (state.deletedCustomSections || []).map((entry) => ({
-      id: entry.id, name: entry.name,
-      folders: [...(entry.folders || [])], deletedAt: entry.deletedAt,
-    })),
-    theme,
-    avatar: state.profileAvatar || '',
-    tags: state.knownTags,
-  };
-}
+
 
 // Validate + normalize a UI snapshot from the server (never throws). Returns
 // the cleaned object or null when unusable.
-function cleanUiSnapshot(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const out = {};
-  out.collapsed = Array.isArray(value.collapsed)
-    ? value.collapsed.filter((name) => typeof name === 'string').slice(0, 500) : null;
-  const cleanCustom = cleanCustomSections(value.customSections);
-  if (cleanCustom) out.customSections = cleanCustom;
-  // Legacy built-in Collections data (pre-unification): carried for migration
-  // in applyUiSnapshot into the default custom section.
-  if (Array.isArray(value.collections)) {
-    const legacyCols = value.collections.filter((name) => typeof name === 'string' && name.trim()).slice(0, 200);
-    if (legacyCols.length) out.legacyCollections = legacyCols;
-  }
-  if (value.sectionNames && typeof value.sectionNames.collections === 'string' && value.sectionNames.collections.trim()) {
-    out.legacyCollectionsName = value.sectionNames.collections.trim().slice(0, 40);
-  }
-  if (Array.isArray(value.deletedCustomSections)) {
-    const cleanSections = value.deletedCustomSections.filter((entry) => (
-      entry && typeof entry.id === 'string' && entry.id.trim()
-      && typeof entry.name === 'string' && entry.name.trim()
-      && typeof entry.deletedAt === 'number'
-    )).map((entry) => ({
-      id: entry.id.slice(0, 80), name: entry.name.trim().slice(0, 40),
-      folders: Array.isArray(entry.folders)
-        ? entry.folders.filter((name) => typeof name === 'string' && name.trim())
-          .map((name) => name.trim().slice(0, 180)).slice(0, 200)
-        : [],
-      deletedAt: entry.deletedAt,
-    })).slice(0, 20);
-    if (cleanSections.length) out.deletedCustomSections = cleanSections;
-  }
-  if (typeof value.theme === 'string' && THEMES.includes(value.theme)) {
-    out.theme = value.theme;
-  }
-  if (typeof value.avatar === 'string' && cleanAvatarSrc(value.avatar)) {
-    out.avatar = value.avatar.trim();
-  }
-  if (Array.isArray(value.tags)) {
-    const tags = cleanTagList(value.tags);
-    if (tags.length) out.tags = tags;
-  }
-  if (out.collapsed === null
-    && !out.customSections && !out.legacyCollections && !out.legacyCollectionsName && !out.deletedCustomSections && !out.theme && !out.avatar && !out.tags) return null;
-  return out;
-}
+
 
 // Apply a server/UI-vault snapshot to memory. Returns true when anything was adopted.
 function applyUiSnapshot(value) {
@@ -684,45 +438,7 @@ function applyUiSnapshot(value) {
 
 // Immediate encrypted write of the per-account local cache. Used by the
 // debounced persistUiVault() and by the logout/pagehide flush path.
-async function writeUiVaultLocal() {
-  if (!e2ee.masterKey) return; // locked: never write (and never plaintext)
-  let theme = 'light';
-  try {
-    const current = document.documentElement.dataset.theme
-      || localStorage.getItem('notely-theme') || 'light';
-    if (THEMES.includes(current)) theme = current;
-  } catch (error) {}
-  const snapshot = JSON.stringify({
-    collapsed: [...state.collapsedFolders],
-    customSections: state.customSections, deletedCustomSections: state.deletedCustomSections, theme,
-    avatar: state.profileAvatar || '',
-    tags: state.knownTags,
-  });
-  const iv = e2eeRandomBytes(12);
-  const ct = await window.crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv }, e2ee.masterKey, new TextEncoder().encode(snapshot));
-  try {
-    localStorage.setItem(uiVaultKey(), JSON.stringify({ iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) }));
-    // One-time migration: a legacy shared key decryptable with this account's
-    // master key moves to the per-account key, then the shared slot is freed
-    // so the next account starts clean instead of failing to decrypt it.
-    try {
-      if (uiVaultKey() !== UI_VAULT_KEY) {
-        const rawLegacy = localStorage.getItem(UI_VAULT_KEY);
-        if (rawLegacy) {
-          const obj = JSON.parse(rawLegacy);
-          const plain = await window.crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv: e2eeB64ToBytes(obj.iv) }, e2ee.masterKey, e2eeB64ToBytes(obj.data));
-          JSON.parse(new TextDecoder().decode(plain));
-          localStorage.removeItem(UI_VAULT_KEY);
-        }
-      }
-    } catch (error) {}
-    localStorage.removeItem('notely-collections');
-    localStorage.removeItem('notely-deleted-collections');
-    localStorage.removeItem(COLLAPSED_FOLDERS_KEY);
-  } catch (error) {}
-}
+
 
 function persistUiVault() {
   clearTimeout(state.uiVaultTimer);
@@ -739,31 +455,12 @@ function persistUiVault() {
 
 // Section icon picker set (order shown in the picker). First entry is the
 // default for sections without a chosen icon.
-const SECTION_ICONS = ['layers', 'folder', 'book', 'briefcase', 'tag', 'bookmark',
-  'star', 'flag', 'bulb', 'flask', 'leaf', 'code', 'globe', 'calendar', 'palette',
-  'rocket', 'home', 'heart', 'hash', 'archive'];
+
 
 // Resolve a section's icon, falling back to the default when unset/invalid.
-function sectionIconName(section) {
-  const name = section && typeof section.icon === 'string' ? section.icon : '';
-  return SECTION_ICONS.includes(name) ? name : SECTION_ICONS[0];
-}
 
-function cleanCustomSections(value) {
-  if (!Array.isArray(value)) return null;
-  const out = [];
-  value.slice(0, 20).forEach((entry) => {
-    if (!entry || typeof entry !== 'object') return;
-    const id = typeof entry.id === 'string' ? entry.id.trim().slice(0, 80) : '';
-    const name = typeof entry.name === 'string' ? entry.name.trim().slice(0, 40) : '';
-    const folders = Array.isArray(entry.folders)
-      ? entry.folders.filter((name) => typeof name === 'string' && name.trim()).map((name) => name.trim().slice(0, 180)).slice(0, 200)
-      : [];
-    const icon = typeof entry.icon === 'string' && SECTION_ICONS.includes(entry.icon) ? entry.icon : undefined;
-    if (id && name) out.push(icon ? { id, name, folders, icon } : { id, name, folders });
-  });
-  return out;
-}
+
+
 
 // Ensure the migrated former-Collections custom section exists and carries
 // the same folders/value. All new sections share this implementation.
@@ -815,43 +512,9 @@ function ensureMigratedCollectionsSection(legacyFolders, legacyName) {
   return section;
 }
 
-function readLegacyUiKeys() {
-  const out = { cols: null, colsName: null, collapsed: null, sections: null };
-  try {
-    const storedSections = JSON.parse(localStorage.getItem(SECTION_DATA_KEY) || 'null');
-    if (storedSections && typeof storedSections === 'object') {
-      const clean = cleanCustomSections(storedSections.sections);
-      if (clean && clean.length) {
-        out.sections = { sections: clean };
-      }
-      if (storedSections.names && typeof storedSections.names.collections === 'string' && storedSections.names.collections.trim()) {
-        out.colsName = storedSections.names.collections.trim().slice(0, 40);
-      }
-    }
-  } catch (error) {}
-  try {
-    const stored = JSON.parse(localStorage.getItem('notely-collections') || 'null');
-    if (Array.isArray(stored)) {
-      const cols = stored.filter((name) => typeof name === 'string' && name.trim()).slice(0, 200);
-      if (cols.length) out.cols = cols;
-    }
-  } catch (error) {}
-  try {
-    const storedCollapsed = JSON.parse(localStorage.getItem(COLLAPSED_FOLDERS_KEY) || 'null');
-    if (Array.isArray(storedCollapsed)) {
-      const collapsed = storedCollapsed.filter((name) => typeof name === 'string').slice(0, 500);
-      out.collapsed = collapsed;
-    }
-  } catch (error) {}
-  return out;
-}
 
-async function decryptUiVaultRaw(raw) {
-  const obj = JSON.parse(raw);
-  const plain = await window.crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: e2eeB64ToBytes(obj.iv) }, e2ee.masterKey, e2eeB64ToBytes(obj.data));
-  return JSON.parse(new TextDecoder().decode(plain));
-}
+
+
 
 async function loadUiVault() {
   // Server envelope (v2) already won: keep it, just refresh the per-account
@@ -962,14 +625,7 @@ function persistCollapsedFolders() {
 // ---- Sidebar sections & Bin: folder CRUD, sidebar render, sync with note data ----
 
 // Rewrite exact + descendant paths in a folder list (sidebar, collapsed keys).
-function repathList(list, oldPath, newPath) {
-  const prefix = `${oldPath}${FOLDER_SEP}`;
-  return list.map((entry) => {
-    if (entry === oldPath) return newPath;
-    if (entry.startsWith(prefix)) return newPath + entry.slice(oldPath.length);
-    return entry;
-  });
-}
+
 
 // Revive binned custom sections a (newly live) note belongs to, so it has
 // a home. Custom folders inside live sections are re-adopted by the
@@ -1001,9 +657,7 @@ function reviveSectionsForNote(note) {
 // Erase a binned folder and all its binned notes at once; repairs the current selection.
 // Find a sidebar row by exact dataset value (avoids CSS-escaping pitfalls of quoted selectors).
 // Find an All-Notes folder group by exact dataset value (avoids CSS-escaping pitfalls).
-function findTreeWrap(folder) {
-  return [...noteList.querySelectorAll('[data-folder-wrap]')].find((wrap) => wrap.dataset.folderWrap === folder) || null;
-}
+
 
 // Inline sidebar rename: swaps the label for an input; Enter commits, Escape cancels, blur commits.
 // Create a uniquely-named folder, reset view/filters, and immediately open inline rename.
@@ -1050,81 +704,23 @@ function bindSectionHeaderEvents() {
 }
 
 // Render user-built sections: header (editable name, add/delete) + folders.
-function renderCustomSections() {
-  const container = document.getElementById('custom-sections');
-  if (!container) return;
-  container.innerHTML = state.customSections.map((section) => `
-    <div class="sidebar-section" data-custom-section="${escapeHtml(section.id)}" data-section="custom">
-      <div class="section-label">
-        <span class="section-initial" title="${escapeHtml(section.name)}" aria-hidden="true">${icon(sectionIconName(section))}</span>
-        <span class="section-icon" title="${escapeHtml(section.name)}" aria-hidden="true">${icon(sectionIconName(section))}</span>
-        <span class="section-label-text" data-section-name="${escapeHtml(section.id)}">${escapeHtml(section.name)}</span>
-      </div>
-      <div class="collection-list">
-        ${section.folders.map((name) => `
-        <a href="#" draggable="true" class="collection-item${state.activeCustom && state.activeCustom.section === section.id && state.activeCustom.folder === name ? ' active' : ''}" data-csection="${escapeHtml(section.id)}" data-cfolder="${escapeHtml(name)}" data-depth="${folderDepth(name)}" title="${escapeHtml(name)}">
-          <span class="collection-dot ${customFolderColor(section, name)}"></span>
-          <span class="collection-label">${escapeHtml(folderLeaf(name))}</span>
-          <span class="collection-actions">
-            <button type="button" class="collection-action" data-cf-rename="${escapeHtml(name)}" data-cf-section="${escapeHtml(section.id)}" title="Rename folder" aria-label="Rename ${escapeHtml(name)}">${icon('pencil')}</button>
-          </span>
-          <input class="collection-rename-input" value="${escapeHtml(folderLeaf(name))}" hidden maxlength="180" aria-label="Folder name" />
-        </a>`).join('')}
-      </div>
-    </div>`).join('');
-  updateSectionHeaders();
-}
 
-function customFolderColor(section, name) {
-  // Same value as removed Collections had: fixed brand colors for defaults.
-  const known = { Work: 'coral', Personal: 'yellow', 'Reading list': 'blue' };
-  if (known[name]) return known[name];
-  const index = section.folders.findIndex((entry) => entry === name);
-  if (index >= 0) return COLLECTION_COLORS[(index + 4) % COLLECTION_COLORS.length];
-  let hash = 0;
-  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  return COLLECTION_COLORS[Math.abs(hash) % COLLECTION_COLORS.length];
-}
+
+
 
 // Paint section headers (all sections share the same custom implementation).
-function updateSectionHeaders() {
-  document.querySelectorAll('#custom-sections .sidebar-section').forEach((wrap) => {
-    const id = wrap.dataset.customSection;
-    wrap.classList.toggle('active-section', Boolean(state.activeCustom && !state.activeCustom.folder && state.activeCustom.section === id));
-    wrap.classList.toggle('is-empty', isSectionEmpty('custom', id));
-  });
-}
+
 
 // A sidebar section header filters the list — pointless when the section
 // holds nothing, so empty sections are unclickable (rename still works).
-function isSectionEmpty(kind, id) {
-  const sectionId = kind === 'custom' ? id : kind;
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (section) return !section.folders.length;
-  return true;
-}
+
 
 // All taken section display names (lowercased), optionally skipping one entry.
-function takenSectionNames(exceptId) {
-  const names = [];
-  state.customSections.forEach((section) => {
-    if (!(exceptId && exceptId === section.id)) names.push(section.name);
-  });
-  return names.map((name) => name.toLowerCase());
-}
 
-function uniqueSectionName() {
-  const taken = new Set(takenSectionNames(null));
-  let counter = 1;
-  while (taken.has(`section ${counter}`)) counter += 1;
-  return `Section ${counter}`;
-}
 
-function uniqueSectionId() {
-  let id = `section-${Date.now()}`;
-  while (state.customSections.some((section) => section.id === id)) id += '-x';
-  return id;
-}
+
+
+
 
 function addCustomSection() {
   if (!e2ee.masterKey) { showToast('Log in to manage sections'); return; }
@@ -1296,20 +892,9 @@ function deleteCustomSection(id) {
 }
 
 // De-duplicate a folder name inside one custom section.
-function uniqueCustomFolderName(sectionId, base) {
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  const taken = new Set((section ? section.folders : []).map((name) => name.toLowerCase()));
-  const cleanBase = String(base == null ? 'New folder' : base).trim() || 'New folder';
-  if (!taken.has(cleanBase.toLowerCase())) return cleanBase;
-  let counter = 2;
-  while (taken.has(`${cleanBase} ${counter}`.toLowerCase())) counter += 1;
-  return `${cleanBase} ${counter}`;
-}
 
-function findCustomItem(sectionId, folder) {
-  return [...document.querySelectorAll('#custom-sections .collection-item')]
-    .find((item) => item.dataset.csection === sectionId && item.dataset.cfolder === folder) || null;
-}
+
+
 
 function addCustomFolder(sectionId) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
@@ -1470,32 +1055,7 @@ function renameCustomFolder(sectionId, oldName, rawNewName, opts) {
   return true;
 }
 
-function openCustomFolderDeleteConfirm(sectionId, folder) {
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!section || !section.folders.includes(folder)) return;
-  const count = state.notes.filter((note) => {
-    if (note.deleted) return false;
-    const current = customNoteFolder(note, sectionId);
-    return current !== null && isFolderOrSub(current, folder);
-  }).length;
-  state.pendingDeleteId = folder;
-  state.pendingDeleteMode = 'custom-folder';
-  state.pendingDeleteSection = sectionId;
-  setDeleteDialog({
-    eyebrow: 'Delete folder',
-    title: 'Delete this folder?',
-    name: folder,
-    message: count
-      ? `” holds ${count} note${count === 1 ? '' : 's'}. The folder and its notes will move to Bin for 3 days. Are you sure?`
-      : '” is empty. Are you sure you want to delete it?'
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
+
 
 // Delete a custom folder and its nested subfolders: the folder is removed
 // from the sidebar and every live note inside moves to Bin for 3 days (tags
@@ -1637,28 +1197,7 @@ function bindCustomSectionsEvents() {
   });
 }
 
-function openCustomSectionDeleteConfirm(id) {
-  const section = state.customSections.find((entry) => entry.id === id);
-  if (!section) return;
-  const count = state.notes.filter((note) => !note.deleted && customNoteFolder(note, id) !== null).length;
-  state.pendingDeleteId = id;
-  state.pendingDeleteMode = 'custom-section';
-  state.pendingDeleteSection = null;
-  setDeleteDialog({
-    eyebrow: 'Delete section',
-    title: 'Delete this section?',
-    name: section.name,
-    message: count
-      ? `” organizes ${count} note${count === 1 ? '' : 's'}. The section and its notes will move to Bin for 3 days (restoring a note revives the section). Are you sure?`
-      : '” is empty. Are you sure you want to delete it?'
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
+
 
 // Clicking a section header filters the list to every folder under it.
 // ---- Section context menu (right-click on a slide-menu section header):
@@ -1666,29 +1205,11 @@ function openCustomSectionDeleteConfirm(id) {
 // and × buttons. Rename/add fall back to popups while the slide menu is
 // collapsed, where the inline rows are hidden.
 
-function closeSectionContextMenu() {
-  const menu = document.getElementById('section-context-menu');
-  if (menu) menu.hidden = true;
-  state.sectionMenuTarget = null;
-}
 
-function openSectionContextMenu(sectionId, x, y) {
-  const menu = document.getElementById('section-context-menu');
-  if (!menu || !sectionId) return;
-  if (!state.customSections.some((entry) => entry.id === sectionId)) return;
-  state.sectionMenuTarget = sectionId;
-  menu.hidden = false;
-  const padding = 8;
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
-  const rect = menu.getBoundingClientRect();
-  if (rect.right > window.innerWidth - padding) menu.style.left = `${Math.max(padding, x - rect.width)}px`;
-  if (rect.bottom > window.innerHeight - padding) menu.style.top = `${Math.max(padding, y - rect.height)}px`;
-}
 
-function slideMenuCollapsed() {
-  try { return document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) { return false; }
-}
+
+
+
 
 function handleSectionMenuAction(action, sectionId) {
   if (!sectionId || typeof action !== 'string') return;
@@ -1716,27 +1237,9 @@ function handleSectionMenuAction(action, sectionId) {
 // Opens a grid of line icons; picking one stores it on the section (persisted
 // in the E2EE UI envelope) and repaints the sidebar.
 
-function openSectionIconPicker(sectionId) {
-  const overlay = document.getElementById('section-icon-overlay');
-  const grid = document.getElementById('section-icon-grid');
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!overlay || !grid || !section) return;
-  state.sectionIconTarget = sectionId;
-  const current = sectionIconName(section);
-  grid.innerHTML = SECTION_ICONS.map((name) =>
-    `<button type="button" class="section-icon-option${name === current ? ' is-selected' : ''}" data-icon-choice="${name}" title="${name}" aria-label="${name}">${icon(name)}</button>`).join('');
-  const desc = document.getElementById('section-icon-desc');
-  if (desc) desc.textContent = `Pick the icon shown beside “${section.name}”.`;
-  overlay.hidden = false;
-  const first = grid.querySelector('.section-icon-option');
-  if (first) first.focus();
-}
 
-function closeSectionIconPicker() {
-  const overlay = document.getElementById('section-icon-overlay');
-  if (overlay) overlay.hidden = true;
-  state.sectionIconTarget = null;
-}
+
+
 
 function chooseSectionIcon(name) {
   const section = state.customSections.find((entry) => entry.id === state.sectionIconTarget);
@@ -1771,39 +1274,11 @@ function bindSectionContextMenu() {
 // Delete. One shared menu for sidebar rows and All-Notes folder headers;
 // the target carries its section so folders stay separate.
 
-function getFolderContextMenu() {
-  return document.getElementById('folder-context-menu');
-}
 
-function closeFolderContextMenu() {
-  const menu = getFolderContextMenu();
-  if (menu) menu.hidden = true;
-  state.folderMenuTarget = null;
-}
 
-function openFolderContextMenu(ns, path, x, y, sectionId) {
-  const menu = getFolderContextMenu();
-  if (!menu || !path || !sectionId) return;
-  state.folderMenuTarget = { ns: 'custom', path, section: sectionId };
-  // Subfolders nest up to two levels: "New subfolder" is offered on top-level
-  // folders and on first-level subfolders, but not on the deepest ones.
-  const atMaxDepth = folderDepth(path) >= MAX_SUBFOLDER_PARENT_DEPTH;
-  menu.querySelectorAll('[data-folder-action]').forEach((btn) => {
-    const actionName = btn.dataset.folderAction;
-    btn.hidden = actionName === 'restore'
-      || (actionName === 'new-note' && state.activeView === 'bin')
-      || (actionName === 'subfolder' && atMaxDepth);
-  });
-  const deleteLabel = document.getElementById('folder-delete-label');
-  if (deleteLabel) deleteLabel.textContent = 'Delete';
-  menu.hidden = false;
-  const padding = 8;
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
-  const rect = menu.getBoundingClientRect();
-  if (rect.right > window.innerWidth - padding) menu.style.left = `${Math.max(padding, x - rect.width)}px`;
-  if (rect.bottom > window.innerHeight - padding) menu.style.top = `${Math.max(padding, y - rect.height)}px`;
-}
+
+
+
 
 function handleFolderMenuAction(action, target) {
   const resolved = target || state.folderMenuTarget;
@@ -1831,21 +1306,7 @@ function handleFolderMenuAction(action, target) {
 // Insert a folder path directly after its parent's block (the parent plus any
 // existing descendants) so a new subfolder renders under its parent instead
 // of at the end of the list. Appends when the parent is missing.
-function insertFolderAfterParent(list, parentPath, newPath) {
-  if (parentPath) {
-    const prefix = `${parentPath}${FOLDER_SEP}`;
-    let at = -1;
-    list.forEach((entry, index) => {
-      if (entry === parentPath || entry.startsWith(prefix)) at = index;
-    });
-    if (at !== -1) {
-      list.splice(at + 1, 0, newPath);
-      return list;
-    }
-  }
-  list.push(newPath);
-  return list;
-}
+
 
 // Create a nested folder under a parent path and jump straight into naming
 // it. Without a parent, a top-level folder is created.
@@ -1946,10 +1407,7 @@ function bindFolderContextMenu() {
 // inside it (top/bottom quarter = before/after, middle = nest). Unified custom
 // sections implementation (same value for all new sections); reparenting
 // reuses the rename functions so notes, collapse state and selection follow.
-function folderListOf(ns, sectionId) {
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  return section ? section.folders : null;
-}
+
 
 function persistFolderList(ns) {
   persistCustomSections();
@@ -2003,14 +1461,7 @@ function reparentFolder(ns, sectionId, oldPath, newParent) {
   return newPath;
 }
 
-function sidebarFolderTarget(event) {
-  if (event.target.closest('.collection-rename-input')) return null;
-  const customRow = event.target.closest('#custom-sections .collection-item');
-  if (customRow && customRow.dataset.cfolder) {
-    return { ns: 'custom', section: customRow.dataset.csection, path: customRow.dataset.cfolder };
-  }
-  return null;
-}
+
 
 function bindFolderDragDrop() {
   const sidebar = document.getElementById('sidebar');
@@ -2122,10 +1573,7 @@ function bindFolderDragDrop() {
 // One helper drives the topbar indicator: dot colour (green synced / gray
 // offline / red error) plus label text. Sync timestamps feed the
 // "Synced X min ago" wording and a ticker keeps it current.
-function markSynced() {
-  state.lastSyncedAt = Date.now();
-  setSaveLabel(syncAgoText(), 'green');
-}
+
 setInterval(() => {
   if (state.lastSyncedAt && saveLabel && saveLabel.textContent.startsWith('Synced')) {
     setSaveLabel(syncAgoText(), 'green');
@@ -2166,13 +1614,7 @@ const IDLE_PREVIEW_MS = 10000;
 // First folder filing of a note across sections, or null when unfiled.
 // ---- Note list: filtering, grouping, counts, tree rendering ----
 
-function firstFilingOf(note) {
-  if (note && note.sections && typeof note.sections === 'object') {
-    const first = Object.values(note.sections).find((value) => typeof value === 'string' && value);
-    if (first) return first;
-  }
-  return null;
-}
+
 
 
 // ---- Folder-required invariant: a note never lives outside the sections ----
@@ -2180,29 +1622,7 @@ function firstFilingOf(note) {
 // placed into the first folder of the first section (creating the default
 // "Notes" section when the workspace has none), so unfiled notes cannot
 // exist. Returns true when the note was refiled.
-function ensureNoteFiled(note) {
-  if (!note || note.deleted) return false;
-  if (note.sections && typeof note.sections === 'object') {
-    for (const [secId, folder] of Object.entries(note.sections)) {
-      if (typeof folder !== 'string' || !folder.trim()) continue;
-      const section = state.customSections.find((entry) => entry.id === secId);
-      if (section && section.folders.includes(folder)) return false; // validly filed
-    }
-    // Filings exist but all stale: drop them so re-filing picks a fresh home.
-    const stale = Object.entries(note.sections).filter(([, folder]) => typeof folder !== 'string' || !folder.trim()
-      || !state.customSections.some((entry) => entry.id && entry.folders.includes(folder)));
-    if (stale.length === Object.keys(note.sections).length) note.sections = {};
-  }
-  // Resolve a destination: first folder of the first section; else create
-  // the default section (welcome seed shape) so the note always has a home.
-  let target = state.customSections.find((entry) => entry.folders.length);
-  if (!target) {
-    target = { id: WELCOME_SECTION_ID, name: 'Notes', folders: [...WELCOME_FOLDERS] };
-    state.customSections.unshift(target);
-  }
-  note.sections = { [target.id]: target.folders[0] };
-  return true;
-}
+
 
 // Sweep every live note through the invariant (boot, import, restore, sync).
 function enforceFilingInvariant() {
@@ -2250,66 +1670,20 @@ function enforceFilingInvariant() {
 
 
 // Single place that computes the list heading from view + collection + chip filter (e.g. "Work · Starred").
-function updateListHeading() {
-  const suffix = state.activeFilter === 'favorites' ? ' · Starred' : state.activeFilter === 'recent' ? ' · Recent' : '';
-  if (state.activeView === 'bin') listHeading.textContent = `Bin${suffix}`;
-  else if (state.activeView === 'vault') listHeading.textContent = `Vault${suffix}`;
-  else if (state.activeView === 'shared') listHeading.textContent = 'Shared';
-  else if (state.activeView === 'archive') listHeading.textContent = `Archive${suffix}`;
-  else if (state.activeView === 'favorites') listHeading.textContent = 'Starred notes';
-  else if (state.activeCustom) listHeading.textContent = `${state.activeCustom.folder ? folderLeaf(state.activeCustom.folder) : sectionDisplayName('custom', state.activeCustom.section)}${suffix}`;
-  else listHeading.textContent = state.activeFilter === 'favorites' ? 'Starred notes' : state.activeFilter === 'recent' ? 'Recent notes' : 'All Notes';
-  // Collapsed-strip name mirrors the heading (dev), rendered vertically.
-  try {
-    const viewIcon = document.getElementById('workspace-view-icon');
-    if (viewIcon) {
-      const name = listHeading.textContent || '';
-      viewIcon.textContent = name.trim() || '?';
-      viewIcon.title = listHeading.textContent;
-    }
-  } catch (error) {}
-}
+
 
 // Clear the search box and its in-memory query.
-function clearSearch() {
-  state.searchQuery = '';
-  const searchInput = document.getElementById('search-input');
-  if (searchInput) searchInput.value = '';
-}
+
 
 // ---- Open-note tabs (dev): many notes open at once, replacing breadcrumbs ----
 state.openTabs = []; // [{ id, vault }] in opening order, capped
-const MAX_OPEN_TABS = 20;
+
 // List glyph shared by the note list, tabs and strip. Recipes and to-dos keep
 // their distinctive glyphs; everything else gets its file-type icon.
-function findTabbedNote(id, isVault, isShared) {
-  if (isShared) {
-    const meta = sharedNoteMeta.get(String(id)) || sharedNoteMeta.get(id);
-    return { id, title: (meta && meta.title) || 'Shared note', template: (meta && meta.template) || '', shared: true, deleted: false };
-  }
-  if (isVault) return state.vault.unlocked ? state.vault.notes.find((entry) => entry.id === id) || null : null;
-  return state.notes.find((entry) => entry.id === id) || null;
-}
+
 // Remember an opened note; selecting a tab never moves it — order is fixed
 // by opening time. Evict oldest non-active past the cap.
-function trackTab(id, isVault, isShared) {
-  const shared = Boolean(isShared);
-  let tabId = id;
-  if (shared) {
-    tabId = Number(id);
-    if (!Number.isInteger(tabId) || tabId <= 0) return;
-  } else if (!isValidNoteId(id)) return;
-  const wasVault = Boolean(isVault);
-  if (!state.openTabs.some((tab) => String(tab.id) === String(tabId) && tab.vault === wasVault && Boolean(tab.shared) === shared)) {
-    state.openTabs.push({ id: tabId, vault: wasVault, shared });
-  }
-  while (state.openTabs.length > MAX_OPEN_TABS) {
-    const dropAt = state.openTabs.findIndex((tab) => !(tab.id === state.currentId && !tab.vault)
-      && !(tab.id === state.currentVaultId && tab.vault)
-      && !(tab.shared && state.collab.noteId != null && String(tab.id) === String(state.collab.noteId)));
-    state.openTabs.splice(dropAt === -1 ? 0 : dropAt, 1);
-  }
-}
+
 // Close one tab; when it was active, fall back to the nearest surviving
 // neighbor (next, then previous, then outward) so selection stays put.
 function closeTab(id, isVault, isShared) {
@@ -2392,90 +1766,13 @@ function renderTabs() {
   fitTabStrip(bar);
 }
 // Overflowed tabs (id/vault/title) from the last fit; powers the dropdown.
-function closeTabOverflow() {
-  state.tabOverflowOpen = false;
-  const menu = document.getElementById('tab-overflow-menu');
-  if (menu) menu.hidden = true;
-}
+
 // Hide whatever does not fit; the active tab always stays, earliest others
 // fill the rest, and the remainder goes to the dropdown button. No scrollbar.
-function fitTabStrip(bar) {
-  const btn = bar.querySelector('[data-tab-overflow]');
-  const tabs = [...bar.querySelectorAll('[data-tab-id]')];
-  if (!btn || !bar.clientWidth) {
-    if (btn) btn.hidden = true;
-    state.lastOverflowTabs = [];
-    closeTabOverflow();
-    return;
-  }
-  const gap = 6;
-  const home = bar.querySelector('[data-tab-home]');
-  const homeW = home ? home.offsetWidth : 0;
-  const widths = new Map(tabs.map((tab) => [tab, tab.offsetWidth]));
-  const totalTabs = tabs.reduce((sum, tab) => sum + widths.get(tab) + gap, 0);
-  if (homeW + gap + totalTabs <= bar.clientWidth) {
-    btn.hidden = true;
-    tabs.forEach((tab) => { tab.hidden = false; });
-    state.lastOverflowTabs = [];
-    closeTabOverflow();
-    return;
-  }
-  btn.hidden = false;
-  const btnW = btn.offsetWidth;
-  const activeEl = bar.querySelector('.tab-item.active');
-  const visible = new Set();
-  let used = homeW + gap + btnW + gap;
-  if (activeEl) { visible.add(activeEl); used += widths.get(activeEl) + gap; }
-  for (const tab of tabs) {
-    if (visible.has(tab)) continue;
-    if (used + widths.get(tab) <= bar.clientWidth) { visible.add(tab); used += widths.get(tab) + gap; }
-  }
-  const hidden = [];
-  tabs.forEach((tab) => {
-    const hide = !visible.has(tab);
-    tab.hidden = hide;
-    if (hide) hidden.push({ id: tab.dataset.tabId, vault: tab.dataset.tabVault === '1', shared: tab.dataset.tabShared === '1', title: tab.title });
-  });
-  state.lastOverflowTabs = hidden;
-  const countEl = btn.querySelector('[data-overflow-count]');
-  if (countEl) countEl.textContent = hidden.length ? `+${hidden.length}` : '';
-  btn.setAttribute('aria-label', `${hidden.length} more tabs`);
-  if (!hidden.length) { closeTabOverflow(); return; }
-  if (state.tabOverflowOpen) { paintTabOverflow(); placeTabOverflow(); }
-}
-function paintTabOverflow() {
-  const menu = document.getElementById('tab-overflow-menu');
-  if (!menu) return;
-  menu.innerHTML = state.lastOverflowTabs.map((tab) => {
-    const note = findTabbedNote(tab.id, tab.vault, tab.shared);
-    const title = (note && note.title) || tab.title || 'Untitled note';
-    return `<button type="button" class="context-item" data-otab-id="${escapeHtml(String(tab.id))}" data-otab-vault="${tab.vault ? '1' : ''}" data-otab-shared="${tab.shared ? '1' : ''}" title="${escapeHtml(title)}">`
-      + `<span class="tab-glyph">${icon(tab.shared ? 'share' : noteGlyphFor(note))}</span>`
-      + `<span class="tab-label">${escapeHtml(title)}</span>`
-      + `<span class="tab-close" data-otab-close="${escapeHtml(String(tab.id))}" data-otab-close-vault="${tab.vault ? '1' : ''}" data-otab-close-shared="${tab.shared ? '1' : ''}" role="button" aria-label="Close ${escapeHtml(title)}">×</span>`
-      + `</button>`;
-  }).join('');
-}
-function placeTabOverflow() {
-  const menu = document.getElementById('tab-overflow-menu');
-  const bar = document.getElementById('tab-bar');
-  if (!menu || !bar) return;
-  const btn = bar.querySelector('[data-tab-overflow]');
-  if (!btn) return;
-  const rect = btn.getBoundingClientRect();
-  menu.style.top = `${rect.bottom + 6}px`;
-  menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8))}px`;
-}
-function toggleTabOverflow() {
-  const menu = document.getElementById('tab-overflow-menu');
-  if (!menu) return;
-  if (state.tabOverflowOpen) { closeTabOverflow(); return; }
-  if (!state.lastOverflowTabs.length) return;
-  state.tabOverflowOpen = true;
-  paintTabOverflow();
-  menu.hidden = false;
-  placeTabOverflow();
-}
+
+
+
+
 
 if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
   if (state.tabClickSuppressed) return;
@@ -2494,14 +1791,7 @@ if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
   else selectNote(tab.dataset.tabId);
 });
 // Drag-and-drop reordering of tabs (order is otherwise fixed by opening time).
-function endTabDrag() {
-  if (state.dragTabEl) state.dragTabEl.classList.remove('dragging');
-  clearTabDropMarks();
-  state.dragTabEl = null;
-  state.dragTabIndex = null;
-  state.tabClickSuppressed = true;
-  setTimeout(() => { state.tabClickSuppressed = false; }, 250);
-}
+
 if (tabBarEl) tabBarEl.addEventListener('dragstart', (event) => {
   const tab = event.target.closest('[data-tab-id]');
   if (!tab) return;
@@ -2570,94 +1860,7 @@ window.addEventListener('resize', () => {
 // strip becomes the folder navigator: every folder of the active section (or
 // of all sections when no section is selected) renders as its colored dot;
 // clicking one opens it. Gold folder glyphs stay distinct from note glyphs.
-function renderStripItems() {
-  const box = document.getElementById('workspace-strip-items');
-  if (!box) return;
-  const section = state.activeCustom ? state.customSections.find((entry) => entry.id === state.activeCustom.section) : null;
-  const folder = state.activeCustom ? state.activeCustom.folder : null;
-  // Back button sits under the collapse toggle, over the folder name —
-  // visible only inside a subfolder.
-  const backBtn = document.getElementById('workspace-strip-back');
-  if (state.activeView === 'vault' || state.activeView === 'shared') {
-    box.innerHTML = '';
-    if (backBtn) {
-      backBtn.hidden = true;
-      delete backBtn.dataset.stripSection;
-      delete backBtn.dataset.stripTarget;
-    }
-    updateStripScrollButton();
-    return;
-  }
-  // Folder navigation is always on in the strip (folders no longer live in
-  // the slide menu in any state). Folders render as a tree: each subfolder
-  // sits indented under its parent, preserving the section's list order.
-  // Notes join the strip only while inside a folder, after the tree.
-  const sections = section ? [section] : state.customSections.slice();
-  let html = '';
-  sections.forEach((sec) => {
-    if (!sec.folders.length) return;
-    if (!section && sections.length > 1) {
-      html += `<span class="strip-section-tag" title="${escapeHtml(sec.name)}" aria-hidden="true">${escapeHtml(sec.name.charAt(0).toUpperCase() || '?')}</span>`;
-    }
-    // When a folder is selected the strip is scoped to that folder's branch:
-    // it shows only the folder and its contents (its subfolders). Otherwise
-    // the whole section tree is shown for navigation.
-    const pool = (section && folder)
-      ? [folder, ...sec.folders.filter((name) => name !== folder && isFolderOrSub(name, folder))]
-      : sec.folders;
-    const childrenOf = new Map();
-    const roots = [];
-    pool.forEach((name) => {
-      const parent = folderParent(name);
-      if (parent && pool.includes(parent)) {
-        if (!childrenOf.has(parent)) childrenOf.set(parent, []);
-        childrenOf.get(parent).push(name);
-      } else roots.push(name);
-    });
-    const emitted = new Set();
-    const emitFolder = (name) => {
-      if (emitted.has(name)) return;
-      emitted.add(name);
-      const depth = folderDepth(name);
-      const activeDot = section && folder === name;
-      const glyph = `<span class="strip-folder-glyph ${customFolderColor(sec, name)}">${icon(folderIconForDepth(depth))}</span>`;
-      html += `<button type="button" class="strip-btn is-folder${depth > 0 ? ' is-subfolder' : ''}${depth > 1 ? ' is-deep' : ''}${activeDot ? ' is-dot-active' : ''}" data-strip-section="${escapeHtml(sec.id)}" data-strip-folder="${escapeHtml(name)}" title="${escapeHtml(sec.name)} / ${escapeHtml(name)}" aria-label="Open ${escapeHtml(folderLeaf(name))}">${glyph}</button>`;
-      (childrenOf.get(name) || []).forEach(emitFolder);
-    };
-    roots.forEach(emitFolder);
-    pool.forEach(emitFolder);
-  });
-  // Inside a folder: append its direct notes beneath the folder icons.
-  if (section && folder && state.activeView !== 'bin') {
-    const pool = visibleNotes().filter((note) => !note.deleted);
-    const direct = pool.filter((note) => customNoteFolder(note, section.id) === folder);
-    if (direct.length) html += `<span class="strip-section-tag" title="Notes in ${escapeHtml(folderLeaf(folder))}" aria-hidden="true">·</span>`;
-    html += direct.map((note) => `<button type="button" class="strip-btn${note.id === state.currentId ? ' is-note-active' : ''}" data-strip-note="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}" aria-label="Open ${escapeHtml(note.title || 'Untitled note')}">${icon(noteGlyphFor(note))}</button>`).join('');
-  }
-  box.innerHTML = html;
-  if (backBtn) {
-    // Back is available anywhere inside a folder: up to the parent folder
-    // when nested, otherwise back to the section root (no folder selected).
-    if (section && folder) {
-      const parent = folderParent(folder);
-      backBtn.hidden = false;
-      backBtn.dataset.stripSection = section.id;
-      backBtn.dataset.stripTarget = parent || '';
-      if (parent) {
-        backBtn.title = `${parent} — back to parent folder`;
-        backBtn.setAttribute('aria-label', `Back to ${folderLeaf(parent)}`);
-      } else {
-        backBtn.title = `${section.name} — back to section`;
-        backBtn.setAttribute('aria-label', `Back to ${section.name}`);
-      }
-    } else {
-      backBtn.hidden = true;
-      delete backBtn.dataset.stripSection;
-      delete backBtn.dataset.stripTarget;
-    }
-  }
-  updateStripScrollButton();
-}
+
 
 if (stripBoxEl) {
   stripBoxEl.addEventListener('scroll', updateStripScrollButton, { passive: true });
@@ -2696,34 +1899,7 @@ if (stripBackEl) stripBackEl.addEventListener('click', (event) => {
 // The title element itself is persistent (editor writes to it directly); only
 // the trail prefix is re-rendered here.
 
-function updateBreadcrumbs() {
-  const trail = document.getElementById('breadcrumb-trail');
-  if (!trail) return;
-  trail.innerHTML = '';
-  const root = document.createElement('button');
-  root.type = 'button';
-  root.className = 'crumb-link';
-  root.dataset.crumb = 'root';
-  root.textContent = viewLabel(state.activeView);
-  root.title = 'Back to All Notes';
-  trail.appendChild(root);
-  const activeFolderPath = (state.activeCustom ? state.activeCustom.folder : null);
-  const activeFolder = activeFolderPath
-    || (state.activeCustom ? sectionDisplayName('custom', state.activeCustom.section) : null);
-  if (activeFolder) {
-    const sep = document.createElement('span');
-    sep.className = 'crumb-separator';
-    sep.textContent = '/';
-    trail.appendChild(sep);
-    const folder = document.createElement('button');
-    folder.type = 'button';
-    folder.className = 'crumb-link';
-    folder.dataset.crumb = 'folder';
-    folder.textContent = activeFolderPath ? folderLeaf(activeFolder) : activeFolder;
-    folder.title = `Show ${activeFolder}`;
-    trail.appendChild(folder);
-  }
-}
+
 
 // Breadcrumb home: reset to All notes with nothing open and an enlarged
 // workspace (editor hidden). Selecting any note exits the enlarged mode.
@@ -2755,152 +1931,26 @@ document.getElementById('breadcrumbs').addEventListener('click', (event) => {
 });
 
 // Master list filter: Bin vs live, archive rules, search text, chip filter, selected collection.
-function visibleNotes() {
-  if (state.activeView === 'vault' || state.activeView === 'shared') return [];
-  return state.notes.filter((note) => {
-    const isDeleted = Boolean(note.deleted);
-    const isArchived = Boolean(note.archived);
-    if (state.activeView === 'bin') {
-      if (!isDeleted) return false;
-    } else {
-      if (isDeleted) return false;
-      if (state.activeView === 'archive') {
-        if (!isArchived) return false;
-      } else {
-        // notes / favorites views hide archived items; Archive has its own view.
-        if (isArchived) return false;
-      }
-    }
-    const matchesSearch = noteMatchesSearch(note, state.searchQuery);
-    const matchesFilter = state.activeFilter === 'all' || (state.activeFilter === 'favorites' && note.favorite) || (state.activeFilter === 'recent' && isRecentNote(note));
-    const matchesCustom = !state.activeCustom || (customNoteFolder(note, state.activeCustom.section) !== null
-      && (!state.activeCustom.folder || isFolderOrSub(customNoteFolder(note, state.activeCustom.section), state.activeCustom.folder)));
-    return matchesSearch && matchesFilter && matchesCustom;
-  });
-}
+
 
 // Sidebar search. Plain terms match file text (title + contents) and folder
 // names only — tags are excluded. `tag: <name>` matches tags and `body: <text>`
 // matches the note body. Terms are AND-ed.
-function noteMatchesSearch(note, query) {
-  const q = String(query == null ? '' : query).trim().toLowerCase();
-  if (!q) return true;
-  const title = typeof note.title === 'string' ? note.title : '';
-  const body = typeof note.body === 'string' ? note.body : '';
-  const folders = note.sections && typeof note.sections === 'object'
-    ? Object.values(note.sections).filter((value) => typeof value === 'string').join(' ')
-    : '';
-  const tags = (Array.isArray(note.tags) ? note.tags : []).filter((t) => typeof t === 'string').map((t) => t.toLowerCase());
-  const tokens = q.split(/\s+/).filter(Boolean);
-  const tagTerms = [];
-  const bodyTerms = [];
-  const textTerms = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (token === 'tag:') {
-      const name = tokens[i + 1];
-      if (!name) return false; // a bare "tag:" matches nothing until a name is typed
-      tagTerms.push(name);
-      i += 1;
-    } else if (token.startsWith('tag:') && token.length > 4) {
-      tagTerms.push(token.slice(4));
-    } else if (token === 'body:') {
-      const text = tokens[i + 1];
-      if (!text) return false; // a bare "body:" matches nothing until text is typed
-      bodyTerms.push(text);
-      i += 1;
-    } else if (token.startsWith('body:') && token.length > 5) {
-      bodyTerms.push(token.slice(5));
-    } else {
-      textTerms.push(token);
-    }
-  }
-  const tagMatch = tagTerms.every((term) => tags.some((tag) => tag.includes(term)));
-  const bodyHay = body.toLowerCase();
-  const bodyMatch = bodyTerms.every((term) => bodyHay.includes(term));
-  const haystack = `${title} ${body} ${folders}`.toLowerCase();
-  const textMatch = textTerms.every((term) => haystack.includes(term));
-  return tagMatch && bodyMatch && textMatch;
-}
+
 
 // Search a shared-note inbox entry. Title/folder/tags are in the decrypted meta;
 // `body:` matches against a session cache of note bodies (populated whenever a
 // shared note is opened — bodies live in the CRDT and aren't loaded for the list).
-function sharedNoteMatchesSearch(entry, query) {
-  const q = String(query == null ? '' : query).trim().toLowerCase();
-  if (!q) return true;
-  const title = typeof entry.title === 'string' ? entry.title : '';
-  const folder = typeof entry.folder === 'string' ? entry.folder : '';
-  const tags = (Array.isArray(entry.tags) ? entry.tags : []).filter((t) => typeof t === 'string').map((t) => t.toLowerCase());
-  const body = sharedBodyCache.get(String(entry.id)) || '';
-  const tokens = q.split(/\s+/).filter(Boolean);
-  const tagTerms = [];
-  const bodyTerms = [];
-  const textTerms = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (token === 'tag:') {
-      const name = tokens[i + 1];
-      if (!name) return false;
-      tagTerms.push(name);
-      i += 1;
-    } else if (token.startsWith('tag:') && token.length > 4) {
-      tagTerms.push(token.slice(4));
-    } else if (token === 'body:') {
-      const text = tokens[i + 1];
-      if (!text) return false;
-      bodyTerms.push(text);
-      i += 1;
-    } else if (token.startsWith('body:') && token.length > 5) {
-      bodyTerms.push(token.slice(5));
-    } else {
-      textTerms.push(token);
-    }
-  }
-  if (tagTerms.length && !tags.length) return false;
-  const tagMatch = tagTerms.every((term) => tags.some((tag) => tag.includes(term)));
-  const bodyHay = body.toLowerCase();
-  const bodyMatch = bodyTerms.every((term) => bodyHay.includes(term));
-  const haystack = `${title} ${folder}`.toLowerCase();
-  const textMatch = textTerms.every((term) => haystack.includes(term));
-  return tagMatch && bodyMatch && textMatch;
-}
+
 
 // Notes in the current view + selected folder, ignoring the search box and
 // the All/Recent/Starred chip — so the chips mirror the selected folder.
-function scopeNotes() {
-  if (state.activeView === 'vault') return state.vault.unlocked ? [...state.vault.notes] : [];
-  if (state.activeView === 'shared') return [];
-  return state.notes.filter((note) => {
-    const isDeleted = Boolean(note.deleted);
-    const isArchived = Boolean(note.archived);
-    if (state.activeView === 'bin') {
-      if (!isDeleted) return false;
-    } else {
-      if (isDeleted) return false;
-      if (state.activeView === 'archive') {
-        if (!isArchived) return false;
-      } else if (isArchived) {
-        return false;
-      }
-    }
-    if (state.activeCustom) {
-      const customFolder = customNoteFolder(note, state.activeCustom.section);
-      if (customFolder === null) return false;
-      if (state.activeCustom.folder && !isFolderOrSub(customFolder, state.activeCustom.folder)) return false;
-    }
-    return true;
-  });
-}
+
 
 // Human countdown ("2d left") until a binned note is purged.
 
 // Resize the Markdown textarea to its content (skipped in preview mode).
-function autogrow() {
-  if (markdownInput.hidden) return;
-  markdownInput.style.height = 'auto';
-  markdownInput.style.height = `${markdownInput.scrollHeight}px`;
-}
+
 
 // ---- JSON/YAML syntax highlighting ---------------------------------------
 // The editing textarea cannot render colors, so a pre overlay behind it paints
@@ -2913,24 +1963,7 @@ function autogrow() {
 
 
 // Paint (or clear) the overlay for the open note. Only JSON/YAML are colored.
-function updateSyntaxLayer(note, showPreview) {
-  if (!syntaxLayer) return;
-  const ext = note && note.ext;
-  const lang = ext === 'json' ? 'json' : (ext === 'yaml' ? 'yaml' : null);
-  if (!lang || showPreview) {
-    syntaxLayer.hidden = true;
-    syntaxLayer.innerHTML = '';
-    markdownInput.classList.remove('is-highlighted');
-    return;
-  }
-  const source = typeof note.body === 'string' ? note.body : markdownInput.value;
-  const html = lang === 'json' ? highlightJson(source) : highlightYaml(source);
-  syntaxLayer.className = `syntax-layer lang-${lang}`;
-  // Trailing newline keeps the last line's height in sync with the textarea.
-  syntaxLayer.innerHTML = `${html}\n`;
-  syntaxLayer.hidden = false;
-  markdownInput.classList.add('is-highlighted');
-}
+
 
 // ---- Beautify (JSON / YAML) ----------------------------------------------
 // JSON: strict parse + 2-space re-emit (throws on invalid, surfaced as toast).
@@ -2966,185 +1999,34 @@ function applyBeautify() {
 }
 
 // Swap the writing area between Markdown source and rendered preview; non-Markdown notes never preview.
-function renderPreview(note) {
-  if (state.collab.noteId && state.collab.body) {
-    note = { id: state.collab.noteId, title: state.collab.title ? state.collab.title.toString() : '',
-             body: state.collab.body.toString(), ext: 'md', tags: [], favorite: false,
-             archived: false, deleted: false };
-  }
-  const bottomHint = document.querySelector('.editor-bottom-fixed span:first-child');
-  const isMd = note.ext === 'md';
-  const plainLabel = note.ext === 'txt' ? 'Plain text' : (EXT_LABELS[note.ext] || 'MD');
-  const showPreview = isMd && state.writeMode === 'preview';
-  if (showPreview) preview.innerHTML = renderMarkdown(note.body);
-  markdownInput.hidden = showPreview;
-  preview.hidden = !showPreview;
-  if (modeLabel) modeLabel.textContent = isMd ? (showPreview ? 'Preview' : 'Write') : plainLabel;
-  // Preview toggle is for standard Markdown notes and recipes; to-dos and
-  // every other file type have no preview.
-  const showLivePreview = isMd && (!note.template || note.template === 'recipe');
-  if (modeToggle) {
-    modeToggle.hidden = !showLivePreview;
-    modeToggle.textContent = showPreview ? 'Write' : 'Preview';
-  }
-  if (bottomHint) bottomHint.textContent = isMd ? 'Markdown' : plainLabel;
-  if (typeBadge) typeBadge.textContent = EXT_LABELS[note.ext] || 'MD';
-  if (beautifyBtn) beautifyBtn.hidden = !(note.ext === 'json' || note.ext === 'yaml');
-  // Formatting toolbar returns only for notes carrying the "md" tag.
-  const mdTagged = Array.isArray(note.tags) && note.tags.some((tag) => String(tag).toLowerCase() === 'md');
-  if (editorToolbar) editorToolbar.hidden = !mdTagged;
-  if (!showPreview) autogrow();
-  updateSyntaxLayer(note, showPreview);
-}
+
 
 // ---- Note cover pictures ------------------------------------------------
 // Covers ride on the note (inside the E2EE envelope) as validated data URLs.
-function coverFocalPos(note) {
-  if (note && typeof note.coverPos === 'number' && Number.isFinite(note.coverPos)) {
-    return Math.min(100, Math.max(0, note.coverPos));
-  }
-  return 50;
-}
+
 
 // The Add-cover row lives under the topbar line; hiding the button must
 // hide the row too, or its margin leaves a gap.
-function setCoverAddHidden(hide) {
-  const addBtn = document.getElementById('cover-add');
-  if (addBtn) addBtn.hidden = hide;
-  const row = document.querySelector('.cover-add-row');
-  if (row) row.style.display = hide ? 'none' : '';
-}
+
 
 // Paint the cover banner for the open note (null hides it). The src is
 // re-validated on every render and assigned as a property, never via HTML.
-function renderCover(note) {
-  const wrap = document.getElementById('cover-wrap');
-  const img = document.getElementById('cover-img');
-  const addBtn = document.getElementById('cover-add');
-  if (!wrap || !img) return;
-  const usable = note && state.activeView !== 'vault' ? cleanCoverSrc(note.cover) : null;
-  // Recipe notes show the photo in the fixed hero below the meta row instead
-  // of the banner above the title.
-  const bannerUsable = usable && !(note && note.template === 'recipe');
-  const heading = document.querySelector('.editor-heading');
-  if (heading) heading.classList.toggle('has-cover', Boolean(bannerUsable));
-  if (bannerUsable) {
-    if (img.getAttribute('src') !== usable) img.setAttribute('src', usable);
-    img.style.objectPosition = `50% ${coverFocalPos(note)}%`;
-    wrap.hidden = false;
-    if (addBtn) setCoverAddHidden(true);
-  } else {
-    wrap.hidden = true;
-    img.removeAttribute('src');
-    if (addBtn) {
-      const editable = Boolean(note) && state.activeView !== 'vault' && isUnlocked()
-        && !note.deleted && !note.archived;
-      // Recipe notes add their photo from the fixed hero, never the banner row.
-      setCoverAddHidden(!editable || (note && note.template === 'recipe'));
-    }
-  }
-  renderRecipeHero(note);
-}
+
 
 // Fixed recipe hero (meal photo + description) between the meta row and the
 // writing area. Editor chrome, not body text, so it cannot be deleted. The
 // photo reuses the note cover (same picker, validation and E2EE storage);
 // the src is re-validated on every render and assigned as a property.
-function renderRecipeHero(note) {
-  const hero = document.getElementById('recipe-hero');
-  if (!hero) return;
-  // A shared recipe note keeps its meal photo (Y.Map 'assets') and description
-  // (Y.Text 'desc') in the collaborative doc; a local note uses its own fields.
-  let template;
-  let cover;
-  let description;
-  if (state.collab.noteId) {
-    template = state.collab.template;
-    cover = state.collab.cover;
-    description = state.collab.desc ? state.collab.desc.toString() : '';
-  } else {
-    template = note && note.template;
-    cover = note && note.cover;
-    description = note && note.description;
-  }
-  const show = Boolean(template === 'recipe' && state.activeView !== 'vault');
-  hero.hidden = !show;
-  if (!show) { renderRecipeBody(note); return; }
-  const usable = cleanCoverSrc(cover);
-  const img = document.getElementById('recipe-photo-img');
-  const empty = document.getElementById('recipe-photo-empty');
-  if (img) {
-    if (usable) {
-      if (img.getAttribute('src') !== usable) img.setAttribute('src', usable);
-      img.hidden = false;
-    } else {
-      img.removeAttribute('src');
-      img.hidden = true;
-    }
-  }
-  if (empty) empty.hidden = Boolean(usable);
-  const descEl = document.getElementById('recipe-desc');
-  if (descEl) {
-    const next = typeof description === 'string' ? description : '';
-    if (document.activeElement !== descEl && descEl.value !== next) descEl.value = next;
-  }
-  renderRecipeBody(note);
-}
+
 
 // ---- Structured recipe body (Ingredients / Method) -----------------------
 // Recipe notes never show their Markdown body; instead these editable fields
 // are rendered as a two-column table. Local recipes store the lists on the
 // note; shared recipes keep them in a Y.Map('recipe') in the collaborative doc.
-function recipeDataForActive(note) {
-  if (state.collab.noteId) {
-    const data = { ingredients: [], steps: [] };
-    if (!state.collab.recipe) return data;
-    try { data.ingredients = sanitizeIngredients(JSON.parse(state.collab.recipe.get('ingredients') || '[]')); } catch (error) {}
-    try { data.steps = sanitizeSteps(JSON.parse(state.collab.recipe.get('steps') || '[]')); } catch (error) {}
-    return data;
-  }
-  if (note && note.template === 'recipe') {
-    return { ingredients: sanitizeIngredients(note.ingredients), steps: sanitizeSteps(note.steps) };
-  }
-  return { ingredients: [], steps: [] };
-}
-function renderRecipeIngredients(list) {
-  const box = document.getElementById('recipe-ingredients');
-  if (!box) return;
-  if (!list.length) { box.innerHTML = '<p class="recipe-empty">No ingredients yet.</p>'; return; }
-  box.innerHTML = list.map((item, i) => `
-    <div class="recipe-row">
-      <button type="button" class="recipe-check${item.d ? ' checked' : ''}" data-recipe-toggle="${i}" role="checkbox" aria-checked="${item.d ? 'true' : 'false'}" aria-label="Toggle ingredient"></button>
-      <textarea class="recipe-input" data-recipe-ing="${i}" rows="1" placeholder="Ingredient" aria-label="Ingredient">${escapeHtml(item.t)}</textarea>
-      <button type="button" class="recipe-remove" data-recipe-remove-ing="${i}" aria-label="Remove ingredient">&times;</button>
-    </div>`).join('');
-  box.querySelectorAll('textarea').forEach((area) => { area.style.height = 'auto'; area.style.height = `${area.scrollHeight}px`; });
-}
-function renderRecipeSteps(list) {
-  const box = document.getElementById('recipe-steps');
-  if (!box) return;
-  if (!list.length) { box.innerHTML = '<p class="recipe-empty">No steps yet.</p>'; return; }
-  box.innerHTML = list.map((step, i) => `
-    <div class="recipe-row">
-      <span class="recipe-num">${i + 1}.</span>
-      <textarea class="recipe-input" data-recipe-step="${i}" rows="1" placeholder="Describe this step" aria-label="Step ${i + 1}">${escapeHtml(step)}</textarea>
-      <button type="button" class="recipe-remove" data-recipe-remove-step="${i}" aria-label="Remove step">&times;</button>
-    </div>`).join('');
-  box.querySelectorAll('textarea').forEach((area) => { area.style.height = 'auto'; area.style.height = `${area.scrollHeight}px`; });
-}
-function renderRecipeBody(note) {
-  const wrap = document.getElementById('recipe-body');
-  const panel = document.querySelector('.editor-panel');
-  if (!wrap) return;
-  const target = note || (state.collab.noteId ? null : currentNote());
-  const isRecipe = state.activeView !== 'vault' && (state.collab.noteId ? state.collab.template === 'recipe' : Boolean(target && target.template === 'recipe'));
-  if (panel) panel.classList.toggle('recipe-mode', isRecipe);
-  wrap.hidden = !isRecipe;
-  if (!isRecipe) return;
-  const data = recipeDataForActive(target);
-  renderRecipeIngredients(data.ingredients);
-  renderRecipeSteps(data.steps);
-}
+
+
+
+
 // Edit the recipe lists for whichever source is open (local note or shared doc).
 function recipeMutate(mutator) {
   if (state.collab.noteId) {
@@ -3165,18 +2047,7 @@ function recipeMutate(mutator) {
   note.updatedAt = Date.now();
   persistNotes();
 }
-function focusRecipeField(selector, index) {
-  const fields = document.querySelectorAll(`.recipe-body-fixed ${selector}`);
-  if (!fields.length) return;
-  const at = (index === 'last') ? fields.length - 1 : Math.max(0, Math.min(fields.length - 1, Number(index) || 0));
-  const el = fields[at];
-  if (!el) return;
-  el.focus();
-  if (typeof el.setSelectionRange === 'function') {
-    const n = el.value.length;
-    try { el.setSelectionRange(n, n); } catch (error) {}
-  }
-}
+
 
 function requestCoverUpload() {
   exitCoverRepos(true);
@@ -3190,40 +2061,10 @@ function requestCoverUpload() {
   if (input) { input.value = ''; input.click(); }
 }
 
-function readFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('read'));
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.readAsDataURL(file);
-  });
-}
+
 
 // Downscale to a JPEG banner (max 1200px side, quality 0.82).
-function downscaleCover(dataUrl) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onerror = () => reject(new Error('decode'));
-    img.onload = () => {
-      try {
-        const naturalW = img.naturalWidth || 800;
-        const naturalH = img.naturalHeight || 600;
-        const scale = Math.min(1, COVER_MAX_DIM / Math.max(naturalW, naturalH));
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.max(1, Math.round(naturalW * scale));
-        canvas.height = Math.max(1, Math.round(naturalH * scale));
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { reject(new Error('canvas')); return; }
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob((blob) => {
-          if (!blob) { reject(new Error('encode')); return; }
-          readFileAsDataUrl(blob).then(resolve, reject);
-        }, 'image/jpeg', 0.82);
-      } catch (error) { reject(error); }
-    };
-    img.src = dataUrl;
-  });
-}
+
 
 async function handleCoverFile(file) {
   const note = currentNote();
@@ -3259,69 +2100,16 @@ function requestCollabCoverUpload() {
   if (input) { input.value = ''; input.click(); }
 }
 
-async function handleCollabCoverFile(file) {
-  if (!state.collab.noteId || !state.collab.assets) return;
-  if (!file) return;
-  if (!isImageFile(file)) { showToast('Use a PNG, JPEG, WebP, GIF, AVIF or BMP image'); return; }
-  if (file.size > 5 * 1024 * 1024) { showToast('Image too large (5 MB max)'); return; }
-  const wasOptimized = file.size > 300000;
-  showToast('Loading picture…');
-  try {
-    const raw = await readFileAsDataUrl(file);
-    const dataUrl = wasOptimized ? await downscaleCover(raw) : raw;
-    const clean = cleanCoverSrc(dataUrl) || (!wasOptimized ? await downscaleCover(raw).then(cleanCoverSrc) : null);
-    if (!clean) { showToast('Could not use that image — try a smaller file'); return; }
-    if (!state.collab.noteId || !state.collab.assets) return; // moved on mid-upload
-    state.collab.assets.set('cover', clean);
-    state.collab.cover = clean;
-    renderRecipeHero(null);
-    showToast(wasOptimized ? 'Meal photo added (optimized)' : 'Meal photo added');
-  } catch (error) {
-    showToast('Could not read that image');
-  }
-}
+
 
 // Drag the banner on the note itself to reposition the cover (Notion-style).
 // Repositioning is a locked mode: Reposition unlocks, Done saves + locks.
 
-function canEditCoverNote() {
-  const note = currentNote();
-  if (!note || state.activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return null;
-  if (!cleanCoverSrc(note.cover)) return null;
-  return note;
-}
 
-function setCoverReposUI() {
-  const wrap = document.getElementById('cover-wrap');
-  const badge = document.getElementById('cover-pos');
-  const reposBtn = document.getElementById('cover-repos');
-  const doneBtn = document.getElementById('cover-done');
-  const changeBtn = document.getElementById('cover-change');
-  const removeBtn = document.getElementById('cover-remove');
-  if (wrap) wrap.classList.toggle('repositioning', state.coverRepositioning);
-  if (reposBtn) reposBtn.hidden = state.coverRepositioning;
-  if (doneBtn) doneBtn.hidden = !state.coverRepositioning;
-  if (changeBtn) changeBtn.hidden = state.coverRepositioning;
-  if (removeBtn) removeBtn.hidden = state.coverRepositioning;
-  if (badge) {
-    if (state.coverRepositioning) {
-      const note = currentNote();
-      badge.hidden = false;
-      badge.textContent = `${note ? coverFocalPos(note) : 50}%`;
-    } else {
-      badge.hidden = true;
-    }
-  }
-}
 
-function enterCoverRepos() {
-  const note = canEditCoverNote();
-  if (!note || state.coverRepositioning) return;
-  state.coverRepositioning = true;
-  state.coverReposStart = coverFocalPos(note);
-  setCoverReposUI();
-  showToast('Drag the cover to reposition — Done to lock');
-}
+
+
+
 
 // Leave reposition mode; save persists the staged position, cancel restores it.
 function exitCoverRepos(save) {
@@ -3343,33 +2131,11 @@ function exitCoverRepos(save) {
   setCoverReposUI();
 }
 
-function coverDragNote() {
-  if (!state.coverRepositioning) return null;
-  return canEditCoverNote();
-}
 
-function moveCoverOnNote(clientY) {
-  const note = coverDragNote();
-  const wrap = document.getElementById('cover-wrap');
-  const badge = document.getElementById('cover-pos');
-  if (!note || !wrap) return;
-  const rect = wrap.getBoundingClientRect();
-  const ratio = rect.height > 0 ? (clientY - rect.top) / rect.height : 0.5;
-  note.coverPos = Math.min(100, Math.max(0, Math.round(ratio * 100)));
-  const img = document.getElementById('cover-img');
-  if (img) img.style.objectPosition = `50% ${note.coverPos}%`;
-  if (badge) {
-    badge.hidden = false;
-    badge.textContent = `${note.coverPos}%`;
-  }
-}
 
-function endCoverDrag() {
-  if (!state.coverDragging) return;
-  state.coverDragging = false;
-  const wrap = document.getElementById('cover-wrap');
-  if (wrap) wrap.classList.remove('dragging');
-}
+
+
+
 
 function removeCover() {
   exitCoverRepos(false);
@@ -3471,12 +2237,7 @@ function startTreeRename(folder) {
 }
 
 // Swap New/Import vs Empty-Bin buttons per view, then refresh the lock state.
-function updateBinUI() {
-  const inBin = state.activeView === 'bin';
-  const emptyBinBtn = document.getElementById('empty-bin');
-  if (emptyBinBtn) emptyBinBtn.hidden = !inBin;
-  refreshEditorLock();
-}
+
 
 // Drag-and-drop note sorting: drag a row onto another note to reorder (top /
 // bottom half picks the side); dropping onto a folder header moves the note
@@ -3535,34 +2296,12 @@ function dropNoteOnFolder(draggedId, folder, sectionId) {
 
 // True when a drag event carries a Notely folder (slide-menu/workspace shared
 // payload), as opposed to a note drag (text/plain) or a file hover.
-function isFolderDrag(event) {
-  try {
-    const types = event.dataTransfer ? Array.from(event.dataTransfer.types || []) : [];
-    return types.includes('application/x-notely-folder');
-  } catch (error) { return false; }
-}
+
 
 // Resolve a workspace folder header to its section (same precedence as the
 // folder context menu: active custom filter, then the list-section shell,
 // then the folder owner).
-function resolveListFolderTarget(header) {
-  if (!header || !header.dataset.folder) return null;
-  const wrap = header.closest('[data-folder-wrap]');
-  const shell = header.closest('[data-list-section]');
-  const shellKind = shell ? shell.dataset.listSection : null;
-  let sectionId = state.activeCustom ? state.activeCustom.section : null;
-  if (shellKind === 'custom') {
-    const secBtn = shell.querySelector('[data-section-id]');
-    if (secBtn && secBtn.dataset.sectionId) sectionId = secBtn.dataset.sectionId;
-  }
-  if (!sectionId && wrap) {
-    const folder = wrap.dataset.folderWrap;
-    const owner = state.customSections.find((section) => section.folders.some((entry) => entry === folder || isFolderOrSub(folder, entry) || isFolderOrSub(entry, folder)));
-    if (owner) sectionId = owner.id;
-  }
-  if (!sectionId) return null;
-  return { ns: 'custom', section: sectionId, path: header.dataset.folder };
-}
+
 
 function enableNoteDragDrop() {
   const canDrag = state.activeView !== 'bin' && state.activeView !== 'vault';
@@ -3971,40 +2710,13 @@ function renderNoteList() {
 }
 
 // Selected note, falling back to the first note (may be undefined when empty — callers must guard).
-function currentNote() {
-  return state.notes.find((note) => note.id === state.currentId) || state.notes[0];
-}
+
 
 // Refresh word count, tag chips and the favorite button for the open note.
 // Human "last edited" label from a note's timestamp (falls back to its date text).
 
 
-function updateMeta(note) {
-  // Shared notes render their tags from the Yjs doc instead of note.tags.
-  if (state.collab.noteId) { renderSharedTags(); return; }
-  renderRecipeHero(note);
-  let body = typeof note.body === 'string' ? note.body : '';
-  if (note.template === 'recipe') {
-    body = `${sanitizeIngredients(note.ingredients).map((item) => item.t).join(' ')} ${sanitizeSteps(note.steps).join(' ')}`;
-  }
-  const words = body.trim() ? body.trim().split(/\s+/).length : 0;
-  wordCount.textContent = `${words} word${words === 1 ? '' : 's'}`;
-  const editedEl = document.getElementById('edited-label');
-  if (editedEl) editedEl.textContent = relativeEditedLabel(note);
-  const tags = Array.isArray(note.tags) ? note.tags.filter((tag) => typeof tag === 'string').slice(0, 20) : [];
-  // "+" affordance sits inline after the tags and opens the tag editor for THIS
-  // note (the note id is bound to the button). It only appears for the user's
-  // own regular notes: vault and shared/collab notes have no editable tag list,
-  // and showing it there used to tag whichever regular note was last active.
-  const taggable = !state.collab.noteId && state.activeView !== 'vault' && state.activeView !== 'shared'
-    && state.notes.some((item) => item.id === note.id);
-  const addTagButton = taggable
-    ? `<button type="button" class="tag-add" data-note-id="${escapeHtml(String(note.id))}" title="Add tag" aria-label="Add tag">+</button>`
-    : '';
-  tagList.innerHTML = tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('') + addTagButton;
-  document.getElementById('favorite-button').classList.toggle('is-favorite', Boolean(note.favorite));
-  document.getElementById('favorite-button').style.color = note.favorite ? '#b79b54' : '';
-}
+
 
 // Open a note in the editor and re-render the list; lock state is reapplied afterwards.
 // Every note opens in PREVIEW mode (edit mode never carries over between
@@ -4045,12 +2757,10 @@ function persistNotes() {
   state.syncTimer = setTimeout(() => { syncNotesToServer(); }, 450);
 }
 
-const IMPORTANT_TAG = 'important';
+
 
 // True when a note carries the important tag (case-insensitive).
-function isImportant(note) {
-  return Boolean(note && Array.isArray(note.tags) && note.tags.some((tag) => String(tag).toLowerCase() === IMPORTANT_TAG));
-}
+
 
 // Add/remove the important tag; important notes require popup confirmation before deletion.
 function toggleImportantById(id) {
@@ -4072,68 +2782,18 @@ function toggleImportantById(id) {
 // Return the shared right-click menu element.
 // ---- Context menu, delete dialogs, note lifecycle (Bin/Archive/restore) ----
 
-function getNoteContextMenu() {
-  return document.getElementById('note-context-menu');
-}
+
 
 // Hide the right-click menu and forget its target note.
-function closeNoteContextMenu() {
-  const menu = getNoteContextMenu();
-  if (menu) menu.hidden = true;
-  state.contextMenuNoteId = null;
-}
+
 
 // Show the right-click menu at the cursor: per-state item visibility (deleted/archived/live) with viewport clamping.
-function openNoteContextMenu(noteId, x, y) {
-  const menu = getNoteContextMenu();
-  const note = state.notes.find((item) => item.id === noteId);
-  if (!menu || !note) return;
-  state.contextMenuNoteId = noteId;
-  const favoriteLabel = document.getElementById('context-favorite-label');
-  if (favoriteLabel) favoriteLabel.textContent = note.favorite ? 'Unfavorite' : 'Favorite';
-  const importantLabel = document.getElementById('context-important-label');
-  if (importantLabel) importantLabel.textContent = isImportant(note) ? 'Unmark as important' : 'Mark as important';
-  const isDeleted = Boolean(note.deleted);
-  const isArchived = Boolean(note.archived);
-  menu.querySelectorAll('[data-menu-action]').forEach((btn) => {
-    const actionName = btn.dataset.menuAction;
-    if (isDeleted) btn.hidden = !(actionName === 'restore' || actionName === 'delete');
-    else if (isArchived) btn.hidden = !(actionName === 'open' || actionName === 'unarchive' || actionName === 'download' || actionName === 'tags' || actionName === 'delete');
-    else btn.hidden = (actionName === 'restore' || actionName === 'unarchive');
-  });
-  const archiveLabel = document.getElementById('context-archive-label');
-  if (archiveLabel) archiveLabel.textContent = isArchived ? 'Unarchive' : 'Archive';
-  const deleteLabel = document.getElementById('context-delete-label');
-  if (deleteLabel) deleteLabel.textContent = isDeleted ? 'Delete permanently' : 'Delete';
-  menu.hidden = false;
-  const padding = 8;
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
-  const rect = menu.getBoundingClientRect();
-  if (rect.right > window.innerWidth - padding) menu.style.left = `${Math.max(padding, x - rect.width)}px`;
-  if (rect.bottom > window.innerHeight - padding) menu.style.top = `${Math.max(padding, y - rect.height)}px`;
-}
+
 
 // Download one note with a sanitized filename and matching MIME type.
-function downloadNoteObject(note) {
-  if (!note) return;
-  const body = typeof note.body === 'string' ? note.body : '';
-  const blob = new Blob([body], { type: EXT_MIME[note.ext] || 'text/markdown' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.rel = 'noopener';
-  link.download = sanitizeFilename(note.title, note.ext);
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  showToast(`Downloaded ${link.download}`);
-}
 
-function downloadNoteById(id) {
-  downloadNoteObject(state.notes.find((item) => item.id === id));
-}
+
+
 
 // Copy a note (fresh id, unique title, reset dates/flags) right after the original and open it.
 function duplicateNoteById(id) {
@@ -4330,46 +2990,13 @@ function handleNoteMenuAction(action, id) {
 // Tags live on each note as freeform strings (<=40 chars, max 20 per note).
 // The account-wide view (settings) aggregates them for rename/delete.
 
-function normalizeTagName(name) {
-  return String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, 40);
-}
-function noteTagIndex(note, name) {
-  const wanted = normalizeTagName(name).toLowerCase();
-  return (Array.isArray(note.tags) ? note.tags : []).findIndex((tag) => String(tag).toLowerCase() === wanted);
-}
-function addNoteTag(note, name) {
-  const tag = normalizeTagName(name);
-  if (!note || !tag) return false;
-  if (!Array.isArray(note.tags)) note.tags = [];
-  if (noteTagIndex(note, tag) !== -1) return false;
-  if (note.tags.length >= 20) { showToast('Tag limit reached (20 per note)'); return false; }
-  note.tags.push(tag);
-  return true;
-}
-function removeNoteTag(note, name) {
-  const at = noteTagIndex(note, name);
-  if (at === -1) return false;
-  note.tags.splice(at, 1);
-  return true;
-}
+
+
+
+
 // Aggregate every tag with a note count (case-insensitive; first casing wins).
 // User-created tags with no notes yet are included with a count of 0.
-function allTagCounts() {
-  const map = new Map();
-  state.notes.forEach((note) => {
-    (Array.isArray(note.tags) ? note.tags : []).forEach((tag) => {
-      const key = String(tag).toLowerCase();
-      const entry = map.get(key);
-      if (entry) entry.count += 1;
-      else map.set(key, { label: String(tag), count: 1 });
-    });
-  });
-  state.knownTags.forEach((tag) => {
-    const key = String(tag).toLowerCase();
-    if (key && !map.has(key)) map.set(key, { label: String(tag), count: 0 });
-  });
-  return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
-}
+
 function refreshTagsAcrossUi() {
   persistNotes();
   renderNoteList();
@@ -4442,84 +3069,13 @@ function addKnownTag(raw) {
 
 // Shared-note tags live in the Yjs doc (a Y.Array) so they sync live to every
 // member; the encrypted note meta mirrors them for the Shared list.
-function sharedTagList() {
-  if (!state.collab.noteId || !state.collab.tags) return [];
-  try { return state.collab.tags.toArray().filter((x) => typeof x === 'string').slice(0, 20); } catch (error) { return []; }
-}
-function renderSharedTags() {
-  if (!state.collab.noteId || !tagList) return;
-  const tags = sharedTagList();
-  const addTagButton = '<button type="button" class="tag-add" data-shared-tag-add="1" title="Add tag" aria-label="Add tag">+</button>';
-  tagList.innerHTML = tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('') + addTagButton;
-}
-function openSharedTagEditor() {
-  const overlay = document.getElementById('tag-editor-overlay');
-  if (!overlay || !state.collab.noteId) return;
-  state.tagEditorShared = true;
-  state.tagEditorNoteId = null;
-  const desc = document.getElementById('tag-editor-desc');
-  const title = state.collab.title ? state.collab.title.toString() : 'this shared note';
-  if (desc) desc.textContent = `Add or remove tags for “${title}”.`;
-  renderTagEditor();
-  overlay.hidden = false;
-  const input = document.getElementById('tag-editor-input');
-  if (input) { input.value = ''; try { input.focus(); } catch (error) {} }
-}
 
-function openTagEditor(id) {
-  const note = state.notes.find((item) => item.id === id);
-  const overlay = document.getElementById('tag-editor-overlay');
-  if (!note || !overlay) return;
-  state.tagEditorShared = false;
-  state.tagEditorNoteId = id;
-  const desc = document.getElementById('tag-editor-desc');
-  if (desc) desc.textContent = `Add or remove tags for “${note.title || 'Untitled note'}”.`;
-  renderTagEditor();
-  overlay.hidden = false;
-  const input = document.getElementById('tag-editor-input');
-  if (input) { input.value = ''; try { input.focus(); } catch (error) {} }
-}
-function closeTagEditor() {
-  const overlay = document.getElementById('tag-editor-overlay');
-  if (overlay) overlay.hidden = true;
-  state.tagEditorNoteId = null;
-  state.tagEditorShared = false;
-}
-function renderTagEditor() {
-  let tags;
-  if (state.tagEditorShared) {
-    tags = sharedTagList();
-  } else {
-    const note = state.notes.find((item) => item.id === state.tagEditorNoteId);
-    if (!note) return;
-    tags = Array.isArray(note.tags) ? note.tags : [];
-  }
-  const current = document.getElementById('tag-editor-current');
-  const suggest = document.getElementById('tag-editor-suggest');
-  if (current) {
-    current.innerHTML = tags.length
-      ? tags.map((tag) => `<button type="button" class="tag-chip" data-tag-remove="${escapeHtml(tag)}" title="Remove ${escapeHtml(tag)}">${escapeHtml(tag)}<span aria-hidden="true">×</span></button>`).join('')
-      : '<span class="tag-editor-empty">No tags yet — add one below.</span>';
-  }
-  if (suggest) {
-    const have = new Set(tags.map((tag) => String(tag).toLowerCase()));
-    // Shared notes also suggest the section's owner-curated tags.
-    const pool = state.tagEditorShared
-      ? [...sharedGroupTagList(state.collab.groupId).map((label) => ({ label })), ...allTagCounts()]
-      : allTagCounts();
-    const seen = new Set();
-    const others = [];
-    for (const entry of pool) {
-      const key = String(entry.label).toLowerCase();
-      if (!key || have.has(key) || seen.has(key)) continue;
-      seen.add(key);
-      others.push(entry);
-    }
-    suggest.innerHTML = others.length
-      ? `<span class="tag-editor-suggest-label">Existing tags</span>${others.map((entry) => `<button type="button" class="tag-chip is-add" data-tag-add="${escapeHtml(entry.label)}">${escapeHtml(entry.label)}</button>`).join('')}`
-      : '';
-  }
-}
+
+
+
+
+
+
 function tagEditorAdd(raw) {
   const tag = normalizeTagName(raw);
   if (!tag) return;
@@ -4560,22 +3116,7 @@ function tagEditorRemove(name) {
 }
 
 // ---- Settings → Customization → Tags --------------------------------------
-function renderSettingsTags() {
-  const box = document.getElementById('settings-tag-list');
-  if (!box) return;
-  const tags = allTagCounts();
-  if (!tags.length) {
-    box.innerHTML = '<p class="modal-desc">No tags yet. Right-click a note and choose “Tags…” to add some.</p>';
-    return;
-  }
-  box.innerHTML = tags.map((entry) => `
-    <div class="settings-tag-row" data-settings-tag="${escapeHtml(entry.label)}">
-      <span class="tag">${escapeHtml(entry.label)}</span>
-      <span class="settings-tag-count">${entry.count} note${entry.count === 1 ? '' : 's'}</span>
-      <button type="button" class="settings-tag-action" data-tag-rename="${escapeHtml(entry.label)}" title="Rename tag" aria-label="Rename ${escapeHtml(entry.label)}">${icon('pencil')}</button>
-      <button type="button" class="settings-tag-action danger" data-tag-delete="${escapeHtml(entry.label)}" title="Delete tag" aria-label="Delete ${escapeHtml(entry.label)}">${icon('trash')}</button>
-    </div>`).join('');
-}
+
 
 // ---- E2EE note sharing ----------------------------------------------------
 // Each account publishes an ECDH P-256 keypair: the public key in the clear,
@@ -4584,73 +3125,10 @@ function renderSettingsTags() {
 // (ECIES). The server relays only ciphertext and can never read a note.
 state.sharing = { privateKey: null, signingKey: null, ready: false };
 
-function sharingEnsureKeys() {
-  // Single-flight: concurrent callers must never generate two different
-  // keypairs (the published public key could stop matching the in-memory key).
-  if (state.sharing.ready && state.sharing.privateKey && state.sharing.signingKey) return Promise.resolve(true);
-  if (state.sharingKeyPromise) return state.sharingKeyPromise;
-  state.sharingKeyPromise = sharingEnsureKeysOnce().finally(() => { state.sharingKeyPromise = null; });
-  return state.sharingKeyPromise;
-}
-async function sharingGenerateKeys() {
-  try {
-    const ecdh = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
-    const sig = await window.crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
-    const pub = new Uint8Array(await window.crypto.subtle.exportKey('raw', ecdh.publicKey));
-    const ecdhPkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', ecdh.privateKey));
-    const sigPub = new Uint8Array(await window.crypto.subtle.exportKey('raw', sig.publicKey));
-    const sigPkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', sig.privateKey));
-    const pubRes = await apiFetch('/api/keys', { method: 'POST', body: JSON.stringify({
-      algo: 'ECDH-P256',
-      pubkey: e2eeBytesToB64(pub),
-      encPriv: await sharingWrapAccountKey(ecdhPkcs8),
-      sigPubkey: e2eeBytesToB64(sigPub),
-      sigEncPriv: await sharingWrapAccountKey(sigPkcs8),
-    }) });
-    if (!pubRes.ok) return false;
-    state.sharing.privateKey = ecdh.privateKey;
-    state.sharing.signingKey = sig.privateKey;
-    state.sharing.ready = true;
-    return true;
-  } catch (error) { return false; }
-}
-async function sharingPublishSigningKey(pubB64, encPrivB64) {
-  // Additive backfill: keep the existing ECDH key, add a signing key.
-  try {
-    const sig = await window.crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
-    const sigPub = new Uint8Array(await window.crypto.subtle.exportKey('raw', sig.publicKey));
-    const sigPkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', sig.privateKey));
-    const res = await apiFetch('/api/keys', { method: 'POST', body: JSON.stringify({
-      algo: 'ECDH-P256', pubkey: pubB64, encPriv: encPrivB64,
-      sigPubkey: e2eeBytesToB64(sigPub),
-      sigEncPriv: await sharingWrapAccountKey(sigPkcs8),
-    }) });
-    if (!res.ok) return false;
-    state.sharing.signingKey = sig.privateKey;
-    state.sharing.ready = true;
-    return true;
-  } catch (error) { return false; }
-}
-async function sharingEnsureKeysOnce() {
-  if (state.sharing.ready && state.sharing.privateKey && state.sharing.signingKey) return true;
-  if (!e2ee.masterKey) return false;
-  try {
-    const res = await apiFetch('/api/keys/me');
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.exists && data.encPriv && data.pubkey) {
-        state.sharing.privateKey = await sharingUnwrapAccountKey(data.encPriv, 'ECDH');
-        if (data.sigEncPriv && data.sigPubkey) {
-          state.sharing.signingKey = await sharingUnwrapAccountKey(data.sigEncPriv, 'ECDSA');
-          state.sharing.ready = true;
-          return true;
-        }
-        return await sharingPublishSigningKey(data.pubkey, data.encPriv);
-      }
-    }
-  } catch (error) { /* fall through and (re)generate */ }
-  return sharingGenerateKeys();
-}
+
+
+
+
 
 // ---- Signed wraps: a member signs the key they hand a peer, so the recipient
 // can detect a server that substitutes a wrap it controls. ------------------------------------------------------------------
@@ -4663,31 +3141,13 @@ async function sharingEnsureKeysOnce() {
 // under the group; any note added there is automatically shared with everyone
 // in the group. Edits are Yjs CRDT updates encrypted with the group key and
 // relayed over a WebSocket. The server only relays ciphertext.
-function loadYjs() {
-  if (!state.yjsPromise) state.yjsPromise = import('/vendor/yjs/yjs.mjs');
-  return state.yjsPromise;
-}
+
 
 // Note "meta" (title + folder) is encrypted under the group key so the server
 // still sees nothing. It powers the Shared inbox list without loading the doc.
 // Unwrap a group's key from my membership (used by the inbox + note creation).
 // Push the current title/folder (debounced) so the inbox list stays current.
-function scheduleCollabMeta() {
-  if (!state.collab.noteId || !state.collab.key) return;
-  clearTimeout(state.collab.metaTimer);
-  state.collab.metaTimer = setTimeout(async () => {
-    if (!state.collab.noteId || !state.collab.key) return;
-    try {
-      const encMeta = await collabEncryptMeta(state.collab.key, {
-        title: state.collab.title ? state.collab.title.toString().slice(0, 200) : '',
-        folder: state.collab.folder || '',
-        template: state.collab.template || '',
-        tags: state.collab.tags ? state.collab.tags.toArray().filter((x) => typeof x === 'string').slice(0, 20) : [],
-      });
-      await apiFetch(`/api/collab/notes/${state.collab.noteId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
-    } catch (error) {}
-  }, 700);
-}
+
 
 state.collab = { noteId: null, groupId: null, doc: null, title: null, body: null, desc: null, assets: null,
   cover: '', description: '', es: null, key: null, keyVersion: 1, keys: new Map(),
@@ -4699,225 +3159,27 @@ state.collab = { noteId: null, groupId: null, doc: null, title: null, body: null
 // rotation the section's content is always fully under the current epoch, but a
 // frame posted just before the switch may still carry the previous version.
 
-function setCollabStatus(text, offline) {
-  const el = document.getElementById('collab-status');
-  const textEl = document.getElementById('collab-status-text');
-  const sep = document.getElementById('collab-status-sep');
-  if (textEl) textEl.textContent = text;
-  if (el) { el.hidden = false; el.style.color = offline ? '#c0453e' : ''; }
-  if (sep) sep.hidden = false;
-}
-function collabSyncDom() {
-  if (!state.collab.doc) return;
-  const titleStr = state.collab.title ? state.collab.title.toString() : '';
-  if (titleInput && titleInput.value !== titleStr && document.activeElement !== titleInput) titleInput.value = titleStr;
-  const bodyStr = state.collab.body ? state.collab.body.toString() : '';
-  if (markdownInput && markdownInput.value !== bodyStr) {
-    const start = markdownInput.selectionStart;
-    markdownInput.value = bodyStr;
-    try { markdownInput.setSelectionRange(Math.min(start, bodyStr.length), Math.min(start, bodyStr.length)); } catch (error) {}
-    if (state.writeMode === 'preview') { try { preview.innerHTML = renderMarkdown(bodyStr); } catch (error) {} }
-  }
-  const descEl = document.getElementById('recipe-desc');
-  if (descEl && state.collab.desc) {
-    const descStr = state.collab.desc.toString();
-    if (document.activeElement !== descEl && descEl.value !== descStr) descEl.value = descStr;
-  }
-}
+
+
 // Keep the shared recipe hero in step with the collaborative cover asset.
-function collabAssetsChanged() {
-  if (!state.collab.noteId) return;
-  const raw = state.collab.assets ? state.collab.assets.get('cover') : '';
-  state.collab.cover = cleanCoverSrc(raw) || '';
-  state.collab.description = state.collab.desc ? state.collab.desc.toString() : '';
-  renderRecipeHero(null);
-}
+
 // The Members popup: accepted members, plus invites for the owner.
-function renderCollabMembersModal() {
-  const btn = document.getElementById('collab-pending');
-  const me = state.cachedProfile && state.cachedProfile.username;
-  const isOwner = state.collab.owner === me;
-  // Owner always first; stable sort keeps the rest in join order.
-  const members = [...(state.collab.members || [])].sort((a, b) => {
-    if (a === state.collab.owner) return -1;
-    if (b === state.collab.owner) return 1;
-    return 0;
-  });
-  const pending = state.collab.pending || [];
-  if (btn) {
-    btn.classList.toggle('has-pending', isOwner && pending.length > 0);
-    const extra = (isOwner && pending.length) ? ` · ${pending.length} invited` : '';
-    btn.title = `Members (${members.length}${extra})`;
-  }
-  const list = document.getElementById('collab-pending-list');
-  if (!list) return;
-  const memberRows = members.map((name) => {
-    const tags = `${name === me ? ' (you)' : ''}${name === state.collab.owner ? ' · owner' : ''}`;
-    const canRemove = isOwner && name !== me;
-    return `<div class="collab-pending-row"><span class="collab-pending-name">${escapeHtml(name)}${tags}</span>${canRemove ? `<button type="button" class="btn btn-secondary" data-remove-member="${escapeHtml(name)}">Remove</button>` : ''}</div>`;
-  }).join('');
-  let html = `<p class="collab-members-section">Members</p>${memberRows || '<p class="collab-pending-empty">No members yet.</p>'}`;
-  // Only the owner sees who has not accepted yet (and can cancel invites).
-  if (isOwner) {
-    const pendingRows = pending.map((name) => `<div class="collab-pending-row"><span class="collab-pending-name">${escapeHtml(name)}</span><button type="button" class="btn btn-secondary" data-cancel-invite="${escapeHtml(name)}">Cancel</button></div>`).join('');
-    html += `<p class="collab-members-section">Invited</p>${pendingRows || '<p class="collab-pending-empty">No pending invitations.</p>'}`;
-  }
-  list.innerHTML = html;
-}
-function openCollabPending() {
-  if (!state.collab.noteId) return;
-  renderCollabMembersModal();
-  const overlay = document.getElementById('collab-pending-overlay');
-  if (overlay) overlay.hidden = false;
-}
-function closeCollabPending() {
-  const overlay = document.getElementById('collab-pending-overlay');
-  if (overlay) overlay.hidden = true;
-}
-async function cancelCollabInvite(name) {
-  if (!state.collab.groupId || !name) return;
-  const res = await apiFetch(`/api/collab/groups/${state.collab.groupId}/members/${encodeURIComponent(name)}`, { method: 'DELETE' });
-  if (!res.ok) { showToast('Could not cancel the invitation'); return; }
-  state.collab.pending = (state.collab.pending || []).filter((n) => n !== name);
-  renderCollabMembersModal();
-  showToast(`Invitation to ${name} cancelled`);
-}
+
+
+
+
 
 // ---- Presence: who is here, where their cursor is (ephemeral, encrypted) ----
-const COLLAB_PRESENCE_TTL_MS = 15000;
 
-function collabPresenceColor(username) {
-  const name = String(username || '');
-  let h = 0;
-  for (let i = 0; i < name.length; i += 1) h = (h * 31 + name.charCodeAt(i)) % 360;
-  return `hsl(${h}, 65%, 45%)`;
-}
+
+
 // Textarea caret coordinates via an offscreen mirror with identical metrics.
-function collabCaretCoords(index) {
-  const ta = markdownInput;
-  if (!ta) return null;
-  if (!state.collabCaretMirror) {
-    state.collabCaretMirror = document.createElement('div');
-    state.collabCaretMirror.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(state.collabCaretMirror);
-  }
-  const mirror = state.collabCaretMirror;
-  const cs = window.getComputedStyle(ta);
-  const st = mirror.style;
-  st.position = 'absolute';
-  st.visibility = 'hidden';
-  st.top = '-9999px';
-  st.left = '-9999px';
-  st.whiteSpace = 'pre-wrap';
-  st.overflowWrap = 'break-word';
-  st.width = `${ta.clientWidth}px`;
-  st.boxSizing = cs.boxSizing;
-  st.fontFamily = cs.fontFamily;
-  st.fontSize = cs.fontSize;
-  st.fontWeight = cs.fontWeight;
-  st.lineHeight = cs.lineHeight;
-  st.letterSpacing = cs.letterSpacing;
-  st.padding = cs.padding;
-  st.border = cs.border;
-  st.tabSize = cs.tabSize;
-  const value = ta.value || '';
-  const clamped = Math.max(0, Math.min(Number(index) || 0, value.length));
-  mirror.textContent = value.slice(0, clamped);
-  const marker = document.createElement('span');
-  marker.textContent = '\u200b';
-  mirror.appendChild(marker);
-  return { top: marker.offsetTop, left: marker.offsetLeft,
-           height: marker.offsetHeight || parseFloat(cs.lineHeight) || 16 };
-}
-function renderCollabPresence() {
-  const box = document.getElementById('collab-presence');
-  const layer = document.getElementById('collab-caret-layer');
-  if (!state.collab.noteId) {
-    if (box) box.innerHTML = '';
-    if (layer) layer.innerHTML = '';
-    return;
-  }
-  const now = Date.now();
-  const entries = [];
-  state.collab.presence.forEach((p, id) => {
-    if (now - p.ts < COLLAB_PRESENCE_TTL_MS) entries.push({ id, ...p });
-    else state.collab.presence.delete(id);
-  });
-  entries.sort((a, b) => String(a.user).localeCompare(String(b.user)));
-  if (box) {
-    // Always show a "you" chip so the row is visible even when alone; remote
-    // peers are appended after it.
-    const meName = (state.cachedProfile && state.cachedProfile.username) || 'You';
-    const self = `<span class="collab-presence-chip${state.collab.typing ? ' is-typing' : ''}"><span class="collab-presence-dot" style="background:${state.collab.color || '#888'}"></span>${escapeHtml(meName)} (you)${state.collab.typing ? ' · typing…' : ''}</span>`;
-    box.innerHTML = self + entries.map((p) => `<span class="collab-presence-chip${p.typing ? ' is-typing' : ''}"><span class="collab-presence-dot" style="background:${p.color}"></span>${escapeHtml(p.user || 'Someone')}${p.typing ? ' · typing…' : ''}</span>`).join('');
-  }
-  if (layer) {
-    if (state.writeMode !== 'edit') { layer.innerHTML = ''; }
-    else {
-      layer.innerHTML = entries.map((p) => {
-        const c = collabCaretCoords(p.s);
-        if (!c) return '';
-        return `<div class="collab-caret" style="top:${c.top}px;left:${c.left}px;height:${c.height}px;background:${p.color}"><span class="collab-caret-label" style="background:${p.color}">${escapeHtml(p.user || '')}</span></div>`;
-      }).join('');
-    }
-  }
-}
-function collabPresenceLocal(typing) {
-  if (!state.collab.noteId) return;
-  if (typing) {
-    state.collab.typing = true;
-    clearTimeout(state.collabTypingTimer);
-    state.collabTypingTimer = setTimeout(() => { state.collab.typing = false; }, 1500);
-  }
-  if (state.collabPresenceLocalTimer) return;
-  state.collabPresenceLocalTimer = setTimeout(() => { state.collabPresenceLocalTimer = null; collabSendPresence(false); }, 120);
-}
-async function collabSendPresence(leave) {
-  if (!state.collab.noteId || !state.collab.key || !state.collab.clientId) return;
-  const noteId = state.collab.noteId;
-  const key = state.collab.key;
-  const keyVersion = state.collab.keyVersion;
-  const ta = markdownInput;
-  const body = JSON.stringify({
-    id: state.collab.clientId,
-    u: (state.cachedProfile && state.cachedProfile.username) || '',
-    c: state.collab.color,
-    s: ta ? ta.selectionStart : 0,
-    e: ta ? ta.selectionEnd : 0,
-    typing: !leave && state.collab.typing === true,
-    leave: Boolean(leave),
-  });
-  try {
-    const payload = await collabEncrypt(key, new TextEncoder().encode(body));
-    if (!leave && state.collab.noteId !== noteId) return; // note changed while encrypting
-    await apiFetch(`/api/collab/notes/${noteId}/presence`, { method: 'POST', body: JSON.stringify({ payload, keyVersion }) });
-  } catch (error) {}
-}
-async function collabPresenceReceive(msg) {
-  if (!state.collab.noteId) return;
-  const key = collabKeyFor(msg.version);
-  if (!key) return;
-  let data;
-  try { data = JSON.parse(new TextDecoder().decode(await collabDecrypt(key, msg.payload))); } catch (error) { return; }
-  const id = String(data.id || '');
-  if (!id || id === state.collab.clientId) return;
-  if (data.leave) { state.collab.presence.delete(id); renderCollabPresence(); return; }
-  state.collab.presence.set(id, {
-    user: String(data.u || ''),
-    color: typeof data.c === 'string' ? data.c : '#888',
-    s: Number(data.s) || 0,
-    e: Number(data.e) || 0,
-    typing: Boolean(data.typing),
-    ts: Date.now(),
-  });
-  renderCollabPresence();
-}
-function collabPresenceHeartbeat() {
-  if (!state.collab.noteId) return;
-  collabSendPresence(false);
-  renderCollabPresence();
-  state.collab.presenceTimer = setTimeout(collabPresenceHeartbeat, 5000);
-}
+
+
+
+
+
+
 // Local edits go through an outbox so nothing is lost while offline or when a
 // POST fails: queued Yjs updates are retried until the server acks them. A 409
 // means the section key moved under us, so the full local state is compacted
@@ -4964,16 +3226,7 @@ async function flushCollabOutbox() {
     state.collab.flushing = false;
   }
 }
-async function collabCompact() {
-  if (!state.collab.doc || !state.collab.key || !state.collab.noteId) return;
-  try {
-    const Y = await loadYjs();
-    const state = Y.encodeStateAsUpdate(state.collab.doc);
-    const payload = await collabEncrypt(state.collab.key, state);
-    const res = await apiFetch(`/api/collab/notes/${state.collab.noteId}/compact`, { method: 'POST', body: JSON.stringify({ state: payload, keyVersion: state.collab.keyVersion }) });
-    if (res && res.ok) state.collab.outbox.length = 0; // full state covers every queued update
-  } catch (error) {}
-}
+
 function collabConnect(noteId, keyRaw, Y, doc) {
   if (state.collab.es) { try { state.collab.es.close(); } catch (error) {} state.collab.es = null; }
   let es;
@@ -5001,20 +3254,7 @@ function collabConnect(noteId, keyRaw, Y, doc) {
 }
 
 // Fetch and unlock the new epoch key after the owner rotates, and switch to it.
-async function collabAdoptRekey(version) {
-  if (!state.collab.groupId) return;
-  try {
-    const res = await apiFetch(`/api/collab/groups/${state.collab.groupId}`);
-    if (!res.ok) return;
-    const g = await res.json();
-    const key = await unwrapMyKey(g.myKey, state.collab.groupId, state.cachedProfile && state.cachedProfile.username, g.myKeyVersion);
-    const v = Number(g.keyVersion || g.myKeyVersion || version || (state.collab.keyVersion + 1));
-    state.collab.keys.set(v, key);
-    state.collab.keyVersion = v;
-    state.collab.key = key;
-    setCollabStatus(`Rekeyed · v${v}`, false);
-  } catch (error) {}
-}
+
 async function openCollabNote(noteId) {
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
   if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
@@ -5104,42 +3344,8 @@ async function openCollabNote(noteId) {
   try { renderTabs(); } catch (error) {}
   collabConnect(noteId, keyRaw, Y, doc);
 }
-function closeCollabNote() {
-  if (state.collab.reconnect) { clearTimeout(state.collab.reconnect); state.collab.reconnect = null; }
-  // Tell peers we left (best-effort; reads current key/note before clearing).
-  try { collabSendPresence(true); } catch (error) {}
-  const statusEl = document.getElementById('collab-status');
-  const statusSep = document.getElementById('collab-status-sep');
-  if (statusEl) statusEl.hidden = true;
-  if (statusSep) statusSep.hidden = true;
-  const collabTop = document.getElementById('collab-top');
-  if (collabTop) collabTop.hidden = true;
-  const editorPanel = document.querySelector('.editor-panel');
-  if (editorPanel) editorPanel.classList.remove('collab-mode');
-  if (state.collab.es) { try { state.collab.es.close(); } catch (error) {} }
-  if (state.collab.doc) { try { state.collab.doc.destroy(); } catch (error) {} }
-  state.collab.noteId = null; state.collab.groupId = null; state.collab.doc = null; state.collab.title = null; state.collab.body = null;
-  state.collab.desc = null; state.collab.assets = null; state.collab.recipe = null; state.collab.cover = ''; state.collab.description = '';
-  state.collab.es = null; state.collab.key = null; state.collab.keyVersion = 1; state.collab.keys = new Map();
-  state.collab.members = []; state.collab.owner = null; state.collab.groupName = ''; state.collab.template = '';
-  if (state.collab.flushTimer) { clearTimeout(state.collab.flushTimer); state.collab.flushTimer = null; }
-  if (state.collab.presenceTimer) { clearTimeout(state.collab.presenceTimer); state.collab.presenceTimer = null; }
-  state.collab.outbox = []; state.collab.flushing = false;
-  state.collab.presence.clear(); state.collab.clientId = null; state.collab.color = null;
-  renderCollabPresence();
-  try { renderRecipeHero(null); } catch (error) {}
-}
-async function collabAddGroupMember(groupId, keyRaw, name, keyVersion) {
-  const pub = await sharingRecipientPublicKey(name);
-  const wrap = await wrapRawKeyFor(pub, keyRaw);
-  wrap.sig = await signWrap(groupId, name, keyVersion, wrap);
-  const res = await apiFetch(`/api/collab/groups/${groupId}/members`, { method: 'POST', body: JSON.stringify({ username: name, ...wrap }) });
-  if (!res.ok) {
-    let message = 'Could not add member';
-    try { const d = await res.json(); if (d && d.error) message = d.error; } catch (error) {}
-    throw new Error(message);
-  }
-}
+
+
 // Start a connection: create a shared section for the person (no note yet).
 // They receive a "<you> wants to connect with you" request to accept.
 async function collabCreateSection(members) {
@@ -5171,19 +3377,7 @@ function openSharedNewNote(groupId, folder) {
   state.pendingSharedTemplate = { groupId, folder: folder || '' };
   openTemplatePicker();
 }
-function sharedUniqueTitle(base, groupId) {
-  const used = new Set();
-  sharedNoteMeta.forEach((m) => {
-    if (String(m.groupId) === String(groupId)) {
-      const t = (m.title || '').trim().toLowerCase();
-      if (t) used.add(t);
-    }
-  });
-  if (!used.has(base.toLowerCase())) return base;
-  let i = 2;
-  while (used.has(`${base} ${i}`.toLowerCase())) i += 1;
-  return `${base} ${i}`;
-}
+
 // Start a shared note from the same templates used by All Notes.
 async function createSharedNoteWithTemplate(groupId, folder, templateKey) {
   const key0 = NOTE_TEMPLATES[templateKey] ? templateKey : 'standard';
@@ -5237,187 +3431,21 @@ async function addSubfolder(groupId, parentFolder) {
     renderSharedView();
   } catch (error) { showToast('Could not add the subfolder'); }
 }
-async function collabInvite() {
-  if (!state.collab.groupId || !state.collab.key) return;
-  const me = state.cachedProfile && state.cachedProfile.username;
-  if (state.collab.owner !== me) { showToast('Only the owner can add members'); return; }
-  const value = await askInput({ eyebrow: 'Invite', title: 'Add a member', desc: 'They need a Notely account and must have logged in once.', label: 'Username', password: false, placeholder: 'their-username', okText: 'Invite' });
-  if (value == null) return;
-  const target = String(value).trim();
-  if (!/^[A-Za-z0-9_-]{3,32}$/.test(target)) { showToast('Invalid username'); return; }
-  try {
-    await collabAddGroupMember(state.collab.groupId, state.collab.key, target, state.collab.keyVersion);
-    state.collab.pending = state.collab.pending || [];
-    if (!state.collab.pending.includes(target)) state.collab.pending.push(target);
-    renderCollabMembersModal();
-    showToast(`Invited ${target}`);
-  } catch (error) { showToast(error && error.message ? error.message : 'Could not add member'); }
-}
-async function collabRemoveMember(name) {
-  if (!state.collab.groupId) return;
-  const me = state.cachedProfile && state.cachedProfile.username;
-  if (state.collab.owner === me && state.collab.key) {
-    // Owner removing a peer: the server rotates the section key in the same
-    // request, so a removal can never leave the old key live for the person just
-    // cut off. Keys never leave the members' devices.
-    setCollabStatus('Rotating section key…', false);
-    const ok = await collabRotateSectionKey(name);
-    renderCollabMembersModal();
-    showToast(ok ? `Removed ${name} — section key rotated` : `Could not remove ${name}`);
-    return;
-  }
-  const res = await apiFetch(`/api/collab/groups/${state.collab.groupId}/members/${encodeURIComponent(name)}`, { method: 'DELETE' });
-  if (!res.ok) { showToast('Could not remove member'); return; }
-  state.collab.members = state.collab.members.filter((m) => m !== name);
-  renderCollabMembersModal();
-  showToast(`Removed ${name}`);
-}
+
+
 
 // Owner-side key rotation: generate a new epoch key, re-encrypt every note in
 // the section under it, publish a wrap per remaining member, then commit the new
 // version. Reusing the server only as blob storage; the key itself is never sent.
 // When `remove` names a member, the server removes them and bumps the epoch in a
 // single transaction, so the two can never diverge.
-async function collabRotateSectionKey(remove) {
-  if (!state.collab.groupId || !state.collab.key) return false;
-  const Y = await loadYjs();
-  const newVersion = (state.collab.keyVersion || 1) + 1;
-  const newKey = e2eeRandomBytes(32);
-  const oldKey = state.collab.key;
-  // 1) Publish the new epoch: wrap the new key to every remaining accepted
-  //    member (self included) and, when removing, do it in the same request.
-  const remaining = (state.collab.members || []).filter((m) => m !== remove);
-  const keys = [];
-  for (const member of [...new Set(remaining)]) {
-    try {
-      const pub = await sharingRecipientPublicKey(member);
-      const w = await wrapRawKeyFor(pub, newKey);
-      w.sig = await signWrap(state.collab.groupId, member, newVersion, w);
-      keys.push({ username: member, ...w });
-    } catch (error) {}
-  }
-  const url = remove
-    ? `/api/collab/groups/${state.collab.groupId}/members/${encodeURIComponent(remove)}`
-    : `/api/collab/groups/${state.collab.groupId}/rotate`;
-  const rr = await apiFetch(url, {
-    method: remove ? 'DELETE' : 'POST', body: JSON.stringify({ keyVersion: newVersion, keys }) });
-  if (!rr.ok) { showToast('Could not rotate the section key'); return false; }
-  state.collab.keys.set(newVersion, newKey);
-  state.collab.keyVersion = newVersion;
-  state.collab.key = newKey;
-  if (remove) state.collab.members = remaining;
-  // 2) Re-encrypt every note in the section under the new key (the old key is
-  //    still in collab.keys, so we can decrypt each note's existing ciphertext),
-  //    including each note's title/folder meta and the section's folder list —
-  //    otherwise meta stays locked to the old epoch. Compacting replaces the
-  //    snapshot and drops the old update log.
-  let groupNotes = [];
-  let groupEncMeta = '';
-  try {
-    const res = await apiFetch('/api/collab/groups');
-    if (res.ok) {
-      const data = await res.json();
-      const g = (data.groups || []).find((x) => String(x.id) === String(state.collab.groupId));
-      groupNotes = g ? (g.notes || []) : [];
-      groupEncMeta = g ? (g.encMeta || '') : '';
-    }
-  } catch (error) {}
-  for (const n of groupNotes) {
-    try {
-      const res = await apiFetch(`/api/collab/notes/${n.id}/state`);
-      if (res.ok) {
-        const data = await res.json();
-        const doc = new Y.Doc();
-        if (data.encState) {
-          try { Y.applyUpdate(doc, await collabDecrypt(collabKeyFor(data.keyVersion), data.encState), 'rotate'); } catch (error) {}
-        }
-        for (const u of (data.updates || [])) {
-          try { Y.applyUpdate(doc, await collabDecrypt(collabKeyFor(u.version), u.payload), 'rotate'); } catch (error) {}
-        }
-        const packed = await collabEncrypt(newKey, Y.encodeStateAsUpdate(doc));
-        await apiFetch(`/api/collab/notes/${n.id}/compact`, { method: 'POST', body: JSON.stringify({ state: packed, keyVersion: newVersion }) });
-        doc.destroy();
-      }
-      if (n.encMeta) {
-        const meta = await collabDecryptMeta(oldKey, n.encMeta);
-        await apiFetch(`/api/collab/notes/${n.id}/meta`, { method: 'POST', body: JSON.stringify({ encMeta: await collabEncryptMeta(newKey, meta) }) });
-      }
-    } catch (error) {}
-  }
-  if (groupEncMeta) {
-    try {
-      const gf = await collabDecryptGroupMeta(oldKey, groupEncMeta);
-      await apiFetch(`/api/collab/groups/${state.collab.groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta: await collabEncryptGroupMeta(newKey, gf.folders || [], gf.tags || []) }) });
-    } catch (error) {}
-  }
-  return true;
-}
+
 // Section-scoped rotation used when a section is flagged rekey_needed: a member
 // left or deleted their account. Any remaining member holding the key can rotate
 // — new epoch, re-wrap for everyone still in the section, re-encrypt the notes.
-async function rotateGroupSection({ groupId, key, version, members, notes, folderMeta, remove }) {
-  const Y = await loadYjs();
-  const newVersion = (Number(version) || 1) + 1;
-  const newKey = e2eeRandomBytes(32);
-  const remaining = (members || []).filter((m) => m !== remove);
-  const keys = [];
-  for (const member of [...new Set(remaining)]) {
-    try {
-      const pub = await sharingRecipientPublicKey(member);
-      const w = await wrapRawKeyFor(pub, newKey);
-      w.sig = await signWrap(groupId, member, newVersion, w);
-      keys.push({ username: member, ...w });
-    } catch (error) {}
-  }
-  const url = remove
-    ? `/api/collab/groups/${groupId}/members/${encodeURIComponent(remove)}`
-    : `/api/collab/groups/${groupId}/rotate`;
-  const rr = await apiFetch(url, {
-    method: remove ? 'DELETE' : 'POST', body: JSON.stringify({ keyVersion: newVersion, keys }) });
-  if (!rr.ok) return false;
-  for (const n of (notes || [])) {
-    try {
-      const res = await apiFetch(`/api/collab/notes/${n.id}/state`);
-      if (res.ok) {
-        const data = await res.json();
-        const doc = new Y.Doc();
-        if (data.encState) { try { Y.applyUpdate(doc, await collabDecrypt(key, data.encState), 'rotate'); } catch (error) {} }
-        for (const u of (data.updates || [])) { try { Y.applyUpdate(doc, await collabDecrypt(key, u.payload), 'rotate'); } catch (error) {} }
-        const packed = await collabEncrypt(newKey, Y.encodeStateAsUpdate(doc));
-        await apiFetch(`/api/collab/notes/${n.id}/compact`, { method: 'POST', body: JSON.stringify({ state: packed, keyVersion: newVersion }) });
-        doc.destroy();
-      }
-      if (n.encMeta) {
-        const meta = await collabDecryptMeta(key, n.encMeta);
-        await apiFetch(`/api/collab/notes/${n.id}/meta`, { method: 'POST', body: JSON.stringify({ encMeta: await collabEncryptMeta(newKey, meta) }) });
-      }
-    } catch (error) {}
-  }
-  if (folderMeta) {
-    try {
-      const gf = await collabDecryptGroupMeta(key, folderMeta);
-      await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta: await collabEncryptGroupMeta(newKey, gf.folders || [], gf.tags || []) }) });
-    } catch (error) {}
-  }
-  return true;
-}
-const rekeyInFlight = new Set();
-async function rekeyGroupIfNeeded(group, key) {
-  if (!group || !key || !group.rekeyNeeded || rekeyInFlight.has(group.id)) return;
-  // Only a member holding the current epoch may rotate. A stale wrap (e.g. an
-  // invite accepted after a rekey) must not rotate — it would re-encrypt with an
-  // old key and lose content. Another member rotates and re-wraps us instead.
-  if (Number(group.myKeyVersion) !== Number(group.keyVersion)) return;
-  rekeyInFlight.add(group.id);
-  try {
-    const ok = await rotateGroupSection({
-      groupId: group.id, key, version: group.keyVersion,
-      members: group.members || [], notes: group.notes || [], folderMeta: group.encMeta || '' });
-    if (ok) showToast('Section key rotated after a member left');
-  } finally {
-    rekeyInFlight.delete(group.id);
-  }
-}
+
+
+
 // A member leaves a shared section: remove ourselves. The server flags the
 // section so a remaining member rotates the key on next open (the server holds
 // no key to rotate with).
@@ -5451,41 +3479,12 @@ async function collabDeleteGroup(groupId) {
   if (res.ok) { if (String(state.collab.groupId) === String(groupId)) closeCollabNote(); showToast('Shared section deleted'); if (state.activeView === 'shared') renderSharedView(); }
   else showToast('Could not delete the section');
 }
-function confirmDeleteGroup(groupId) {
-  state.pendingDeleteId = String(groupId);
-  state.pendingDeleteMode = 'collab-group';
-  state.pendingDeleteTag = null;
-  setDeleteDialog({ eyebrow: 'Delete section', title: 'Delete this shared section?', name: 'This section', message: '” and all its notes will be deleted for everyone. This cannot be undone.' });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
+
 // Popup: ask who the new shared section is for.
-function parseUsernames(raw) {
-  // Owner + invitees must stay within the 4-member section cap.
-  return String(raw || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean).slice(0, 3);
-}
-function openCollabNewDialog() {
-  const overlay = document.getElementById('collab-new-overlay');
-  if (!overlay) return;
-  const input = document.getElementById('collab-new-members');
-  if (input) input.value = '';
-  const status = document.getElementById('collab-new-status');
-  if (status) { status.hidden = true; status.textContent = ''; }
-  overlay.hidden = false;
-  if (input) { try { input.focus(); } catch (error) {} }
-}
-function closeCollabNewDialog() {
-  const overlay = document.getElementById('collab-new-overlay');
-  if (overlay) overlay.hidden = true;
-}
-function setCollabNewStatus(message) {
-  const status = document.getElementById('collab-new-status');
-  if (status) { status.textContent = message; status.hidden = false; }
-}
+
+
+
+
 async function confirmCollabNew() {
   const input = document.getElementById('collab-new-members');
   const me = state.cachedProfile && state.cachedProfile.username;
@@ -5505,110 +3504,31 @@ async function confirmCollabNew() {
   }
 }
 // Bottom "+ New note" opens the same popup (a new person = a new section).
-function collabCreate() { openCollabNewDialog(); }
+
 
 // The Shared view: one section per person, each holding automatically-shared notes.
-const sharedGroupKeys = new Map(); // groupId -> unwrapped group key
-const sharedGroupFolders = new Map(); // groupId -> [folder, ...]
-const sharedGroupTags = new Map(); // groupId -> [tag, ...] (owner-curated, section-level)
-const sharedGroupOwners = new Map(); // groupId -> owner username
-function sharedGroupTagList(groupId) {
-  return sharedGroupTags.get(groupId) || sharedGroupTags.get(Number(groupId)) || [];
-}
-function sharedGroupOwnerOf(groupId) {
-  return sharedGroupOwners.get(groupId) || sharedGroupOwners.get(Number(groupId)) || null;
-}
-const sharedNoteMeta = new Map();  // noteId -> { title, folder, tags, groupId }
-const sharedBodyCache = new Map(); // noteId -> plaintext body (session cache for body: search)
+ // groupId -> unwrapped group key
+ // groupId -> [folder, ...]
+ // groupId -> [tag, ...] (owner-curated, section-level)
+ // groupId -> owner username
 
-function sharedNoteRow(n, groupId, canDelete) {
-  const title = (n.title && n.title.trim()) ? n.title.trim() : 'Untitled note';
-  // Align the note's icon under its folder's icon (folder rows carry a chevron).
-  const indent = n.folder ? 8 + folderDepth(n.folder) * 14 + 23 : 8;
-  const glyph = (n.template && NOTE_TEMPLATES[n.template] && NOTE_TEMPLATES[n.template].icon) ? NOTE_TEMPLATES[n.template].icon : 'file';
-  const deleteAction = canDelete
-    ? `<span class="tree-action danger" data-collab-note-delete="${n.id}" role="button" title="Delete note" aria-label="Delete ${escapeHtml(title)}">${icon('trash')}</span>`
-    : '';
-  return `<button class="tree-file shared-view-row" draggable="true" data-collab-open="${n.id}" data-collab-group="${groupId}" style="padding-left:${indent}px" title="${escapeHtml(title)}">
-      <span class="tree-file-icon">${icon(glyph)}</span>
-      <span class="tree-file-name">${escapeHtml(title)}</span>
-      <span class="tree-action" data-note-folder="${n.id}" data-note-group="${groupId}" role="button" title="Move to folder" aria-label="Move ${escapeHtml(title)} to a folder">${icon('folder-plus')}</span>
-      ${deleteAction}
-    </button>`;
-}
 
-const sharedCollapsed = new Set(); // `${groupId}::${folder}` collapsed folders
-function sharedFolderKey(groupId, folder) { return `${groupId}::${folder}`; }
+  // noteId -> { title, folder, tags, groupId }
+ // noteId -> plaintext body (session cache for body: search)
+
+
+
+ // `${groupId}::${folder}` collapsed folders
+
 // Every folder key (including ancestors) across all shared sections, for the
 // sidebar's collapse-all/expand-all control in the Shared view.
-function sharedAllFolderKeys() {
-  const keys = new Set();
-  const addPath = (groupId, path) => {
-    let cur = path;
-    while (cur) { keys.add(sharedFolderKey(groupId, cur)); cur = folderParent(cur); }
-  };
-  sharedGroupFolders.forEach((folders, groupId) => {
-    (folders || []).forEach((folder) => { if (folder) addPath(groupId, folder); });
-  });
-  sharedNoteMeta.forEach((meta) => { if (meta && meta.folder) addPath(meta.groupId, meta.folder); });
-  return [...keys];
-}
 
-function sharedFolderTree(notesDec, groupId, folderList, canDelete) {
-  const set = new Set((folderList || []).filter(Boolean));
-  notesDec.forEach((n) => { if (n.folder) set.add(n.folder); });
-  const folders = new Set();
-  set.forEach((f) => { let cur = f; while (cur) { folders.add(cur); cur = folderParent(cur); } });
-  const childrenOf = new Map();
-  const roots = [];
-  folders.forEach((f) => {
-    const parent = folderParent(f);
-    if (parent && folders.has(parent)) {
-      if (!childrenOf.has(parent)) childrenOf.set(parent, []);
-      childrenOf.get(parent).push(f);
-    } else roots.push(f);
-  });
-  roots.sort((a, b) => a.localeCompare(b));
-  childrenOf.forEach((arr) => arr.sort((a, b) => a.localeCompare(b)));
-  const parts = [];
-  const emit = (folder) => {
-    const depth = folderDepth(folder);
-    const leaf = folderLeaf(folder);
-    const collapsed = sharedCollapsed.has(sharedFolderKey(groupId, folder));
-    parts.push(`<div class="shared-folder" draggable="true" data-shared-folder="${escapeHtml(folder)}" data-shared-group="${groupId}" style="padding-left:${8 + depth * 14}px">
-        <button type="button" class="shared-folder-toggle${collapsed ? ' is-collapsed' : ''}" data-shared-toggle="${escapeHtml(folder)}" data-shared-group="${groupId}" title="${collapsed ? 'Expand' : 'Collapse'}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(leaf)}">${icon('chevron-right')}</button>
-        ${icon('folder')}<span class="shared-folder-name">${escapeHtml(leaf)}</span>
-        <span class="shared-folder-actions">
-          <button type="button" class="shared-folder-action" data-folder-note="${escapeHtml(folder)}" data-folder-group="${groupId}" title="New note in ${escapeHtml(leaf)}" aria-label="New note in ${escapeHtml(leaf)}">${icon('file-text')}</button>
-          <button type="button" class="shared-folder-action" data-folder-sub="${escapeHtml(folder)}" data-folder-group="${groupId}" title="New subfolder in ${escapeHtml(leaf)}" aria-label="New subfolder in ${escapeHtml(leaf)}">${icon('folder-plus')}</button>
-        </span>
-      </div>`);
-    if (collapsed) return;
-    // A folder's own notes come first, directly under it, then its subfolders.
-    notesDec.filter((n) => n.folder === folder).forEach((n) => parts.push(sharedNoteRow(n, groupId, canDelete)));
-    (childrenOf.get(folder) || []).forEach(emit);
-  };
-  roots.forEach(emit);
-  notesDec.filter((n) => !n.folder).forEach((n) => parts.push(sharedNoteRow(n, groupId, canDelete)));
-  return parts.join('') || '<p class="modal-desc" style="padding:2px 10px 6px">No notes yet — use + New note in this section.</p>';
-}
+
+
 
 // Sidebar Shared badge: number of connections (plus pending invitations).
-function setSharedNavCount(n) {
-  const el = document.getElementById('nav-shared-count');
-  if (el) el.textContent = String(Math.max(0, Number(n) || 0));
-}
-async function refreshSharedNavCount() {
-  if (!state.cachedProfile) { setSharedNavCount(0); return; }
-  try {
-    const res = await apiFetch('/api/collab/groups');
-    if (!res.ok) return;
-    const data = await res.json();
-    const groups = Array.isArray(data.groups) ? data.groups.length : 0;
-    const invites = Array.isArray(data.invites) ? data.invites.length : 0;
-    setSharedNavCount(groups + invites);
-  } catch (error) {}
-}
+
+
 
 async function renderSharedView() {
   updateBinUI();
@@ -5787,83 +3707,16 @@ async function reparentSharedFolder(groupId, folder, newParent) {
   showToast('Folder moved');
 }
 
-async function saveGroupFolders(groupId, key, folders) {
-  try {
-    const encMeta = await collabEncryptGroupMeta(key, folders, sharedGroupTagList(groupId));
-    await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
-  } catch (error) {}
-}
+
 
 // ---- Owner-only section settings: a section-level tag list -----------------
-function renderSectionSettingsTags() {
-  const box = document.getElementById('section-tags-current');
-  if (!box) return;
-  const tags = sharedGroupTagList(state.sectionSettingsGroupId);
-  box.innerHTML = tags.length
-    ? tags.map((tag) => `<button type="button" class="tag-chip" data-section-tag-remove="${escapeHtml(tag)}" title="Remove ${escapeHtml(tag)}">${escapeHtml(tag)}<span aria-hidden="true">×</span></button>`).join('')
-    : '<span class="tag-editor-empty">No section tags yet — add one below.</span>';
-}
-async function saveSectionTags(groupId, tags) {
-  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
-  if (!key) { showToast('Reload the Shared list and try again'); return false; }
-  const folders = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
-  try {
-    const encMeta = await collabEncryptGroupMeta(key, folders, tags);
-    const res = await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
-    return res.ok;
-  } catch (error) { return false; }
-}
-function openSectionSettings(groupId) {
-  const me = state.cachedProfile && state.cachedProfile.username;
-  // Owner-only; the cog is only rendered for owners, this is the safety net.
-  if (!me || sharedGroupOwnerOf(groupId) !== me) { showToast('Only the owner can change section settings'); return; }
-  const overlay = document.getElementById('section-settings-overlay');
-  if (!overlay) return;
-  state.sectionSettingsGroupId = Number(groupId) || groupId;
-  renderSectionSettingsTags();
-  overlay.hidden = false;
-  const input = document.getElementById('section-tags-input');
-  if (input) { input.value = ''; try { input.focus(); } catch (error) {} }
-}
-function closeSectionSettings() {
-  const overlay = document.getElementById('section-settings-overlay');
-  if (overlay) overlay.hidden = true;
-  state.sectionSettingsGroupId = null;
-}
-function sectionTagAdd(raw) {
-  if (state.sectionSettingsGroupId == null) return;
-  const tag = normalizeTagName(raw);
-  if (!tag) return;
-  const tags = sharedGroupTagList(state.sectionSettingsGroupId);
-  if (tags.some((t) => String(t).toLowerCase() === tag.toLowerCase())) return;
-  if (tags.length >= 100) { showToast('Section tag limit reached (100)'); return; }
-  const next = [...tags, tag];
-  sharedGroupTags.set(state.sectionSettingsGroupId, next);
-  renderSectionSettingsTags();
-  saveSectionTags(state.sectionSettingsGroupId, next).then((ok) => { if (!ok) showToast('Could not save section tags'); });
-}
-function sectionTagRemove(name) {
-  if (state.sectionSettingsGroupId == null) return;
-  const tags = sharedGroupTagList(state.sectionSettingsGroupId);
-  const next = tags.filter((t) => String(t).toLowerCase() !== String(name).toLowerCase());
-  if (next.length === tags.length) return;
-  sharedGroupTags.set(state.sectionSettingsGroupId, next);
-  renderSectionSettingsTags();
-  saveSectionTags(state.sectionSettingsGroupId, next).then((ok) => { if (!ok) showToast('Could not save section tags'); });
-}
-async function updateSharedNoteMeta(key, noteId, meta) {
-  try {
-    // Callers rename/move notes and don't carry tags; preserve them from the
-    // last decode so the encrypted meta mirror isn't wiped.
-    let tags = meta.tags;
-    if (tags === undefined) {
-      const existing = sharedNoteMeta.get(String(noteId));
-      tags = existing && Array.isArray(existing.tags) ? existing.tags : [];
-    }
-    const encMeta = await collabEncryptMeta(key, { ...meta, tags });
-    await apiFetch(`/api/collab/notes/${noteId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
-  } catch (error) {}
-}
+
+
+
+
+
+
+
 async function renameSharedFolder(groupId, folder) {
   const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
   if (!key) { showToast('Reload the Shared list and try again'); return; }
@@ -5888,14 +3741,7 @@ async function renameSharedFolder(groupId, folder) {
   showToast('Folder renamed');
   renderSharedView();
 }
-function confirmDeleteSharedFolder(groupId, folder) {
-  state.pendingDeleteId = String(groupId);
-  state.pendingDeleteMode = 'shared-folder';
-  state.pendingDeleteSection = folder;
-  setDeleteDialog({ eyebrow: 'Delete folder', title: 'Delete this folder?', name: folderLeaf(folder), message: '” will be removed from the shared section; its notes move to the section root.' });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) { overlay.hidden = false; const b = document.getElementById('confirm-delete'); if (b) b.focus(); }
-}
+
 async function deleteSharedFolderNow(groupId, folder) {
   const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
   if (!key) { showToast('Reload the Shared list and try again'); return; }
@@ -5912,30 +3758,8 @@ async function deleteSharedFolderNow(groupId, folder) {
 }
 
 // Right-click menu for shared notes and folders.
-function closeSharedContextMenu() {
-  const menu = document.getElementById('shared-context-menu');
-  if (menu) menu.hidden = true;
-  state.sharedMenuTarget = null;
-}
-function showSharedContextMenu(kind, payload, x, y) {
-  const menu = document.getElementById('shared-context-menu');
-  if (!menu) return;
-  state.sharedMenuTarget = { kind, ...payload };
-  const items = kind === 'note'
-    ? [['open', 'file-text', 'Open'], ['move', 'folder-plus', 'Move to folder'], ['delete', 'trash', 'Delete note']]
-    : [['folder-note', 'file-text', 'New note here'], ['folder-sub', 'folder-plus', 'New subfolder'],
-       ['folder-rename', 'pencil', 'Rename folder'], ['folder-delete', 'trash', 'Delete folder']];
-  menu.innerHTML = items.map(([action, glyph, label]) =>
-    `<button type="button" class="context-item${action.includes('delete') ? ' danger' : ''}" data-shared-action="${action}" role="menuitem"><span data-icon="${glyph}"></span><span>${label}</span></button>`).join('');
-  menu.querySelectorAll('[data-icon]').forEach((el) => { el.innerHTML = icon(el.dataset.icon); });
-  menu.hidden = false;
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
-  const rect = menu.getBoundingClientRect();
-  const pad = 8;
-  if (rect.right > window.innerWidth - pad) menu.style.left = `${Math.max(pad, x - rect.width)}px`;
-  if (rect.bottom > window.innerHeight - pad) menu.style.top = `${Math.max(pad, y - rect.height)}px`;
-}
+
+
 
 async function acceptInvite(id) {
   const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(id)}/accept`, { method: 'POST', body: '{}' });
@@ -5963,92 +3787,19 @@ function requestDeleteNoteById(id) {
 
 
 // Fill the shared in-app confirm popup (eyebrow/title/name/message). Name is set via textContent — never HTML.
-function setDeleteDialog({ eyebrow, title, name, message }) {
-  const eyebrowEl = document.querySelector('#delete-overlay .eyebrow');
-  const titleEl = document.getElementById('delete-title');
-  const descEl = document.getElementById('delete-desc');
-  const nameEl = document.getElementById('delete-note-name');
-  if (eyebrowEl && eyebrow) eyebrowEl.textContent = eyebrow;
-  if (titleEl && title) titleEl.textContent = title;
-  if (nameEl && name !== undefined) nameEl.textContent = name;
-  if (descEl && message) {
-    descEl.innerHTML = '';
-    descEl.append(document.createTextNode('“'));
-    const nameSpan = document.createElement('span');
-    nameSpan.id = 'delete-note-name';
-    nameSpan.textContent = name || 'Untitled note';
-    descEl.append(nameSpan, document.createTextNode(message));
-  }
-}
+
 
 // Popup: delete an important-tagged note (moves to Bin, restorable for 3 days).
-function openDeleteConfirm(id) {
-  const note = state.notes.find((item) => item.id === id);
-  if (!note) return;
-  state.pendingDeleteId = id;
-  state.pendingDeleteMode = 'soft';
-  setDeleteDialog({
-    eyebrow: 'Delete note',
-    title: 'Delete this note?',
-    name: note.title || 'Untitled note',
-    message: '” is marked as important. Move it to Bin anyway? You can restore it within 3 days.'
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
+
 
 // Popup: permanently erase one binned note (no recovery).
-function openPermanentDeleteConfirm(id) {
-  const note = state.notes.find((item) => item.id === id);
-  if (!note) return;
-  state.pendingDeleteId = id;
-  state.pendingDeleteMode = 'permanent';
-  setDeleteDialog({
-    eyebrow: 'Permanently delete',
-    title: 'Delete forever?',
-    name: note.title || 'Untitled note',
-    message: '” will be permanently deleted and cannot be recovered. Are you sure?'
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
+
 
 // Popup: permanently erase the whole Bin (shows the doomed count).
-function openEmptyBinConfirm() {
-  const count = state.notes.filter((item) => item.deleted).length;
-  if (!count) { showToast('Bin is already empty'); return; }
-  state.pendingDeleteId = '__ALL__';
-  state.pendingDeleteMode = 'empty';
-  setDeleteDialog({
-    eyebrow: 'Empty Bin',
-    title: 'Empty Bin?',
-    name: `${count} note${count === 1 ? '' : 's'}`,
-    message: '” in Bin will be permanently deleted and cannot be recovered. Are you sure?'
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
+
 
 // Hide the confirm popup and clear the pending action.
-function closeDeleteConfirm() {
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) overlay.hidden = true;
-  state.pendingDeleteId = null;
-  state.pendingDeleteMode = 'soft';
-  state.pendingDeleteSection = null;
-}
+
 
 // Run the pending popup action: soft/permanent/empty/folder/folder-permanent.
 function confirmPendingDelete() {
@@ -6231,24 +3982,7 @@ function deleteVaultNote(id) {
   showToast('Secret note deleted');
 }
 
-function openVaultNoteDeleteConfirm(id) {
-  const note = state.vault.notes.find((item) => item.id === id);
-  if (!note) return;
-  state.pendingDeleteId = id;
-  state.pendingDeleteMode = 'vault-note';
-  setDeleteDialog({
-    eyebrow: 'Delete secret note',
-    title: 'Delete this note?',
-    name: note.title || 'Untitled note',
-    message: '” will be permanently deleted and cannot be recovered. Are you sure?'
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
+
 
 // ---- Vault folders (flat, dev): explicit list in the envelope so empty
 // folders survive. Notes carry folder (or null for Vault root).
@@ -6281,25 +4015,7 @@ function renameVaultFolder(folder) {
   });
 }
 
-function openVaultFolderDeleteConfirm(folder) {
-  const count = state.vault.notes.filter((note) => note.folder === folder).length;
-  state.pendingDeleteId = folder;
-  state.pendingDeleteMode = 'vault-folder';
-  setDeleteDialog({
-    eyebrow: 'Delete vault folder',
-    title: 'Delete this folder?',
-    name: folder,
-    message: count
-      ? `” holds ${count} secret note${count === 1 ? '' : 's'}. The notes stay in the Vault. Are you sure?`
-      : '” is empty. Are you sure you want to delete it?'
-  });
-  const overlay = document.getElementById('delete-overlay');
-  if (overlay) {
-    overlay.hidden = false;
-    const confirmBtn = document.getElementById('confirm-delete');
-    if (confirmBtn) confirmBtn.focus();
-  }
-}
+
 
 // Delete a vault folder immediately (no Bin in the vault): its notes move to
 // the Vault root and everything syncs encrypted as usual.
@@ -6500,23 +4216,7 @@ async function lockVault() {
 // reset-confirm reuses the masked unlock password field for the LOGIN
 // password proof (no window.prompt plaintext shoulder-surfing).
 
-async function openVaultModal() {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to open the Vault'); return; }
-  let meta = null;
-  try {
-    const response = await apiFetch('/api/vault-meta');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    meta = await response.json();
-  } catch (error) {
-    showToast('Cannot reach the Notely server');
-    return;
-  }
-  state.vault.meta = meta;
-  setVaultModal(meta && meta.exists ? 'unlock' : 'setup');
-  document.getElementById('vault-overlay').hidden = false;
-  const focusInput = document.querySelector(state.vaultModalMode === 'setup' ? '#vault-new-password' : '#vault-password');
-  if (focusInput) focusInput.focus();
-}
+
 
 
 
@@ -6683,69 +4383,18 @@ function saveCurrentNote() {
 
 // De-duplicate a note title (case-insensitive) by appending a counter.
 // Binned notes don't squat names — only live ones count.
-function uniqueTitle(base) {
-  const clean = (typeof base === 'string' ? base : 'Untitled note').trim().slice(0, 180) || 'Untitled note';
-  const taken = new Set(state.notes.filter((note) => !note.deleted).map((note) => String(note.title || '').toLowerCase()));
-  if (!taken.has(clean.toLowerCase())) return clean;
-  let counter = 2;
-  while (taken.has(`${clean} ${counter}`.toLowerCase())) counter += 1;
-  return `${clean} ${counter}`;
-}
+
 
 // ---- Templates, toasts, editor formatting commands ----
 
-const NOTE_TEMPLATES = {
-  standard: {
-    label: 'Standard note',
-    caption: 'Standard',
-    icon: 'file-text',
-    titleBase: 'New Standard Note',
-    tags: [],
-    body: (title) => `# ${title}\n\nStart writing here...`
-  },
-  recipe: {
-    label: 'Recipe',
-    caption: 'Recipe',
-    icon: 'cooking',
-    titleBase: 'New Recipe',
-    tags: ['recipe'],
-    body: () => '',
-    recipe: { ingredients: ['Ingredient one', 'Ingredient two'], steps: ['Step one', 'Step two'] }
-  },
-  todo: {
-    label: 'To-do list',
-    caption: 'To-do',
-    icon: 'check-square',
-    titleBase: 'New To-Do Note',
-    tags: ['todo'],
-    body: (title) => `# ${title}\n\n## Today\n\n- [ ] Most important task\n- [ ] Second task\n\n## Later\n\n- [ ] Someday task`
-  }
-};
+
 // Single source of truth for the New-note chooser, shared by All Notes and the
 // Shared view so the two pickers are always identical.
-function renderTemplateOptions() {
-  const box = document.getElementById('template-options');
-  if (!box) return;
-  box.innerHTML = Object.keys(NOTE_TEMPLATES).map((key) => {
-    const template = NOTE_TEMPLATES[key];
-    const label = template.label || template.caption || key;
-    return `<button class="template-option template-square" data-template="${escapeHtml(key)}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
-        <span class="template-icon">${icon(template.icon || 'file-text')}</span>
-        <span class="template-caption">${escapeHtml(template.caption || key)}</span>
-      </button>`;
-  }).join('');
-}
+
 
 // One seed used by both All Notes and the Shared view, so editing a template's
 // title/body is mirrored everywhere a new note is created from it.
-function seedFromTemplate(templateKey, title) {
-  const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
-  return {
-    template,
-    title,
-    body: typeof template.body === 'function' ? template.body(title) : '',
-  };
-}
+
 
 // Create a note from a template (Standard/Recipe/To-Do) into the current view+collection and open it.
 function createNoteFromTemplate(templateKey) {
@@ -6852,12 +4501,7 @@ function openTemplatePicker() {
 }
 
 // Hide the template chooser popup.
-function closeTemplatePicker() {
-  state.vaultTemplatePending = false;
-  state.pendingSharedTemplate = null;
-  const overlay = document.getElementById('template-overlay');
-  if (overlay) overlay.hidden = true;
-}
+
 
 // Folder picked in a bare section view, awaiting template choice.
 // Template picked while unfiled, awaiting a folder choice (folder-required rule).
@@ -6883,26 +4527,7 @@ function onNewNoteClick() {
 // Order picker entries like the expanded workspace note list: a parent is
 // followed immediately by all its children (recursively), matching the
 // strip's tree grouping. Roots/orphans keep the section's list order.
-function orderFoldersLikeWorkspace(folders) {
-  const childrenOf = new Map();
-  const roots = [];
-  folders.forEach((name) => {
-    const parent = folderParent(name);
-    if (parent && folders.includes(parent)) {
-      if (!childrenOf.has(parent)) childrenOf.set(parent, []);
-      childrenOf.get(parent).push(name);
-    } else roots.push(name);
-  });
-  const out = [];
-  const emit = (name) => {
-    if (out.includes(name)) return;
-    out.push(name);
-    (childrenOf.get(name) || []).forEach(emit);
-  };
-  roots.forEach(emit);
-  folders.forEach(emit);
-  return out;
-}
+
 
 // Fill + show the folder chooser. With (ns, sectionId) it lists one section
 // (bare-section flow, resumes at the template picker). With no args it lists
@@ -6963,10 +4588,7 @@ function openFolderPicker(ns, sectionId) {
   return true;
 }
 
-function closeFolderPicker() {
-  const overlay = document.getElementById('folder-pick-overlay');
-  if (overlay) overlay.hidden = true;
-}
+
 
 // Show a transient bottom-right status message (single timer, latest wins).
 // In-app input prompt (replaces window.prompt everywhere: native prompts are
@@ -6974,10 +4596,7 @@ function closeFolderPicker() {
 // promise: resolves the typed string, or null on cancel/Esc/overlay click.
 // A second call while open resolves the first waiter with null.
 // True when the open note is not Markdown (formatting tools stay disabled).
-function isPlainTextNote() {
-  const note = activeEditorNote();
-  return note && note.ext !== 'md';
-}
+
 
 // Wrap the editor selection (or placeholder word) with a Markdown marker and save.
 function wrapSelection(before, after = before) {
@@ -7137,9 +4756,7 @@ noteList.addEventListener('contextmenu', (event) => {
   noteList.addEventListener('scroll', closeSharedContextMenu, true);
 }
 // Drag-and-drop in the Shared tree: move notes into folders, reparent folders.
-function clearSharedDropTargets() {
-  noteList.querySelectorAll('.drop-target, .drop-before').forEach((el) => el.classList.remove('drop-target', 'drop-before'));
-}
+
 noteList.addEventListener('dragstart', (event) => {
   if (state.activeView !== 'shared') return;
   const folderRow = event.target.closest('.shared-folder');
@@ -7418,30 +5035,8 @@ document.querySelectorAll('.filter-chip').forEach((chip) => chip.addEventListene
 // points down when folders are expanded (click = collapse) and flips when
 // everything is already collapsed.
 
-function visibleFolderPaths() {
-  const paths = new Set();
-  state.notes.forEach((note) => {
-    if (note.deleted || note.archived) return;
-    if (note.sections && typeof note.sections === 'object') {
-      Object.values(note.sections).forEach((folder) => {
-        if (typeof folder === 'string' && folder.trim()) paths.add(folder);
-      });
-    }
-  });
-  state.customSections.forEach((section) => section.folders.forEach((folder) => paths.add(folder)));
-  return [...paths];
-}
-function updateFoldToggle() {
-  if (!foldToggle) return;
-  const inShared = state.activeView === 'shared';
-  const paths = inShared ? sharedAllFolderKeys() : visibleFolderPaths();
-  const collapsed = inShared ? sharedCollapsed : state.collapsedFolders;
-  const anyOpen = paths.some((folder) => !collapsed.has(folder));
-  foldToggle.classList.toggle('is-expanded', anyOpen);
-  const label = anyOpen ? 'Collapse all folders' : 'Expand all folders';
-  foldToggle.setAttribute('aria-label', label);
-  foldToggle.setAttribute('title', label);
-}
+
+
 if (foldToggle) {
   foldToggle.addEventListener('click', () => {
     if (state.activeView === 'shared') {
@@ -7463,18 +5058,10 @@ if (foldToggle) {
 
 // Display name of a sidebar section.
 // Display folder of a note inside one custom section (null when unassigned).
-function customNoteFolder(note, sectionId) {
-  if (!note || !note.sections || typeof note.sections !== 'object') return null;
-  const folder = note.sections[sectionId];
-  return typeof folder === 'string' && folder.trim() ? folder : null;
-}
+
 
 // Display name of a sidebar section (all sections share the custom implementation).
-function sectionDisplayName(kind, id) {
-  const sectionId = kind === 'custom' ? id : kind;
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  return section ? section.name : 'Section';
-}
+
 
 // Persist custom sections + section display names into the encrypted UI vault.
 function persistCustomSections() {
@@ -7522,10 +5109,7 @@ function selectCustomFolder(sectionId, folder) {
 }
 
 // Clear section/folder filters and sidebar highlights (unified custom implementation).
-function clearSectionSelection() {
-  state.activeCustom = null;
-  document.querySelectorAll('#custom-sections .collection-item').forEach((item) => item.classList.remove('active'));
-}
+
 
 document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('click', (event) => {
   event.preventDefault();
@@ -7641,15 +5225,7 @@ document.getElementById('cover-input').addEventListener('change', (event) => {
   if (file) { if (state.collab.noteId) handleCollabCoverFile(file); else handleCoverFile(file); }
 });
 // Reposition by dragging the banner on the note itself (buttons opt out).
-function coverDragStart(event, clientY) {
-  if (event.target && event.target.closest && event.target.closest('button')) return;
-  if (!coverDragNote()) return;
-  state.coverDragging = true;
-  const wrap = document.getElementById('cover-wrap');
-  if (wrap) wrap.classList.add('dragging');
-  moveCoverOnNote(clientY);
-  event.preventDefault();
-}
+
 document.getElementById('cover-wrap').addEventListener('pointerdown', (event) => {
   if (event.button !== undefined && event.button !== 0) return;
   coverDragStart(event, event.clientY);
@@ -7733,23 +5309,12 @@ document.getElementById('close-sidebar').addEventListener('click', () => documen
 // chips usable; max keeps the editor readable). The collapsed strip (55px)
 // is never affected — the handle is hidden in strip/focus modes. Width is
 // persisted per device and re-applied on boot.
-const PANEL_MIN_WIDTH = 220;
-const PANEL_MAX_WIDTH = 560;
 
 
-function applyPanelWidth(px) {
-  if (!notesPanel) return;
-  const width = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(px)));
-  notesPanel.style.flexBasis = `${width}px`;
-  try { localStorage.setItem('notely-panel-width', String(width)); } catch (error) {}
-}
-function restorePanelWidth() {
-  if (!notesPanel) return;
-  try {
-    const saved = parseInt(localStorage.getItem('notely-panel-width') || '', 10);
-    if (Number.isFinite(saved)) notesPanel.style.flexBasis = `${Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, saved))}px`;
-  } catch (error) {}
-}
+
+
+
+
 if (panelResizer && notesPanel) {
   let dragging = false;
   panelResizer.addEventListener('pointerdown', (event) => {
@@ -7782,22 +5347,9 @@ if (panelResizer && notesPanel) {
 
 
 // Collapse/expand the icon-strip sidebar and persist the choice.
-function setSidebarCollapsed(collapsed) {
-  sidebar.classList.toggle('collapsed', collapsed);
-  try { localStorage.setItem('notely-sidebar-collapsed', collapsed ? '1' : '0'); } catch (error) {}
-  if (sidebarToggle) {
-    const label = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
-    sidebarToggle.setAttribute('aria-label', label);
-    sidebarToggle.setAttribute('title', label);
-  }
-  // Folder dots migrate between slide menu and workspace strip on toggle.
-  try { renderStripItems(); } catch (error) {}
-}
+
 // Whether the sidebar starts collapsed on load (Settings → Side Menu; device-local).
-function startCollapsedPref() {
-  try { return localStorage.getItem('notely-sidebar-start-collapsed') !== '0'; }
-  catch (error) { return true; }
-}
+
 if (sidebarToggle) {
   setSidebarCollapsed(startCollapsedPref());
   sidebarToggle.addEventListener('click', () => {
@@ -7808,21 +5360,7 @@ if (sidebarToggle) {
 
 // Collapse/expand the workspace (notes panel) and persist the choice,
 // mirroring the sidebar collapse. Starts expanded.
-function setWorkspaceCollapsed(collapsed) {
-  const shell = document.querySelector('.app-shell');
-  if (shell) shell.classList.toggle('workspace-collapsed', collapsed);
-  try { localStorage.setItem('notely-workspace-collapsed', collapsed ? '1' : '0'); } catch (error) {}
-  if (workspaceToggle) {
-    const label = collapsed ? 'Expand workspace' : 'Collapse workspace';
-    workspaceToggle.setAttribute('aria-label', label);
-    workspaceToggle.setAttribute('title', label);
-  }
-  // The strip is only measurable while collapsed: repaint it and re-evaluate
-  // the scroll arrows after the layout switches.
-  try { renderStripItems(); } catch (error) {}
-  try { requestAnimationFrame(updateStripScrollButton); } catch (error) {}
-  try { setTimeout(updateStripScrollButton, 60); } catch (error) {}
-}
+
 if (workspaceToggle) {
   restoreWorkspaceCollapsed();
   workspaceToggle.addEventListener('click', () => {
@@ -7832,11 +5370,7 @@ if (workspaceToggle) {
 }
 // Re-apply the persisted collapse choice (login, register, boot all land here
 // after their first selection, so the workspace returns as the user left it).
-function restoreWorkspaceCollapsed() {
-  try {
-    setWorkspaceCollapsed(localStorage.getItem('notely-workspace-collapsed') === '1');
-  } catch (error) { setWorkspaceCollapsed(false); }
-}
+
 
 // ---- Auth & E2EE session, themes, settings, boot ----
 
@@ -7855,40 +5389,10 @@ state.cachedProfile = null;
 // without re-typing the password we keep it in sessionStorage, which the
 // browser wipes when the tab/window closes. Clearing it (logout) or closing
 // the browser locks the vault again.
-function sessionUnlockKey() { return accountScopeKey('notely-session-unlock'); }
-function clearSessionUnlock() {
-  try { sessionStorage.removeItem(sessionUnlockKey()); } catch (error) {}
-}
-async function saveSessionUnlock() {
-  if (!e2ee.masterKey || !state.cachedProfile) return;
-  try {
-    const raw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
-    sessionStorage.setItem(sessionUnlockKey(), JSON.stringify({
-      u: state.cachedProfile.username,
-      k: e2eeBytesToB64(new Uint8Array(raw)),
-      kdf: e2ee.kdf || 'pbkdf2',
-      saltAuth: e2ee.saltAuth ? e2eeBytesToB64(e2ee.saltAuth) : '',
-      saltEnc: e2ee.saltEnc ? e2eeBytesToB64(e2ee.saltEnc) : '',
-      iterations: e2ee.iterations || 0,
-    }));
-  } catch (error) {}
-}
-async function restoreSessionUnlock() {
-  if (!state.cachedProfile) return false;
-  let blob;
-  try { blob = JSON.parse(sessionStorage.getItem(sessionUnlockKey()) || 'null'); } catch (error) { blob = null; }
-  if (!blob || blob.u !== state.cachedProfile.username || !blob.k) return false;
-  try {
-    const raw = e2eeB64ToBytes(blob.k);
-    const masterKey = await window.crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
-    e2ee.masterKey = masterKey;
-    e2ee.kdf = blob.kdf || 'pbkdf2';
-    e2ee.saltAuth = blob.saltAuth ? e2eeB64ToBytes(blob.saltAuth) : null;
-    e2ee.saltEnc = blob.saltEnc ? e2eeB64ToBytes(blob.saltEnc) : null;
-    e2ee.iterations = blob.iterations || 0;
-    return true;
-  } catch (error) { clearSessionUnlock(); return false; }
-}
+
+
+
+
 // Load the decrypted workspace after an unlock (login or session restore).
 async function enterWorkspace() {
   // Fresh account context: never leak the previous login's sidebar into this one.
@@ -7926,10 +5430,7 @@ async function enterWorkspace() {
 // Display name from an E2EE profile (first + last, falls back to username).
 
 // Synchronous view of the in-memory session for render code (null when signed out).
-function getSessionUser() {
-  if (!state.cachedProfile) return null;
-  return { username: state.cachedProfile.username, name: fullNameOf(state.cachedProfile), subtitle: state.cachedProfile.subtitle || 'Personal space' };
-}
+
 
 // Avatar initials: first letters of the first two name words, uppercased.
 
@@ -7937,38 +5438,13 @@ function getSessionUser() {
 // Optional user picture. Stored inside the E2EE UI vault (never plaintext on
 // disk/server), rendered as an image in place of the initials.
 // Paint a round avatar element with the picture when set, else its initials.
-function paintAvatar(el, fallbackInitials) {
-  if (!el) return;
-  el.textContent = '';
-  const src = cleanAvatarSrc(state.profileAvatar);
-  if (src) {
-    const img = document.createElement('img');
-    img.alt = '';
-    img.src = src;
-    el.appendChild(img);
-  } else {
-    el.textContent = fallbackInitials;
-  }
-}
+
 
 // Display profile (name + subtitle) or null when signed out.
-function currentProfile() {
-  const sessionUser = getSessionUser();
-  if (sessionUser) return { name: sessionUser.name, subtitle: sessionUser.subtitle };
-  return null;
-}
+
 
 // Paint the sidebar profile card and avatar from the session profile.
-function applyProfile() {
-  const profile = currentProfile();
-  if (!profile) return;
-  const nameEl = document.querySelector('.profile-copy strong');
-  const subEl = document.querySelector('.profile-copy span');
-  paintAvatar(document.querySelector('.profile-card .avatar'), initialsFor(profile.name));
-  if (nameEl) nameEl.textContent = profile.name;
-  if (subEl) subEl.textContent = profile.subtitle;
-  refreshProfilePopup();
-}
+
 
 // Show the login gate and focus the username field.
 
@@ -8588,14 +6064,8 @@ document.getElementById('logout-button').addEventListener('click', logout);
 // Lost the authenticator? Recover the account (email/recovery code) — that
 // clears MFA, so no separate MFA bypass codes exist by design.
 
-function openMfaQrModal() {
-  const modal = document.getElementById('mfa-qr-modal');
-  if (modal) modal.hidden = false;
-}
-function closeMfaQrModal() {
-  const modal = document.getElementById('mfa-qr-modal');
-  if (modal) modal.hidden = true;
-}
+
+
 
 if (closeMfaQrBtn) closeMfaQrBtn.addEventListener('click', closeMfaQrModal);
 
@@ -8661,52 +6131,15 @@ if (mfaDisableBtn) mfaDisableBtn.addEventListener('click', async () => {
 // PRF passwordless unlock: KEK = SHA-256(authenticator PRF output), used to
 // wrap/unwrap the account master key. MUST match on register (wrap) and login
 // (unwrap) — both sides call this one function.
-async function prfUnwrapMasterKey(prfSecretBytes, wrapped) {
-  const kekRaw = new Uint8Array(await window.crypto.subtle.digest('SHA-256', prfSecretBytes));
-  const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-  const raw = await window.crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: e2eeB64ToBytes(wrapped.iv) }, kek, e2eeB64ToBytes(wrapped.data));
-  return window.crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
-}
-async function prfWrapMasterKey(prfSecretBytes, masterKeyRaw) {
-  const kekRaw = new Uint8Array(await window.crypto.subtle.digest('SHA-256', prfSecretBytes));
-  const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
-  const iv = e2eeRandomBytes(12);
-  const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, masterKeyRaw);
-  return { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) };
-}
-function prfFirstResult(cred) {
-  try {
-    const ext = cred.getClientExtensionResults ? cred.getClientExtensionResults() : null;
-    const first = ext && ext.prf && ext.prf.results && ext.prf.results.first;
-    return first ? new Uint8Array(first) : null;
-  } catch (error) {
-    return null;
-  }
-}
+
+
+
 // Many authenticators evaluate the PRF only during an assertion (get), not
 // during creation. Run a throwaway get() against the just-created credential to
 // obtain its PRF output, so passwordless unlock works on far more devices. The
 // challenge is local — nothing is sent to the server; only the PRF output is
 // used, to wrap the master key under SHA-256(PRF).
-async function prfSecretViaAssertion(credentialId, rpId, prfSaltB64) {
-  if (!window.PublicKeyCredential || !navigator.credentials || !navigator.credentials.get) return null;
-  try {
-    const assertion = await navigator.credentials.get({
-      publicKey: {
-        challenge: e2eeRandomBytes(32),
-        ...(rpId ? { rpId } : {}),
-        allowCredentials: [{ type: 'public-key', id: credentialId }],
-        userVerification: 'required',
-        timeout: 60000,
-        extensions: { prf: { eval: { first: b64urlToBuf(prfSaltB64) } } },
-      },
-    });
-    return prfFirstResult(assertion);
-  } catch (error) {
-    return null;
-  }
-}
+
 // Attach a PRF wrap to an existing passkey (no remove/re-add needed), so it can
 // unlock notes without the password. Requires an unlocked session (master key
 // is in memory) and a PRF-capable authenticator.
@@ -8871,18 +6304,7 @@ document.getElementById('open-settings').addEventListener('click', () => {
   try { refreshAccountPane(); } catch (error) {}
 });
 // --- Account pane (username/email/delete) ---
-function refreshAccountPane() {
-  try {
-    const u = document.getElementById('account-username');
-    if (u) u.value = (state.cachedProfile && state.cachedProfile.username) || '';
-    const f = document.getElementById('account-first');
-    if (f && document.activeElement !== f) f.value = (state.cachedProfile && state.cachedProfile.firstName) || '';
-    const l = document.getElementById('account-last');
-    if (l && document.activeElement !== l) l.value = (state.cachedProfile && state.cachedProfile.lastName) || '';
-    const e = document.getElementById('account-email');
-    if (e && document.activeElement !== e) e.value = (state.cachedProfile && state.cachedProfile.email) || '';
-  } catch (error) {}
-}
+
 
 if (accountSaveBtn) accountSaveBtn.addEventListener('click', async () => {
   const errEl = document.getElementById('account-error');
@@ -8949,78 +6371,17 @@ if (accountDeleteBtn) accountDeleteBtn.addEventListener('click', async () => {
   }
 });
 // --- Name editing (stored inside the server-encrypted profile) ---
-async function saveAccountName() {
-  const errEl = document.getElementById('account-error');
-  const first = String(document.getElementById('account-first').value || '').trim().slice(0, 60);
-  const last = String(document.getElementById('account-last').value || '').trim().slice(0, 60);
-  try {
-    const r = await apiFetch('/api/account/profile', { method: 'POST', body: JSON.stringify({ firstName: first, lastName: last }) });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || 'Could not save name.');
-    if (state.cachedProfile) { state.cachedProfile.firstName = data.firstName || first; state.cachedProfile.lastName = data.lastName || last; }
-    if (errEl) errEl.hidden = true;
-    applyProfile();
-    showToast('Name saved');
-  } catch (error) {
-    if (errEl) { errEl.textContent = error.message; errEl.hidden = false; }
-  }
-}
+
 
 if (accountSaveNameBtn) accountSaveNameBtn.addEventListener('click', saveAccountName);
 
 // --- Profile popup + avatar picture ---------------------------------------
 
-function openProfilePopup() {
-  if (!profileOverlay) return;
-  refreshProfilePopup();
-  profileOverlay.hidden = false;
-  document.getElementById('sidebar').classList.remove('open');
-  const btn = document.getElementById('profile-edit-btn');
-  if (btn) { try { btn.focus(); } catch (error) {} }
-}
-function closeProfilePopup() {
-  if (profileOverlay) profileOverlay.hidden = true;
-}
-function refreshProfilePopup() {
-  const name = state.cachedProfile ? fullNameOf(state.cachedProfile) : '';
-  const nameEl = document.getElementById('profile-modal-name');
-  if (nameEl) nameEl.textContent = name || 'Not signed in';
-  const userEl = document.getElementById('profile-view-username');
-  if (userEl) userEl.textContent = state.cachedProfile ? `@${state.cachedProfile.username}` : '';
-  const emailEl = document.getElementById('profile-view-email');
-  if (emailEl) emailEl.textContent = state.cachedProfile && state.cachedProfile.email ? state.cachedProfile.email : 'No recovery email set';
-  paintAvatar(document.getElementById('profile-avatar-large'), initialsFor(name));
-  const removeBtn = document.getElementById('profile-photo-remove');
-  if (removeBtn) removeBtn.hidden = !cleanAvatarSrc(state.profileAvatar);
-}
+
+
+
 // Center-crop to a square 256px JPEG for a compact avatar.
-function downscaleAvatar(dataUrl) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onerror = () => reject(new Error('decode'));
-    img.onload = () => {
-      try {
-        const size = 256;
-        const w = img.naturalWidth || size;
-        const h = img.naturalHeight || size;
-        const side = Math.min(w, h);
-        const canvas = document.createElement('canvas');
-        canvas.width = size; canvas.height = size;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { reject(new Error('canvas')); return; }
-        ctx.drawImage(img, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size);
-        canvas.toBlob((blob) => {
-          if (!blob) { reject(new Error('encode')); return; }
-          const reader = new FileReader();
-          reader.onerror = () => reject(new Error('read'));
-          reader.onload = () => resolve(String(reader.result || ''));
-          reader.readAsDataURL(blob);
-        }, 'image/jpeg', 0.85);
-      } catch (error) { reject(error); }
-    };
-    img.src = dataUrl;
-  });
-}
+
 async function handleAvatarFile(file) {
   if (!file) return;
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes to change your photo'); return; }
@@ -9076,81 +6437,19 @@ if (avatarInputEl) avatarInputEl.addEventListener('change', (event) => {
 });
 
 // --- Password-loss recovery codes (E2EE-safe wraps, server stores hashes only) ---
-const REC_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-function newRecoveryCode() {
-  const bytes = e2eeRandomBytes(20);
-  let s = '';
-  for (let i = 0; i < 20; i += 1) s += REC_ALPHABET[bytes[i] % REC_ALPHABET.length];
-  return `${s.slice(0, 5)}-${s.slice(5, 10)}-${s.slice(10, 15)}-${s.slice(15, 20)}`;
-}
+
+
 
 // Plaintext codes live ONLY here (memory) and in one encrypted on-device
 // cache below. The server keeps hashes + wraps, so a second device can never
 // re-display them — it must replace the set (invalidating the old codes).
-function acctRecCacheKey() {
-  try {
-    const name = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
-    if (name) return `notely-recovery-codes:${name}`;
-  } catch (error) {}
-  return null;
-}
-async function saveRecoveryCodesLocal(codes) {
-  if (!e2ee.masterKey) return;
-  const key = acctRecCacheKey();
-  if (!key) return;
-  const iv = e2eeRandomBytes(12);
-  const ct = await window.crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv }, e2ee.masterKey, new TextEncoder().encode(JSON.stringify(codes)));
-  try {
-    localStorage.setItem(key, JSON.stringify({ iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) }));
-  } catch (error) {}
-}
-async function loadRecoveryCodesLocal() {
-  if (!e2ee.masterKey) return null;
-  const key = acctRecCacheKey();
-  if (!key) return null;
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const obj = JSON.parse(raw);
-    const plain = await window.crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: e2eeB64ToBytes(obj.iv) }, e2ee.masterKey, e2eeB64ToBytes(obj.data));
-    const codes = JSON.parse(new TextDecoder().decode(plain));
-    return Array.isArray(codes) && codes.length ? codes : null;
-  } catch (error) {
-    return null;
-  }
-}
-function clearRecoveryCodesLocal() {
-  try {
-    const key = acctRecCacheKey();
-    if (key) localStorage.removeItem(key);
-  } catch (error) {}
-}
-function renderAcctRecCodes() {
-  const list = document.getElementById('acct-rec-codes');
-  if (!list) return;
-  list.innerHTML = '';
-  state.acctRecShownCodes.forEach((code) => {
-    const item = document.createElement('li');
-    item.textContent = code;
-    list.appendChild(item);
-  });
-}
-function openAcctRecModal() {
-  renderAcctRecCodes();
-  const err = document.getElementById('acct-rec-modal-error');
-  if (err) err.hidden = true;
-  const modal = document.getElementById('acct-rec-modal');
-  if (modal) modal.hidden = false;
-}
-function closeAcctRecModal() {
-  // One-shot display: wipe plaintext codes from memory and DOM on close.
-  state.acctRecShownCodes = [];
-  renderAcctRecCodes();
-  const modal = document.getElementById('acct-rec-modal');
-  if (modal) modal.hidden = true;
-}
+
+
+
+
+
+
+
 
 if (acctRecDownloadBtn) acctRecDownloadBtn.addEventListener('click', () => {
   try {
@@ -9177,36 +6476,7 @@ if (acctRecDoneBtn) acctRecDoneBtn.addEventListener('click', async () => {
   showToast('Recovery codes saved.');
   try { await refreshAcctRecStatus(); } catch (error) {}
 });
-async function refreshAcctRecStatus() {
-  // Count display only; plaintext codes are never re-fetchable by design.
-  // While unused codes exist the SAME set stays viewable (no regenerate);
-  // generating again is only offered once the set is exhausted.
-  const genBtn = document.getElementById('acct-rec-generate-btn');
-  const viewBtn = document.getElementById('acct-rec-view-btn');
-  try {
-    const r = await apiFetch('/api/recovery/account/count');
-    if (!r.ok) return;
-    const data = await r.json();
-    const n = data.count || 0;
-    const st = document.getElementById('acct-rec-status');
-    if (n > 0) {
-      const local = await loadRecoveryCodesLocal();
-      if (st) st.textContent = local
-        ? `${n} unused codes stored. Same set as generated — view anytime.`
-        : `${n} unused codes stored (generated on another device). Use one, or replace the whole set.`;
-      if (genBtn) {
-        genBtn.hidden = Boolean(local);
-        genBtn.textContent = local ? 'Generate recovery codes' : 'Replace codes…';
-      }
-      if (viewBtn) viewBtn.hidden = !local;
-    } else {
-      clearRecoveryCodesLocal();
-      if (st) st.textContent = 'No recovery codes stored on this account.';
-      if (genBtn) { genBtn.hidden = false; genBtn.textContent = 'Generate recovery codes'; }
-      if (viewBtn) viewBtn.hidden = true;
-    }
-  } catch (error) {}
-}
+
 
 if (acctRecViewBtn) acctRecViewBtn.addEventListener('click', async () => {
   const codes = await loadRecoveryCodesLocal();
@@ -9300,44 +6570,8 @@ if (recoverLink) recoverLink.addEventListener('click', () => {
 
 if (recoverBack) recoverBack.addEventListener('click', () => setAuthTab('login'));
 // Recover popup: one method per view (email / code / email-link token).
-function openRecoverModal(kind) {
-  const blockId = kind === 'email' ? 'recover-email-block'
-    : kind === 'token' ? 'recover-token-block' : 'recover-code-block';
-  const modal = document.getElementById('recover-modal');
-  if (!modal) {
-    // Fallback for mixed cached layouts: toggle the form inline.
-    ['recover-email-block', 'recover-code-block', 'recover-token-block'].forEach((id) => {
-      const el = document.getElementById(id);
-      if (el) el.hidden = id !== blockId;
-    });
-    return;
-  }
-  const title = document.getElementById('recover-modal-title');
-  // Code flow always restarts at the verify view; a verified match swaps the
-  // popup to the new-password view (see verify handler).
-  if (kind === 'code') {
-    const vv = document.getElementById('recover-verify-view');
-    if (vv) vv.hidden = false;
-    const np = document.getElementById('recover-newpw-block');
-    if (np) np.hidden = true;
-    if (title) title.textContent = 'Recover with code';
-  } else if (title) title.textContent = kind === 'email' ? 'Recover with email'
-    : kind === 'token' ? 'Set a new password' : 'Recover with code';
-  ['recover-email-block', 'recover-code-block', 'recover-token-block'].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.hidden = true;
-  });
-  const show = document.getElementById(blockId);
-  if (show) show.hidden = false;
-  modal.hidden = false;
-}
-function closeRecoverModal() {
-  const modal = document.getElementById('recover-modal');
-  if (modal) modal.hidden = true;
-  state.verifiedRecovery = null;
-  const block = document.getElementById('recover-newpw-block');
-  if (block) block.hidden = true;
-}
+
+
 
 if (closeRecoverModalBtn) closeRecoverModalBtn.addEventListener('click', closeRecoverModal);
 
@@ -9486,25 +6720,11 @@ function applyTheme(theme, announce = false) {
   if (announce) showToast(`${THEME_LABELS[normalized] || normalized} theme on`);
 }
 // Show the settings modal and close the mobile sidebar.
-function openSettings() {
-  if (!settingsOverlay) return;
-  setSettingsTab('appearance');
-  const startBox = document.getElementById('start-collapsed');
-  if (startBox) startBox.checked = startCollapsedPref();
-  syncSideMenuSettings();
-  settingsOverlay.hidden = false;
-  document.getElementById('sidebar').classList.remove('open');
-}
+
 // Keep Side Menu settings in sync (unified custom sections have no hide toggles).
-function syncSideMenuSettings() {}
+
 // Switch the settings left-nav tab and its right-side pane.
-function setSettingsTab(name) {
-  document.querySelectorAll('.settings-nav-item').forEach((item) => item.classList.toggle('active', item.dataset.settingsTab === name));
-  document.querySelectorAll('.settings-pane').forEach((pane) => {
-    pane.hidden = pane.dataset.settingsPane !== name;
-  });
-  if (name === 'tags') { try { renderSettingsTags(); } catch (error) {} }
-}
+
 
 if (settingsNewTagBtn) settingsNewTagBtn.addEventListener('click', async () => {
   const value = await askInput({
@@ -9527,28 +6747,7 @@ document.getElementById('start-collapsed').addEventListener('change', (event) =>
 
 // Export every plainWorkspace note (and unlocked Vault notes) as one JSON
 // backup file in the browser's download folder — the "desktop copy".
-function exportAllNotes() {
-  if (!state.cachedProfile || !state.notesLoaded) { showToast('Log in first'); return; }
-  const payload = {
-    app: 'Notely',
-    version: 2,
-    exportedAt: new Date().toISOString(),
-    notes: state.notes.map((note) => ({ ...note })),
-  };
-  if (state.vault.unlocked && state.vault.notes.length) {
-    payload.vaultNotes = state.vault.notes.map((note) => ({ ...note, vault: true }));
-  }
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  const stamp = new Date().toISOString().slice(0, 10);
-  link.download = sanitizeFilename(`Notely-notes-${stamp}`, 'json');
-  link.rel = 'noopener';
-  document.body.appendChild(link);
-  link.click();
-  setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 800);
-  showToast('Notes exported to your device');
-}
+
 document.getElementById('export-all-btn').addEventListener('click', exportAllNotes);
 // Turning sync OFF is single-click (toast warns). Turning it back ON opens
 // the resync dialog so the local copy is uploaded or discarded deliberately.
@@ -9622,10 +6821,7 @@ if (deviceOnlyBox) {
   document.getElementById('open-settings').addEventListener('click', openSettingsDeviceOnly);
 }
 // Hide the settings modal.
-function closeSettings() {
-  if (!settingsOverlay) return;
-  settingsOverlay.hidden = true;
-}
+
 try { state.savedTheme = localStorage.getItem('notely-theme') || 'light'; } catch (error) {}
 applyTheme(state.savedTheme);
 document.getElementById('open-settings').addEventListener('click', (event) => {
@@ -9640,14 +6836,7 @@ if (settingsOverlay) settingsOverlay.addEventListener('click', (event) => {
 if (themeSelect) themeSelect.addEventListener('change', () => applyTheme(themeSelect.value, true));
 // Reading font (Settings → Appearance). Device-local like the sidebar prefs
 // (not part of the per-account envelope): one line, no sync conflicts.
-function applyFont(font, announce = false) {
-  const normalized = FONTS.includes(font) ? font : 'default';
-  document.documentElement.dataset.font = normalized;
-  try { localStorage.setItem('notely-font', normalized); } catch (error) {}
-  const fontSelectEl = document.getElementById('font-select');
-  if (fontSelectEl) fontSelectEl.value = normalized;
-  if (announce) showToast(`${normalized.charAt(0).toUpperCase() + normalized.slice(1)} font on`);
-}
+
 try { state.savedFont = localStorage.getItem('notely-font') || 'default'; } catch (error) {}
 applyFont(state.savedFont);
 
@@ -9655,11 +6844,7 @@ if (fontSelect) fontSelect.addEventListener('change', () => applyFont(fontSelect
 // Compact picker on the login card. No toast: it would render behind the overlay.
 
 
-function setLoginThemeMenu(open) {
-  if (!loginThemeToggle || !loginThemeMenu) return;
-  loginThemeMenu.hidden = !open;
-  loginThemeToggle.setAttribute('aria-expanded', String(open));
-}
+
 if (loginThemeToggle) loginThemeToggle.addEventListener('click', (event) => {
   event.stopPropagation();
   setLoginThemeMenu(loginThemeMenu.hidden);
