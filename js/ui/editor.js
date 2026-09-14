@@ -14,6 +14,13 @@ import { isUnlocked, readFileAsDataUrl } from './misc.js';
 import { showToast } from './modal.js';
 import { currentNote } from './notes.js';
 import { coverDragNote } from './tabs.js';
+import { beautifyJsonText, beautifyYamlText } from '../core/syntax.js';
+import { renderCollabPresence } from '../data/collab-crypto.js';
+import { IDLE_PREVIEW_MS } from '../domain/constants.js';
+import { setSaveLabel } from './feedback.js';
+import { updateMeta } from './misc.js';
+import { activeEditorNote, isPlainTextNote, persistNotes, renderNoteList, saveCurrentNote } from './notes.js';
+
 export function closeRecoverModal() {
   const modal = document.getElementById('recover-modal');
   if (modal) modal.hidden = true;
@@ -451,4 +458,180 @@ export function autogrow() {
 // Find an All-Notes folder group by exact dataset value (avoids CSS-escaping pitfalls).
 export function findTreeWrap(folder) {
   return [...noteList.querySelectorAll('[data-folder-wrap]')].find((wrap) => wrap.dataset.folderWrap === folder) || null;
+}
+
+
+// Insert a Markdown line prefix (heading/list/quote) at the start of the current line and save.
+export function linePrefix(prefix) {
+  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
+  const start = markdownInput.selectionStart;
+  const lineStart = markdownInput.value.lastIndexOf('\n', start - 1) + 1;
+  markdownInput.setRangeText(prefix, lineStart, lineStart, 'end');
+  markdownInput.focus();
+  saveCurrentNote();
+}
+
+// Wrap the editor selection (or placeholder word) with a Markdown marker and save.
+export function wrapSelection(before, after = before) {
+  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
+  const start = markdownInput.selectionStart;
+  const end = markdownInput.selectionEnd;
+  const selected = markdownInput.value.slice(start, end) || 'text';
+  markdownInput.setRangeText(`${before}${selected}${after}`, start, end, 'select');
+  markdownInput.focus();
+  saveCurrentNote();
+}
+
+// Switch write/preview mode and refocus the editor when returning to edit.
+export function setWriteMode(mode, { focus = false } = {}) {
+  state.writeMode = mode;
+  clearTimeout(state.idleTimer);
+  renderPreview(activeEditorNote());
+  try { renderCollabPresence(); } catch (error) {}
+  if (mode === 'edit') {
+    resetIdleTimer();
+    if (focus) {
+      // Focus without jumping the caret to the end: setSelectionRange(end)
+      // used to scroll the whole editor to the bottom on every Write click.
+      try { markdownInput.focus({ preventScroll: true }); }
+      catch (error) { markdownInput.focus(); }
+    }
+  }
+}
+
+// After 10s idle, auto-switch a non-empty Markdown note to preview.
+export function resetIdleTimer() {
+  clearTimeout(state.idleTimer);
+  state.idleTimer = setTimeout(() => {
+    const note = currentNote();
+    if (note && note.ext === 'md' && state.writeMode === 'edit' && markdownInput.value.trim()) {
+      setWriteMode('preview');
+    }
+  }, IDLE_PREVIEW_MS);
+}
+
+export function removeCover() {
+  exitCoverRepos(false);
+  const note = currentNote();
+  if (!note || state.activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return;
+  if (!note.cover) return;
+  note.cover = null;
+  note.coverPos = null;
+  note.date = 'Now';
+  renderCover(note);
+  persistNotes();
+  showToast('Cover removed');
+}
+
+// Leave reposition mode; save persists the staged position, cancel restores it.
+export function exitCoverRepos(save) {
+  if (!state.coverRepositioning) return;
+  state.coverRepositioning = false;
+  state.coverDragging = false;
+  const wrap = document.getElementById('cover-wrap');
+  if (wrap) wrap.classList.remove('dragging');
+  const note = currentNote();
+  if (save && note && note.cover) {
+    note.date = 'Now';
+    if (state.currentId === note.id) renderCover(note);
+    persistNotes();
+    showToast('Cover position locked');
+  } else if (!save && note && note.cover) {
+    note.coverPos = state.coverReposStart;
+    if (state.currentId === note.id) renderCover(note);
+  }
+  setCoverReposUI();
+}
+
+// Shared recipe notes keep their meal photo in the collaborative doc
+// (Y.Map 'assets'), so every member sees the same picture.
+export function requestCollabCoverUpload() {
+  exitCoverRepos(true);
+  if (!state.collab.noteId || !isUnlocked()) return;
+  const input = document.getElementById('cover-input');
+  if (input) { input.value = ''; input.click(); }
+}
+
+export async function handleCoverFile(file) {
+  const note = currentNote();
+  if (!note || state.activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return;
+  if (!file) return;
+  if (!isImageFile(file)) { showToast('Use a PNG, JPEG, WebP, GIF, AVIF or BMP image'); return; }
+  if (file.size > 5 * 1024 * 1024) { showToast('Image too large (5 MB max)'); return; }
+  const wasOptimized = file.size > 300000;
+  showToast('Loading picture…');
+  try {
+    const raw = await readFileAsDataUrl(file);
+    const dataUrl = wasOptimized ? await downscaleCover(raw) : raw;
+    const clean = cleanCoverSrc(dataUrl) || (!wasOptimized ? await downscaleCover(raw).then(cleanCoverSrc) : null);
+    if (!clean) { showToast('Could not use that image — try a smaller file'); return; }
+    if (!currentNote() || currentNote().id !== note.id) return; // moved on mid-upload
+    note.cover = clean;
+    if (typeof note.coverPos !== 'number' || !Number.isFinite(note.coverPos)) note.coverPos = 50;
+    note.date = 'Now';
+    renderCover(note);
+    persistNotes();
+    showToast(wasOptimized ? 'Cover added (optimized) — Reposition to adjust' : 'Cover added — Reposition to adjust');
+  } catch (error) {
+    showToast('Could not read that image');
+  }
+}
+
+export function requestCoverUpload() {
+  exitCoverRepos(true);
+  const note = currentNote();
+  if (state.activeView === 'vault') return;
+  if (!note) { showToast('Open a note first'); return; }
+  if (!isUnlocked()) { showToast('Log in to edit notes'); return; }
+  if (note.deleted) { showToast('Restore this note to edit it'); return; }
+  if (note.archived) { showToast('Unarchive this note to edit it'); return; }
+  const input = document.getElementById('cover-input');
+  if (input) { input.value = ''; input.click(); }
+}
+
+// Edit the recipe lists for whichever source is open (local note or shared doc).
+export function recipeMutate(mutator) {
+  if (state.collab.noteId) {
+    if (!state.collab.recipe) return;
+    const data = recipeDataForActive(null);
+    mutator(data);
+    state.collab.recipe.set('ingredients', JSON.stringify(sanitizeIngredients(data.ingredients)));
+    state.collab.recipe.set('steps', JSON.stringify(sanitizeSteps(data.steps)));
+    return;
+  }
+  const note = currentNote();
+  if (!note || note.template !== 'recipe') return;
+  const data = { ingredients: sanitizeIngredients(note.ingredients), steps: sanitizeSteps(note.steps) };
+  mutator(data);
+  note.ingredients = sanitizeIngredients(data.ingredients);
+  note.steps = sanitizeSteps(data.steps);
+  note.date = 'Now';
+  note.updatedAt = Date.now();
+  persistNotes();
+}
+
+// Apply the formatter to the open note (button is visible for json/yaml only).
+export function applyBeautify() {
+  const note = activeEditorNote();
+  if (!note || note.deleted || note.archived) return;
+  if (note.ext !== 'json' && note.ext !== 'yaml') return;
+  const source = typeof markdownInput.value === 'string' && markdownInput.value ? markdownInput.value : (note.body || '');
+  let formatted;
+  try {
+    formatted = note.ext === 'json' ? beautifyJsonText(source) : beautifyYamlText(source);
+  } catch (error) {
+    showToast(note.ext === 'json' ? 'Invalid JSON — fix the syntax first' : 'Could not format this YAML');
+    return;
+  }
+  if (formatted === source) { showToast('Already tidy'); return; }
+  note.body = formatted;
+  markdownInput.value = formatted;
+  renderPreview(note);
+  updateMeta(note);
+  setSaveLabel('Saving...', 'green');
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 200);
+  showToast(`${note.ext === 'json' ? 'JSON' : 'YAML'} beautified`);
 }

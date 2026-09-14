@@ -49,6 +49,16 @@ import { applyFont, applyPanelWidth, applyProfile, clearSessionUnlock, closeProf
 import { clearSharedDropTargets, closeTabOverflow, coverDragStart, endCoverDrag, endTabDrag, findTabbedNote, fitTabStrip, renderStripItems, setSettingsTab, toggleTabOverflow, trackTab, updateBreadcrumbs } from './ui/tabs.js';
 import { addNoteTag, cleanTagList, closeTagEditor, normalizeTagName, openSharedTagEditor, openTagEditor, removeNoteTag, renderSettingsTags, renderSharedTags, renderTagEditor, sharedGroupTagList, sharedTagList } from './ui/tags.js';
 import { decryptUiVaultRaw, openVaultModal, openVaultNoteDeleteConfirm, uiVaultKey, writeUiVaultLocal } from './ui/vault.js';
+import { acceptInvite, collabDeleteNote, confirmCollabNew, createSharedNoteWithTemplate, declineInvite, moveSharedNote, openCollabNote, openSharedNewNote, renderSharedView } from './data/collab-crypto.js';
+import { refreshPasskeys } from './ui/auth.js';
+import { applyBeautify, exitCoverRepos, handleCoverFile, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
+import { confirmPendingDelete, logout, refreshCurrent } from './ui/notes-core.js';
+import { bindNoteContextMenu, clearEditor, createNoteFromTemplate, goAllNotes, loadNotesFromServer, onNewNoteClick, persistNotes, purgeExpiredBin, renderNoteList, requestDeleteNoteById, saveCurrentNote, selectNote, syncNotesToServer } from './ui/notes.js';
+import { addSharedFolder, addSubfolder, bindCustomSectionsEvents, bindFolderContextMenu, bindFolderDragDrop, bindSectionContextMenu, bindSectionHeaderEvents, chooseSectionIcon, deleteCustomSection, leaveSharedSection, moveSharedNoteToFolder, persistCollapsedFolders, renameSharedFolder, reparentSharedFolder, selectCustomFolder, selectCustomSection, syncCustomSections } from './ui/sections.js';
+import { applyTheme, enterWorkspace, handleAvatarFile } from './ui/shell.js';
+import { closeTab, renderTabs } from './ui/tabs.js';
+import { addKnownTag, renameTagEverywhere, tagEditorAdd, tagEditorRemove } from './ui/tags.js';
+import { createVaultNoteFromTemplate, loadUiVault, lockVault, onNewVaultNoteClick, persistUiVault, resetVault, selectVaultNote, setupVaultFromModal, unlockVaultFromModal } from './ui/vault.js';
 
 'use strict';
 (() => {
@@ -59,7 +69,7 @@ import { decryptUiVaultRaw, openVaultModal, openVaultNoteDeleteConfirm, uiVaultK
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev83') {
+  if (build !== 'dev84') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -225,151 +235,32 @@ document.querySelectorAll('[data-icon]').forEach((element) => {
 
 // Apply a decrypted {v,notes,vault,vaultFolders,ui} envelope (or legacy array)
 // to live state. Shared by the server blob path and the device-only local path.
-async function adoptNotesEnvelope(envelope) {
-  const list = Array.isArray(envelope) ? envelope
-    : (envelope && Array.isArray(envelope.notes) ? envelope.notes : null);
-  if (!list) throw new Error('bad payload');
-  state.notes = list.map(migrateNote).slice(0, 2000);
-  const incomingBlobs = (!Array.isArray(envelope) && Array.isArray(envelope.vault))
-    ? envelope.vault.filter(validVaultBlob).slice(0, 2000)
-    : [];
-  state.vault.blobs = incomingBlobs;
-  try {
-    state.vault.folders = (!Array.isArray(envelope) && envelope) ? cleanVaultFolders(envelope.vaultFolders) : [];
-  } catch (error) { state.vault.folders = []; }
-  if (state.vault.unlocked) {
-    try { state.vault.notes = await decryptAllVaultBlobs(); }
-    catch (error) { state.vault.notes = []; }
-  }
-  try {
-    if (!Array.isArray(envelope) && envelope && envelope.ui && typeof applyUiSnapshot === 'function') {
-      if (applyUiSnapshot(envelope.ui)) {
-        state.serverUiLoaded = true;
-        try { await writeUiVaultLocal(); } catch (error) {}
-      }
-    }
-  } catch (error) {}
-  // Folder-required invariant: nothing loads (or stays) unfiled.
-  try { enforceFilingInvariant(); } catch (error) {}
-}
+
 
 // Device-only boot: load from the encrypted local slot (onboarding workspace
 // when the device copy is missing) without touching the server either way.
-async function loadNotesFromDevice() {
-  try {
-    const raw = localStorage.getItem(localNotesKey());
-    if (raw) {
-      const payload = JSON.parse(raw);
-      await adoptNotesEnvelope(await e2eeDecryptPayload(payload));
-      state.notesLoaded = true;
-      setSaveLabel('Offline · loaded', 'gray');
-      return;
-    }
-  } catch (error) {}
-  state.notes = welcomeSeedNotes();
-  applyUiSnapshot(welcomeSeedUi());
-  state.vault.blobs = [];
-  state.vault.folders = [];
-  state.notesLoaded = true;
-  setSaveLabel('Offline · saved', 'gray');
-}
+
 
 // Debounced encrypted upload of the workspace (notes + vault ciphertext +
 // per-account UI state). No-ops without a session; reports Locked when the
 // vault is locked. The server stores the blob opaquely — UI folders/sections
 // ride along so every account keeps its own sidebar across relogs/devices.
 // Device-only mode redirects the same save into local storage instead.
-async function syncNotesToServer() {
-  if (!state.cachedProfile) return;
-  if (deviceOnlyPref()) {
-    await saveNotesToDevice();
-    return;
-  }
-  if (!e2ee.masterKey) {
-    setSaveLabel('Locked', 'gray');
-    return;
-  }
-  try {
-    const payload = await e2eeEncryptNotes(await buildNotesEnvelope());
-    const response = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload, baseVersion: state.serverNotesVersion }) });
-    if (response.status === 409) {
-      setSaveLabel('Out of date', 'red');
-      try { showToast('Notes changed on server — reloading'); } catch (error) {}
-      try { await loadNotesFromServer(); } catch (error) {}
-      try { renderNoteList(); } catch (error) {}
-      return;
-    }
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    try {
-      const data = await response.json();
-      if (data && typeof data.updated_at === 'number') state.serverNotesVersion = data.updated_at;
-    } catch (error) {}
-    markSynced();
-  } catch (error) {
-    setSaveLabel('Sync failed', 'red');
-  }
-}
+
 
 // Immediate (non-debounced) upload used by logout/unload so the last edits
 // are never stranded in a cancelled timer.
-async function flushNotesToServer() {
-  clearTimeout(state.syncTimer);
-  await syncNotesToServer();
-}
+
 
 // Boot/load path: decrypts the server E2EE blob; adopts a legacy plaintext-shape row once; brand-new accounts start empty (updated_at distinguishes); offline falls back to the legacy local copy.
 // The envelope is a bare array (very old), {v:1, notes, vault} (E2EE notes
 // only) or {v:2, notes, vault, ui} (notes + per-account sidebar state). When
 // the server carries UI state it wins over any device-local copy.
-async function loadNotesFromServer() {
-  // Cloud opt-out: decrypt-and-go from the local slot; the server is never
-  // contacted in this mode (no GET, no background PUT).
-  if (deviceOnlyPref()) {
-    await loadNotesFromDevice();
-    return;
-  }
-  try {
-    const response = await apiFetch('/api/notes');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    try {
-      if (data && typeof data.updated_at === 'number') state.serverNotesVersion = data.updated_at;
-    } catch (error) {}
-    if (data && data.payload) {
-      // E2EE blob: only this device can read it. Envelope is either a legacy
-      // bare notes array or {v, notes, vault} (vault items stay ciphertext).
-      await adoptNotesEnvelope(await e2eeDecryptPayload(data.payload));
-    } else if (Array.isArray(data.notes) && (data.notes.length || data.updated_at)) {
-      // Legacy plaintext-shape response (pre-E2EE row): adopt, then the next
-      // debounced save re-uploads it encrypted.
-      state.notes = data.notes.map(migrateNote).slice(0, 2000);
-      state.vault.blobs = [];
-      state.vault.folders = [];
-      await syncNotesToServer();
-    } else {
-      // Brand-new account: no server blob, no notes row. Seed the onboarding
-      // workspace (Notes section, General/Personal folders, welcome notes).
-      // Only genuine legacy local data (pre-server version) is migrated on top.
-      const legacy = readLegacyLocalNotes();
-      state.notes = (legacy && legacy.length ? legacy : welcomeSeedNotes()).slice(0, 2000);
-      state.vault.blobs = [];
-      state.vault.folders = [];
-      if (!legacy || !legacy.length) applyUiSnapshot(welcomeSeedUi());
-      await syncNotesToServer();
-      wipeLegacyLocalNotes();
-    }
-    state.notesLoaded = true;
-  } catch (error) {
-    const legacy = readLegacyLocalNotes();
-    state.notes = legacy || [];
-    state.notesLoaded = true;
-    showToast('Cannot reach the Notely server — working offline');
-  }
-}
+
 
 // Default folders carried over from the removed built-in Collections section.
 // New custom sections share the same folder palette/behavior (same value).
-const DEFAULT_CUSTOM_FOLDERS = ['Work', 'Personal', 'Reading list'];
+
 
 
 
@@ -408,50 +299,13 @@ state.deletedCustomSections = [];
 
 
 // Apply a server/UI-vault snapshot to memory. Returns true when anything was adopted.
-function applyUiSnapshot(value) {
-  const clean = cleanUiSnapshot(value);
-  if (!clean) return false;
-  let adopted = false;
-  if (clean.collapsed !== null) { state.collapsedFolders = new Set(clean.collapsed); adopted = true; }
-  if (clean.customSections) { state.customSections = clean.customSections; adopted = true; }
-  if (clean.deletedCustomSections) { state.deletedCustomSections = clean.deletedCustomSections; adopted = true; }
-  // One-time migration of legacy built-in Collections into the default custom
-  // section (same folders/value, unified implementation).
-  if (clean.legacyCollections || clean.legacyCollectionsName) {
-    try { ensureMigratedCollectionsSection(clean.legacyCollections || [], clean.legacyCollectionsName || null); adopted = true; } catch (error) {}
-  }
-  if (clean.theme) {
-    try { applyTheme(clean.theme, false); } catch (error) {}
-    adopted = true;
-  }
-  if (typeof clean.avatar === 'string') {
-    state.profileAvatar = clean.avatar;
-    adopted = true;
-    try { applyProfile(); } catch (error) {}
-  }
-  if (Array.isArray(clean.tags)) {
-    state.knownTags = cleanTagList(clean.tags);
-    adopted = true;
-  }
-  return adopted;
-}
+
 
 // Immediate encrypted write of the per-account local cache. Used by the
 // debounced persistUiVault() and by the logout/pagehide flush path.
 
 
-function persistUiVault() {
-  clearTimeout(state.uiVaultTimer);
-  state.uiVaultTimer = setTimeout(() => {
-    (async () => {
-      if (!e2ee.masterKey) return; // locked: never write (and never plaintext)
-      try { await writeUiVaultLocal(); } catch (error) {}
-      // The server envelope is the source of truth per account: schedule an
-      // upload so sidebar changes survive relogs and follow the account.
-      try { persistNotes(); } catch (error) {}
-    })();
-  }, 150);
-}
+
 
 // Section icon picker set (order shown in the picker). First entry is the
 // default for sections without a chosen icon.
@@ -464,154 +318,19 @@ function persistUiVault() {
 
 // Ensure the migrated former-Collections custom section exists and carries
 // the same folders/value. All new sections share this implementation.
-function ensureMigratedCollectionsSection(legacyFolders, legacyName) {
-  const folders = Array.isArray(legacyFolders)
-    ? legacyFolders.filter((name) => typeof name === 'string' && name.trim()).map((name) => name.trim().slice(0, 180)).slice(0, 200)
-    : [];
-  let section = state.customSections.find((entry) => entry.id === MIGRATED_COLLECTIONS_SECTION_ID);
-  if (!section) {
-    const baseName = (typeof legacyName === 'string' && legacyName.trim() ? legacyName.trim().slice(0, 40) : 'Collections');
-    const taken = new Set(state.customSections.map((entry) => entry.name.toLowerCase()));
-    let name = baseName;
-    if (taken.has(name.toLowerCase())) {
-      let counter = 2;
-      while (taken.has(`${baseName} ${counter}`.toLowerCase())) counter += 1;
-      name = `${baseName} ${counter}`;
-    }
-    const merged = [...folders];
-    if (!merged.length) DEFAULT_CUSTOM_FOLDERS.forEach((name) => { if (!merged.some((entry) => entry.toLowerCase() === name.toLowerCase())) merged.push(name); });
-    section = { id: MIGRATED_COLLECTIONS_SECTION_ID, name, folders: merged };
-    state.customSections.unshift(section);
-  } else {
-    folders.forEach((name) => {
-      if (!section.folders.some((entry) => entry.toLowerCase() === name.toLowerCase())) section.folders.push(name);
-    });
-    if (typeof legacyName === 'string' && legacyName.trim() && section.name !== legacyName.trim()) {
-      const taken = new Set(state.customSections.filter((entry) => entry.id !== section.id).map((entry) => entry.name.toLowerCase()));
-      if (!taken.has(legacyName.trim().toLowerCase())) section.name = legacyName.trim().slice(0, 40);
-    }
-  }
-  // Migrate note.collection -> note.sections[migratedId] (same value, new home).
-  let notesDirty = false;
-  state.notes.forEach((note) => {
-    if (typeof note.collection === 'string' && note.collection.trim()) {
-      const folder = note.collection.trim().slice(0, 180);
-      if (!note.sections || typeof note.sections !== 'object' || Array.isArray(note.sections)) note.sections = {};
-      if (typeof note.sections[section.id] !== 'string' || !note.sections[section.id]) {
-        note.sections[section.id] = folder;
-        notesDirty = true;
-      }
-      if (!section.folders.some((entry) => entry.toLowerCase() === folder.toLowerCase())) {
-        section.folders.push(folder);
-      }
-    }
-    if ('collection' in note) { delete note.collection; notesDirty = true; }
-  });
-  if (notesDirty) persistNotes();
-  persistCustomSections();
-  return section;
-}
 
 
 
 
 
-async function loadUiVault() {
-  // Server envelope (v2) already won: keep it, just refresh the per-account
-  // local cache. Never let a stale device copy from another account clobber it.
-  if (state.serverUiLoaded) {
-    try { await writeUiVaultLocal(); } catch (error) {}
-    return true;
-  }
-  // Per-account encrypted cache first; then the legacy shared slot (pre
-  // per-account migration) when it decrypts with this account's key; else
-  // adopt legacy plaintext keys once (then re-saved encrypted + uploaded).
-  const keysToTry = [];
-  try {
-    const perUser = uiVaultKey();
-    if (perUser) keysToTry.push(perUser);
-    if (perUser !== UI_VAULT_KEY) keysToTry.push(UI_VAULT_KEY);
-  } catch (error) { keysToTry.push(UI_VAULT_KEY); }
-  for (const key of keysToTry) {
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw && e2ee.masterKey) {
-        const vault = await decryptUiVaultRaw(raw);
-        if (applyUiSnapshot(vault)) {
-          // Promote a legacy shared-slot hit to the per-account key.
-          try { await writeUiVaultLocal(); } catch (error) {}
-          // This device knew more than the (v1) server row: push it up so the
-          // next relog/device sees the same sidebar.
-          try { persistNotes(); } catch (error) {}
-          return true;
-        }
-      }
-    } catch (error) { /* try next key, then legacy adopt */ }
-  }
-  const legacy = readLegacyUiKeys();
-  let adopted = false;
-  if (legacy.collapsed) { state.collapsedFolders = new Set(legacy.collapsed); adopted = true; }
-  if (legacy.sections) {
-    state.customSections = legacy.sections.sections;
-    adopted = true;
-  }
-  if (legacy.cols || legacy.colsName) {
-    try { ensureMigratedCollectionsSection(legacy.cols || [], legacy.colsName || null); adopted = true; } catch (error) {}
-  }
-  if (!adopted && state.customSections.length === 0) {
-    // Fresh device + fresh account: adopt the onboarding sidebar (Notes
-    // section with General/Personal). Any real sidebar state wins over it.
-    applyUiSnapshot(welcomeSeedUi());
-    adopted = true;
-  }
-  if (adopted) {
-    persistUiVault();
-    try { persistNotes(); } catch (error) {}
-  }
-  return adopted;
-}
+
+
 // Persist binned custom-section records {id, name, folders, deletedAt}.
-function persistDeletedCustomSections() {
-  persistUiVault();
-}
+
 // Drop section Bin records with no binned notes left (or past retention).
-function pruneDeletedCustomSections() {
-  const now = Date.now();
-  const before = (state.deletedCustomSections || []).length;
-  state.deletedCustomSections = (state.deletedCustomSections || []).filter((entry) => (
-    now - entry.deletedAt <= BIN_RETENTION_MS
-    && state.notes.some((note) => note.deleted && note.sections
-      && typeof note.sections === 'object' && customNoteFolder(note, entry.id) !== null)
-  ));
-  if (state.deletedCustomSections.length !== before) persistDeletedCustomSections();
-}
+
 // Permanently drop notes/sections past the 3-day retention; repairs tampered timestamps; drops section entries with no binned notes left.
-function purgeExpiredBin() {
-  const now = Date.now();
-  let changed = false;
-  state.notes.forEach((note) => {
-    // Repair tampered timestamps: future or non-finite values reset to now.
-    if (note.deleted && (typeof note.deletedAt !== 'number' || !Number.isFinite(note.deletedAt) || note.deletedAt > now)) {
-      note.deletedAt = now;
-      changed = true;
-    }
-  });
-  const before = state.notes.length;
-  state.notes = state.notes.filter((note) => !(note.deleted && typeof note.deletedAt === 'number' && now - note.deletedAt > BIN_RETENTION_MS));
-  if (state.notes.length !== before) changed = true;
-  const sectionsBefore = (state.deletedCustomSections || []).length;
-  state.deletedCustomSections = (state.deletedCustomSections || []).filter((entry) => (
-    now - entry.deletedAt <= BIN_RETENTION_MS
-    && state.notes.some((note) => note.deleted && note.sections
-      && typeof note.sections === 'object' && customNoteFolder(note, entry.id) !== null)
-  ));
-  if (state.deletedCustomSections.length !== sectionsBefore) changed = true;
-  if (changed) {
-    persistDeletedCustomSections();
-    persistNotes();
-  }
-  return changed;
-}
+
 purgeExpiredBin();
 
 state.currentId = null;
@@ -619,9 +338,7 @@ state.activeView = 'notes';
 state.activeFilter = 'all';
 state.searchQuery = '';
 // Persist collapsed tree-folder state into the encrypted UI vault.
-function persistCollapsedFolders() {
-  persistUiVault();
-}
+
 // ---- Sidebar sections & Bin: folder CRUD, sidebar render, sync with note data ----
 
 // Rewrite exact + descendant paths in a folder list (sidebar, collapsed keys).
@@ -630,28 +347,7 @@ function persistCollapsedFolders() {
 // Revive binned custom sections a (newly live) note belongs to, so it has
 // a home. Custom folders inside live sections are re-adopted by the
 // sidebar sync that callers run afterwards.
-function reviveSectionsForNote(note) {
-  if (!note || !note.sections || typeof note.sections !== 'object') return false;
-  let revived = false;
-  Object.keys(note.sections).forEach((sectionId) => {
-    if (customNoteFolder(note, sectionId) === null) return;
-    if (state.customSections.some((entry) => entry.id === sectionId)) return;
-    const stashed = (state.deletedCustomSections || []).find((entry) => entry.id === sectionId);
-    if (stashed) {
-      const folders = [...(stashed.folders || [])];
-      if (!folders.some((entry) => entry === note.sections[sectionId])) folders.push(note.sections[sectionId]);
-      state.customSections.push({ id: stashed.id, name: stashed.name, folders });
-    } else {
-      state.customSections.push({ id: sectionId, name: 'Restored section', folders: [note.sections[sectionId]] });
-    }
-    revived = true;
-  });
-  if (revived) {
-    persistCustomSections();
-    pruneDeletedCustomSections();
-  }
-  return revived;
-}
+
 
 // Restore a binned folder: drops its Bin entry and unbans (undeletes) all its notes, then re-syncs the sidebar.
 // Erase a binned folder and all its binned notes at once; repairs the current selection.
@@ -667,41 +363,7 @@ function reviveSectionsForNote(note) {
 // Delete every folder in a built-in section and hide the section header;
 // notes keep everything else. Restore via Settings → Side Menu.
 // (Custom sections have deleteCustomSection; single folders use their own confirms.)
-function bindSectionHeaderEvents() {
-  const sidebar = document.getElementById('sidebar');
-  if (!sidebar) return;
-  sidebar.addEventListener('click', (event) => {
-    if (event.target.closest('button') || event.target.closest('input')) return;
-    // The section name and its icon both select (mark) the section.
-    const label = event.target.closest('.section-label-text, .section-icon');
-    if (!label) return;
-    const section = label.closest('.sidebar-section');
-    if (!section) return;
-    event.preventDefault();
-    if (section.dataset.customSection) {
-      if (!isSectionEmpty('custom', section.dataset.customSection)) selectCustomSection(section.dataset.customSection);
-    }
-  });
-  sidebar.addEventListener('dblclick', (event) => {
-    if (event.target.closest('button') || event.target.closest('input')) return;
-    const label = event.target.closest('.section-label-text');
-    if (!label) return;
-    const section = label.closest('.sidebar-section');
-    if (!section) return;
-    event.preventDefault();
-    if (section.dataset.customSection) startSectionRename({ kind: 'custom', id: section.dataset.customSection });
-  });
-  // Collapsed slide menu shows section initials: clicking one opens the
-  // section in the workspace (empty sections stay put, like labels).
-  sidebar.addEventListener('click', (event) => {
-    const initial = event.target.closest('.section-initial');
-    if (!initial) return;
-    const section = initial.closest('.sidebar-section');
-    if (!section || !section.dataset.customSection) return;
-    event.preventDefault();
-    if (!isSectionEmpty('custom', section.dataset.customSection)) selectCustomSection(section.dataset.customSection);
-  });
-}
+
 
 // Render user-built sections: header (editable name, add/delete) + folders.
 
@@ -722,480 +384,49 @@ function bindSectionHeaderEvents() {
 
 
 
-function addCustomSection() {
-  if (!e2ee.masterKey) { showToast('Log in to manage sections'); return; }
-  const section = { id: uniqueSectionId(), name: uniqueSectionName(), folders: [], icon: SECTION_ICONS[0] };
-  state.customSections.push(section);
-  persistCustomSections();
-  state.activeView = 'notes';
-  state.activeFilter = 'all';
-  state.activeCustom = null;
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  clearSearch();
-  updateListHeading();
-  renderCustomSections();
-  renderNoteList();
-  showToast('Section added — name it');
-  startSectionRename({ kind: 'custom', id: section.id });
-}
+
 
 // Inline rename for a section header (built-in or custom); Enter commits.
-function startSectionRename(target, anchorEl) {
-  // Workspace-anchored rename (pencil/dblclick in the note list): edit inline
-  // in the list header where clicked — never in the slide menu.
-  if (anchorEl && anchorEl.isConnected && anchorEl.closest('#note-list')) {
-    const head = anchorEl.closest('.list-section-head');
-    if (head && !head.querySelector('.section-rename-input')) {
-      const section = state.customSections.find((entry) => entry.id === target.id);
-      const input = document.createElement('input');
-      input.className = 'section-rename-input';
-      input.value = (section || {}).name || '';
-      input.maxLength = 40;
-      input.setAttribute('aria-label', 'Section name');
-      anchorEl.hidden = true;
-      anchorEl.after(input);
-      input.focus();
-      input.select();
-      let done = false;
-      const finish = (commit) => {
-        if (done) return;
-        done = true;
-        input.remove();
-        anchorEl.hidden = false;
-        if (commit) renameSectionDisplay(target.id, input.value);
-        else renderNoteList();
-      };
-      input.onkeydown = (event) => {
-        if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-        if (event.key === 'Escape') { event.preventDefault(); finish(false); }
-        event.stopPropagation();
-      };
-      input.onclick = (event) => event.stopPropagation();
-      input.onblur = () => finish(true);
-      return;
-    }
-    if (head) {
-      const pending = head.querySelector('.section-rename-input');
-      if (pending) { pending.focus(); pending.select(); return; }
-    }
-  }
-  renderCustomSections();
-  let label = null;
-  if (target.kind === 'custom') {
-    const wrap = [...document.querySelectorAll('#custom-sections [data-custom-section]')]
-      .find((el) => el.dataset.customSection === target.id);
-    label = wrap ? wrap.querySelector('.section-label-text') : null;
-  }
-  if (!label) return;
-  // The label is hidden (not replaced): built-in headers are static markup
-  // that no render rebuilds, so removing it would lose the label forever.
-  // A second double-click while open just refocuses the pending input.
-  const pending = label.parentElement ? label.parentElement.querySelector('.section-rename-input') : null;
-  if (pending) { pending.focus(); pending.select(); return; }
-  const input = document.createElement('input');
-  input.className = 'section-rename-input';
-  input.value = (state.customSections.find((section) => section.id === target.id) || {}).name || '';
-  input.maxLength = 40;
-  input.setAttribute('aria-label', 'Section name');
-  label.hidden = true;
-  label.after(input);
-  input.focus();
-  input.select();
-  let done = false;
-  const finish = (commit) => {
-    if (done) return;
-    done = true;
-    input.remove();
-    label.hidden = false;
-    if (commit) renameSectionDisplay(target.id, input.value);
-    else { renderCustomSections(); renderNoteList(); }
-  };
-  input.onkeydown = (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
-    event.stopPropagation();
-  };
-  input.onclick = (event) => event.stopPropagation();
-  input.onblur = () => finish(true);
-}
+
 
 // Validate and apply a section display-name edit (all sections share the same implementation).
-function renameSectionDisplay(id, rawNewName) {
-  const newName = String(rawNewName == null ? '' : rawNewName).replace(/[\x00-\x1F<>"]/g, '').trim().replace(/\s+/g, ' ').slice(0, 40);
-  if (!newName) { renderCustomSections(); renderNoteList(); return false; }
-  const section = state.customSections.find((entry) => entry.id === id);
-  if (!section) { renderCustomSections(); renderNoteList(); return false; }
-  const current = section.name || '';
-  if (newName === current) { renderCustomSections(); renderNoteList(); return true; }
-  if (takenSectionNames(id).includes(newName.toLowerCase())) {
-    showToast('A section with that name already exists');
-    renderCustomSections(); renderNoteList();
-    return false;
-  }
-  section.name = newName;
-  persistCustomSections();
-  updateListHeading();
-  renderCustomSections();
-  renderNoteList();
-  showToast('Section renamed');
-  return true;
-}
+
 
 // Delete a custom section: the section is removed from the sidebar, stashed
 // in Bin, and every live note inside moves to Bin for 3 days (section tags
 // are kept, so restoring a note revives its section).
-function deleteCustomSection(id) {
-  const index = state.customSections.findIndex((entry) => entry.id === id);
-  if (index === -1) return;
-  const removed = state.customSections[index];
-  const name = removed.name;
-  const movedAt = Date.now();
-  let count = 0;
-  state.notes.forEach((note) => {
-    if (!note.deleted && customNoteFolder(note, id) !== null) {
-      note.deleted = true;
-      note.deletedAt = movedAt;
-      count += 1;
-    }
-  });
-  state.customSections.splice(index, 1);
-  if (count) {
-    state.deletedCustomSections = (state.deletedCustomSections || []).filter((entry) => entry.id !== id);
-    state.deletedCustomSections.push({
-      id, name, folders: [...(removed.folders || [])], deletedAt: movedAt,
-    });
-    persistDeletedCustomSections();
-  }
-  if (state.activeCustom && state.activeCustom.section === id) {
-    state.activeCustom = null;
-    state.activeFilter = 'all';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-    updateListHeading();
-  }
-  const current = state.currentId ? state.notes.find((item) => item.id === state.currentId) : null;
-  if (!current || current.deleted) {
-    state.activeView = 'notes';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    const live = state.notes.filter((item) => !item.deleted && !item.archived);
-    if (live.length) selectNote(live[0].id);
-    else clearEditor();
-  }
-  persistCustomSections();
-  persistNotes();
-  renderCustomSections();
-  renderNoteList();
-  showToast(count
-    ? `Section “${name}” moved to Bin — ${count} note${count === 1 ? '' : 's'} kept for 3 days`
-    : `Section “${name}” deleted`);
-}
+
 
 // De-duplicate a folder name inside one custom section.
 
 
 
 
-function addCustomFolder(sectionId) {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!section) return;
-  if (slideMenuCollapsed()) {
-    // Inline naming lives in the slide menu and is hidden while collapsed.
-    askInput({ eyebrow: 'New folder', title: 'Name the folder', desc: `In ${section.name}`, label: 'Folder name', password: false, placeholder: 'e.g. Projects', okText: 'Create' }).then((value) => {
-      if (value == null) return;
-      const leaf = String(value).trim().slice(0, 60);
-      if (!leaf) { showToast('Give the folder a name'); return; }
-      if (/[/\\]/.test(leaf)) { showToast('Use a plain name without slashes'); return; }
-      if (section.folders.some((entry) => entry.toLowerCase() === leaf.toLowerCase())) {
-        showToast('A folder with that name already exists');
-        return;
-      }
-      section.folders.push(leaf);
-      persistCustomSections();
-      state.activeView = 'notes';
-      state.activeCustom = null;
-      state.activeFilter = 'all';
-      document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-      document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-      clearSearch();
-      updateListHeading();
-      renderCustomSections();
-      renderNoteList();
-      showToast('Folder added');
-    });
-    return;
-  }
-  const name = uniqueCustomFolderName(sectionId, 'New folder');
-  section.folders.push(name);
-  persistCustomSections();
-  state.activeView = 'notes';
-  state.activeCustom = null;
-  state.activeFilter = 'all';
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  clearSearch();
-  updateListHeading();
-  renderCustomSections();
-  renderNoteList();
-  showToast('Folder added — name it');
-  startCustomFolderRename(sectionId, name);
-}
+
 
 // Add a folder to one section from its All-Notes header (folder-plus beside
 // the edit pencil). Keeps the current view. When the slide menu is collapsed
 // the inline rename row is hidden, so the name is asked in a popup instead.
-function addFolderToSection(sectionId) {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!section) return;
-  let slideCollapsed = false;
-  try { slideCollapsed = document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) {}
-  const commit = (leaf) => {
-    const clean = String(leaf == null ? '' : leaf).trim().slice(0, 60);
-    if (!clean) { showToast('Give the folder a name'); return; }
-    if (/[/\\]/.test(clean)) { showToast('Use a plain name without slashes'); return; }
-    if (section.folders.some((entry) => entry.toLowerCase() === clean.toLowerCase())) {
-      showToast('A folder with that name already exists');
-      return;
-    }
-    section.folders.push(clean);
-    persistCustomSections();
-    renderCustomSections();
-    renderNoteList();
-    showToast('Folder added');
-  };
-  if (slideCollapsed) {
-    askInput({ eyebrow: 'New folder', title: 'Name the folder', desc: `In ${section.name}`, label: 'Folder name', password: false, placeholder: 'e.g. Projects', okText: 'Create' }).then((value) => {
-      if (value != null) commit(value);
-    });
-    return;
-  }
-  const name = uniqueCustomFolderName(sectionId, 'New folder');
-  section.folders.push(name);
-  persistCustomSections();
-  renderCustomSections();
-  renderNoteList();
-  showToast('Folder added — name it');
-  startCustomFolderRename(sectionId, name);
-}
+
 
 // Inline rename for a custom-section folder row.
-function startCustomFolderRename(sectionId, folder) {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  renderCustomSections();
-  const item = findCustomItem(sectionId, folder);
-  if (!item) return;
-  const input = item.querySelector('.collection-rename-input');
-  const label = item.querySelector('.collection-label');
-  const actions = item.querySelector('.collection-actions');
-  if (!input) return;
-  input.hidden = false;
-  if (label) label.hidden = true;
-  if (actions) actions.hidden = true;
-  input.value = folderLeaf(folder);
-  input.focus();
-  input.select();
-  let done = false;
-  const finish = (commit) => {
-    if (done) return;
-    done = true;
-    // Leaf-only commit: the parent prefix is re-attached so the folder (and
-    // its children) cannot slip out of place.
-    if (commit) renameCustomFolder(sectionId, folder, joinLeafRename(folder, input.value));
-    else { renderCustomSections(); renderNoteList(); }
-  };
-  input.onkeydown = (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
-    event.stopPropagation();
-  };
-  input.onclick = (event) => event.stopPropagation();
-  input.onblur = () => finish(true);
-}
+
 
 // Validate and rename a custom folder on the section and matching notes.
-function renameCustomFolder(sectionId, oldName, rawNewName, opts) {
-  const newName = cleanFolderPath(rawNewName);
-  if (!newName) { renderCustomSections(); renderNoteList(); return false; }
-  if (newName === oldName) { renderCustomSections(); renderNoteList(); return true; }
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!section) return false;
-  if (section.folders.some((entry) => entry !== oldName && entry.toLowerCase() === newName.toLowerCase())) {
-    showToast('A folder with that name already exists');
-    renderCustomSections(); renderNoteList();
-    return false;
-  }
-  section.folders = repathList(section.folders, oldName, newName);
-  state.notes.forEach((note) => {
-    const current = customNoteFolder(note, sectionId);
-    if (current !== null && isFolderOrSub(current, oldName)) {
-      note.sections[sectionId] = current === oldName ? newName : newName + current.slice(oldName.length);
-    }
-  });
-  // Keep collapsed state following the rename (same value as Collections had).
-  if (state.collapsedFolders.size) {
-    const oldPrefix = `${oldName}${FOLDER_SEP}`;
-    const next = new Set();
-    state.collapsedFolders.forEach((entry) => {
-      next.add(entry === oldName ? newName : (entry.startsWith(oldPrefix) ? newName + entry.slice(oldName.length) : entry));
-    });
-    state.collapsedFolders = next;
-    persistCollapsedFolders();
-  }
-  if (state.activeCustom && state.activeCustom.section === sectionId && state.activeCustom.folder && isFolderOrSub(state.activeCustom.folder, oldName)) {
-    state.activeCustom.folder = state.activeCustom.folder === oldName ? newName : newName + state.activeCustom.folder.slice(oldName.length);
-    updateListHeading();
-  }
-  persistCustomSections();
-  persistNotes();
-  renderCustomSections();
-  renderNoteList();
-  if (!opts || !opts.silent) showToast(`Folder renamed to “${folderLeaf(newName)}”`);
-  return true;
-}
+
 
 
 
 // Delete a custom folder and its nested subfolders: the folder is removed
 // from the sidebar and every live note inside moves to Bin for 3 days (tags
 // are kept, so restoring a note revives its folder via the sidebar sync).
-function deleteCustomFolder(sectionId, folder) {
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!section) return;
-  const movedAt = Date.now();
-  let count = 0;
-  state.notes.forEach((note) => {
-    if (note.deleted || !note.sections || typeof note.sections !== 'object') return;
-    const current = customNoteFolder(note, sectionId);
-    if (current !== null && isFolderOrSub(current, folder)) {
-      note.deleted = true;
-      note.deletedAt = movedAt;
-      count += 1;
-    }
-  });
-  section.folders = section.folders.filter((entry) => !isFolderOrSub(entry, folder));
-  if (state.activeCustom && state.activeCustom.section === sectionId && state.activeCustom.folder && isFolderOrSub(state.activeCustom.folder, folder)) {
-    state.activeCustom = null;
-    state.activeFilter = 'all';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-    updateListHeading();
-  }
-  const current = state.currentId ? state.notes.find((item) => item.id === state.currentId) : null;
-  if (!current || current.deleted) {
-    state.activeView = 'notes';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    const live = state.notes.filter((item) => !item.deleted && !item.archived);
-    if (live.length) selectNote(live[0].id);
-    else clearEditor();
-  }
-  persistCustomSections();
-  persistNotes();
-  renderCustomSections();
-  renderNoteList();
-  showToast(count
-    ? `Folder “${folderLeaf(folder)}” moved to Bin — ${count} note${count === 1 ? '' : 's'} kept for 3 days`
-    : `Folder “${folderLeaf(folder)}” deleted`);
-}
+
 
 // Adopt custom folders found on live notes that the sidebar does not list
 // yet (imports, older data), normalizing case onto the sidebar spelling.
-function syncCustomSections() {
-  let notesDirty = false;
-  let sectionsDirty = false;
-  state.customSections.forEach((section) => {
-    state.notes.forEach((note) => {
-      if (note.deleted) return;
-      const folder = customNoteFolder(note, section.id);
-      if (!folder) return;
-      const canonical = section.folders.find((entry) => entry.toLowerCase() === folder.toLowerCase());
-      if (canonical) {
-        if (note.sections[section.id] !== canonical) { note.sections[section.id] = canonical; notesDirty = true; }
-      } else {
-        section.folders.push(folder);
-        sectionsDirty = true;
-      }
-    });
-  });
-  if (notesDirty) persistNotes();
-  if (sectionsDirty) persistCustomSections();
-}
 
-function bindCustomSectionsEvents() {
-  const container = document.getElementById('custom-sections');
-  if (container) {
-    container.addEventListener('click', (event) => {
-      if (event.target.closest('.collection-rename-input') || event.target.closest('.section-rename-input')) return;
-      const addBtn = event.target.closest('[data-custom-add]');
-      if (addBtn) {
-        event.preventDefault();
-        event.stopPropagation();
-        addCustomFolder(addBtn.dataset.customAdd);
-        return;
-      }
-      const delSectionBtn = event.target.closest('[data-custom-del-section]');
-      if (delSectionBtn) {
-        event.preventDefault();
-        event.stopPropagation();
-        openCustomSectionDeleteConfirm(delSectionBtn.dataset.customDelSection);
-        return;
-      }
-      const renameBtn = event.target.closest('[data-cf-rename]');
-      if (renameBtn) {
-        event.preventDefault();
-        event.stopPropagation();
-        startCustomFolderRename(renameBtn.dataset.cfSection, renameBtn.dataset.cfRename);
-        return;
-      }
-      const item = event.target.closest('.collection-item');
-      if (item && item.dataset.cfolder) {
-        event.preventDefault();
-        selectCustomFolder(item.dataset.csection, item.dataset.cfolder);
-      }
-    });
-    container.addEventListener('dblclick', (event) => {
-      if (event.target.closest('.collection-rename-input') || event.target.closest('.section-rename-input')
-        || event.target.closest('.collection-action') || event.target.closest('button')) return;
-      const label = event.target.closest('.section-label-text');
-      if (label) {
-        const wrap = label.closest('[data-custom-section]');
-        if (wrap) {
-          event.preventDefault();
-          startSectionRename({ kind: 'custom', id: wrap.dataset.customSection });
-        }
-        return;
-      }
-      const item = event.target.closest('.collection-item');
-      if (item && item.dataset.cfolder) {
-        event.preventDefault();
-        startCustomFolderRename(item.dataset.csection, item.dataset.cfolder);
-      }
-    });
-    container.addEventListener('contextmenu', (event) => {
-      const head = event.target.closest('.section-label');
-      const headWrap = event.target.closest('[data-custom-section]');
-      if (head && headWrap && !event.target.closest('input')) {
-        event.preventDefault();
-        event.stopPropagation();
-        closeFolderContextMenu();
-        openSectionContextMenu(headWrap.dataset.customSection, event.clientX, event.clientY);
-        return;
-      }
-      const item = event.target.closest('.collection-item');
-      if (!item || !item.dataset.cfolder || event.target.closest('.collection-rename-input')) return;
-      event.preventDefault();
-      event.stopPropagation();
-      closeSectionContextMenu();
-      openFolderContextMenu('custom', item.dataset.cfolder, event.clientX, event.clientY, item.dataset.csection);
-    });
-  }
-  const newSectionBtn = document.getElementById('new-section');
-  if (newSectionBtn) newSectionBtn.addEventListener('click', (event) => {
-    event.preventDefault();
-    addCustomSection();
-  });
-}
+
+
 
 
 
@@ -1211,27 +442,7 @@ function bindCustomSectionsEvents() {
 
 
 
-function handleSectionMenuAction(action, sectionId) {
-  if (!sectionId || typeof action !== 'string') return;
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!section) return;
-  if (action === 'add') {
-    addCustomFolder(sectionId);
-  } else if (action === 'icon') {
-    openSectionIconPicker(sectionId);
-  } else if (action === 'rename') {
-    if (slideMenuCollapsed()) {
-      askInput({ eyebrow: 'Rename section', title: section.name, desc: '', label: 'Section name', password: false, placeholder: section.name, okText: 'Rename' }).then((value) => {
-        if (value == null) return;
-        renameSectionDisplay(sectionId, value);
-      });
-    } else {
-      startSectionRename({ kind: 'custom', id: sectionId });
-    }
-  } else if (action === 'delete') {
-    openCustomSectionDeleteConfirm(sectionId);
-  }
-}
+
 
 // ---- Section icon picker -------------------------------------------------
 // Opens a grid of line icons; picking one stores it on the section (persisted
@@ -1241,34 +452,9 @@ function handleSectionMenuAction(action, sectionId) {
 
 
 
-function chooseSectionIcon(name) {
-  const section = state.customSections.find((entry) => entry.id === state.sectionIconTarget);
-  if (!section || !SECTION_ICONS.includes(name)) { closeSectionIconPicker(); return; }
-  section.icon = name;
-  closeSectionIconPicker();
-  persistCustomSections();
-  renderCustomSections();
-  renderNoteList();
-  showToast(`Icon set to “${name}”`);
-}
 
-function bindSectionContextMenu() {
-  const menu = document.getElementById('section-context-menu');
-  if (menu) menu.addEventListener('click', (event) => {
-    const item = event.target.closest('[data-section-action]');
-    if (!item) return;
-    const target = state.sectionMenuTarget;
-    closeSectionContextMenu();
-    handleSectionMenuAction(item.dataset.sectionAction, target);
-  });
-  document.addEventListener('click', (event) => {
-    if (state.sectionMenuTarget && !event.target.closest('#section-context-menu')) closeSectionContextMenu();
-  });
-  document.addEventListener('contextmenu', (event) => {
-    if (state.sectionMenuTarget && !event.target.closest('#section-context-menu')) closeSectionContextMenu();
-  });
-  window.addEventListener('resize', closeSectionContextMenu);
-}
+
+
 
 // ---- Folder context menu (right-click): Open / Rename / New subfolder /
 // Delete. One shared menu for sidebar rows and All-Notes folder headers;
@@ -1280,28 +466,7 @@ function bindSectionContextMenu() {
 
 
 
-function handleFolderMenuAction(action, target) {
-  const resolved = target || state.folderMenuTarget;
-  if (!resolved || typeof action !== 'string') return;
-  const { path, section: sectionId } = resolved;
-  if (action === 'open') {
-    selectCustomFolder(sectionId, path);
-  } else if (action === 'new-note') {
-    // File the new note straight into the right-clicked folder.
-    state.pendingSectionFolder = { ns: 'custom', section: sectionId, folder: path };
-    state.pendingTemplate = null;
-    openTemplatePicker();
-  } else if (action === 'rename') {
-    startCustomFolderRename(sectionId, path);
-  } else if (action === 'subfolder') {
-    if (folderDepth(path) >= MAX_SUBFOLDER_PARENT_DEPTH) return; // depth limit
-    createSubfolder('custom', path, sectionId);
-  } else if (action === 'restore') {
-    return;
-  } else if (action === 'delete') {
-    openCustomFolderDeleteConfirm(sectionId, path);
-  }
-}
+
 
 // Insert a folder path directly after its parent's block (the parent plus any
 // existing descendants) so a new subfolder renders under its parent instead
@@ -1310,98 +475,9 @@ function handleFolderMenuAction(action, target) {
 
 // Create a nested folder under a parent path and jump straight into naming
 // it. Without a parent, a top-level folder is created.
-function createSubfolder(ns, parentPath, sectionId) {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  // Depth limit: top-level -> sub -> sub-sub, but no deeper.
-  if (folderDepth(parentPath) >= MAX_SUBFOLDER_PARENT_DEPTH) {
-    showToast('Subfolders can only nest two levels deep');
-    return;
-  }
-  let slideCollapsed = false;
-  try { slideCollapsed = document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) {}
-  if (slideCollapsed) {
-    // The inline rename row lives in the slide menu and is hidden while it
-    // is collapsed: ask for the name in a popup instead.
-    askInput({ eyebrow: 'New subfolder', title: 'Name the subfolder', desc: `Under ${parentPath}`, label: 'Subfolder name', password: false, placeholder: 'e.g. Projects', okText: 'Create' }).then((value) => {
-      if (value == null) return;
-      const leaf = String(value).trim().slice(0, 60);
-      if (!leaf) { showToast('Give the subfolder a name'); return; }
-      if (/[/\\]/.test(leaf)) { showToast('Use a plain name without slashes'); return; }
-      const section = state.customSections.find((entry) => entry.id === sectionId);
-      if (!section) return;
-      const name = `${parentPath}${FOLDER_SEP}${leaf}`;
-      if (section.folders.some((entry) => entry.toLowerCase() === name.toLowerCase())) {
-        showToast('A folder with that name already exists');
-        return;
-      }
-      insertFolderAfterParent(section.folders, parentPath, name);
-      persistCustomSections();
-      renderCustomSections();
-      renderNoteList();
-      showToast('Subfolder created');
-    });
-    return;
-  }
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!section) return;
-  const name = uniqueCustomFolderName(sectionId, `${parentPath}${FOLDER_SEP}New folder`);
-  insertFolderAfterParent(section.folders, parentPath, name);
-  persistCustomSections();
-  renderCustomSections();
-  renderNoteList();
-  showToast('Folder added — name it');
-  startCustomFolderRename(sectionId, name);
-  return;
-}
 
-function bindFolderContextMenu() {
-  const menu = getFolderContextMenu();
-  if (!menu) return;
-  if (noteList) noteList.addEventListener('contextmenu', (event) => {
-    // The Vault header is not a workspace folder: no folder menu there.
-    if (state.activeView === 'vault') return;
-    const row = event.target.closest('.tree-folder-row');
-    if (!row || event.target.closest('.tree-rename-input')) return;
-    const wrap = row.closest('[data-folder-wrap]');
-    if (!wrap) return;
-    event.preventDefault();
-    event.stopPropagation();
-    // Resolve the row's namespace so "New subfolder" becomes a child of the
-    // right-clicked folder: the active custom filter wins, otherwise
-    // the enclosing list-section shell (home view shows all namespaces).
-    const shell = wrap.closest('[data-list-section]');
-    const shellKind = shell ? shell.dataset.listSection : null;
-    if (state.activeCustom) {
-      openFolderContextMenu('custom', wrap.dataset.folderWrap, event.clientX, event.clientY, state.activeCustom.section);
-      return;
-    }
-    if (shellKind === 'custom') {
-      const secBtn = shell.querySelector('[data-section-id]');
-      const secId = secBtn ? secBtn.dataset.sectionId : null;
-      if (secId) {
-        openFolderContextMenu('custom', wrap.dataset.folderWrap, event.clientX, event.clientY, secId);
-        return;
-      }
-    }
-    // Unknown shell: no folder menu.
-    return;
-  });
-  menu.addEventListener('click', (event) => {
-    const item = event.target.closest('[data-folder-action]');
-    if (!item) return;
-    const action = item.dataset.folderAction;
-    const target = state.folderMenuTarget;
-    closeFolderContextMenu();
-    handleFolderMenuAction(action, target);
-  });
-  document.addEventListener('click', (event) => {
-    if (state.folderMenuTarget && !event.target.closest('#folder-context-menu')) closeFolderContextMenu();
-  });
-  document.addEventListener('contextmenu', (event) => {
-    if (state.folderMenuTarget && !event.target.closest('#folder-context-menu')) closeFolderContextMenu();
-  });
-  window.addEventListener('resize', closeFolderContextMenu);
-}
+
+
 
 // ---- Folder drag-and-drop: reorder siblings, or drop onto a folder to nest
 // inside it (top/bottom quarter = before/after, middle = nest). Unified custom
@@ -1409,156 +485,20 @@ function bindFolderContextMenu() {
 // reuses the rename functions so notes, collapse state and selection follow.
 
 
-function persistFolderList(ns) {
-  persistCustomSections();
-}
 
-function renameFolderPath(ns, sectionId, oldPath, newPath, opts) {
-  return renameCustomFolder(sectionId, oldPath, newPath, opts);
-}
+
+
 
 // Move a folder block (path + descendants) within its list.
-function reorderFolderBlock(ns, sectionId, movedRoot, anchorPath, after) {
-  const list = folderListOf(ns, sectionId);
-  if (!list) return false;
-  const block = list.filter((entry) => isFolderOrSub(entry, movedRoot));
-  if (!block.length) return false;
-  const rest = list.filter((entry) => !isFolderOrSub(entry, movedRoot));
-  let index = rest.indexOf(anchorPath);
-  if (index === -1) index = rest.length;
-  else if (after) index += 1;
-  const reordered = [...rest.slice(0, index), ...block, ...rest.slice(index)];
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!section) return false;
-  section.folders = reordered;
-  persistFolderList(ns);
-  return true;
-}
+
 
 // Reparent a folder under a new parent (null = top level). Returns the new
 // full path, or null when blocked. Shows toasts itself.
-function reparentFolder(ns, sectionId, oldPath, newParent) {
-  if (newParent && (newParent === oldPath || isFolderOrSub(newParent, oldPath))) {
-    showToast("Can't move a folder into itself");
-    return null;
-  }
-  const list = folderListOf(ns, sectionId);
-  if (!list || !list.includes(oldPath)) return null;
-  if (newParent && !list.includes(newParent)) return null;
-  const leaf = folderLeaf(oldPath);
-  let newPath = newParent ? `${newParent}${FOLDER_SEP}${leaf}` : leaf;
-  if (newPath !== oldPath) {
-    const others = list.filter((entry) => !isFolderOrSub(entry, oldPath)).map((entry) => entry.toLowerCase());
-    if (others.includes(newPath.toLowerCase())) {
-      let counter = 2;
-      const stem = (suffix) => (newParent ? `${newParent}${FOLDER_SEP}${leaf} ${suffix}` : `${leaf} ${suffix}`);
-      while (others.includes(stem(counter).toLowerCase())) counter += 1;
-      newPath = stem(counter);
-    }
-    const ok = renameFolderPath(ns, sectionId, oldPath, newPath, { silent: true });
-    if (!ok) return null;
-  }
-  return newPath;
-}
 
 
 
-function bindFolderDragDrop() {
-  const sidebar = document.getElementById('sidebar');
-  if (!sidebar) return;
-  const clearIndicators = () => {
-    sidebar.querySelectorAll('.drop-before,.drop-after,.drop-target').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-target'));
-  };
-  sidebar.addEventListener('dragstart', (event) => {
-    const row = event.target.closest('.collection-item');
-    if (!row) return;
-    const target = sidebarFolderTarget(event);
-    if (!target || !e2ee.masterKey) { event.preventDefault(); return; }
-    event.dataTransfer.setData('application/x-notely-folder', JSON.stringify(target));
-    event.dataTransfer.effectAllowed = 'move';
-    row.classList.add('dragging');
-    closeFolderContextMenu();
-    closeNoteContextMenu();
-  });
-  sidebar.addEventListener('dragend', () => {
-    sidebar.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
-    clearIndicators();
-  });
-  sidebar.addEventListener('dragover', (event) => {
-    const row = event.target.closest('.collection-item');
-    if (!row || !e2ee.masterKey) return;
-    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes('application/x-notely-folder')) return;
-    const rect = row.getBoundingClientRect();
-    const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    clearIndicators();
-    if (ratio < 0.25) row.classList.add('drop-before');
-    else if (ratio > 0.75) row.classList.add('drop-after');
-    else row.classList.add('drop-target');
-  });
-  sidebar.addEventListener('dragleave', (event) => {
-    const row = event.target.closest('.collection-item');
-    if (row && !row.contains(event.relatedTarget)) {
-      row.classList.remove('drop-before', 'drop-after', 'drop-target');
-    }
-  });
-  sidebar.addEventListener('drop', (event) => {
-    const row = event.target.closest('.collection-item');
-    if (!row || !e2ee.masterKey) return;
-    let dragged = null;
-    try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notely-folder')); } catch (error) { dragged = null; }
-    if (!dragged || !dragged.path) return;
-    const target = sidebarFolderTarget(event);
-    if (!target || target.ns !== dragged.ns || target.section !== dragged.section) return;
-    if (target.path === dragged.path) return;
-    if (isFolderOrSub(target.path, dragged.path)) {
-      event.preventDefault();
-      showToast("Can't move a folder into itself");
-      return;
-    }
-    event.preventDefault();
-    const rect = row.getBoundingClientRect();
-    const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
-    const list = folderListOf(dragged.ns, dragged.section);
-    if (!list) return;
-    if (ratio >= 0.25 && ratio <= 0.75) {
-      // Nest inside the target folder.
-      const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, target.path);
-      if (!newPath) return;
-      const movedHome = newPath !== dragged.path;
-      // Group visually right after the new parent's subtree.
-      const moved = folderListOf(dragged.ns, dragged.section).filter((entry) => isFolderOrSub(entry, newPath));
-      const rest = folderListOf(dragged.ns, dragged.section).filter((entry) => !isFolderOrSub(entry, newPath));
-      let index = rest.length;
-      for (let i = rest.length - 1; i >= 0; i -= 1) {
-        if (isFolderOrSub(rest[i], target.path)) { index = i + 1; break; }
-      }
-      const reordered = [...rest.slice(0, index), ...moved, ...rest.slice(index)];
-      const section = state.customSections.find((entry) => entry.id === dragged.section);
-      if (section) section.folders = reordered;
-      persistFolderList(dragged.ns);
-      renderCustomSections();
-      renderNoteList();
-      if (movedHome) showToast(`Moved to “${folderLeaf(target.path)}”`);
-    } else {
-      // Reorder among siblings (reparenting across levels when needed).
-      const newParent = folderParent(target.path);
-      let movedRoot = dragged.path;
-      if ((newParent || null) !== (folderParent(dragged.path) || null)) {
-        const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, newParent);
-        if (!newPath) return;
-        movedRoot = newPath;
-      }
-      // Anchor may have been renamed if it sat inside the moved subtree —
-      // guarded above, so it is stable here.
-      if (reorderFolderBlock(dragged.ns, dragged.section, movedRoot, target.path, ratio > 0.75)) {
-        renderCustomSections();
-        renderNoteList();
-      }
-    }
-  });
-}
+
+
 
 
 
@@ -1589,7 +529,7 @@ setInterval(() => {
 
 
 
-const IDLE_PREVIEW_MS = 10000;
+
 
 // ---- Rendering helpers: HTML escaping + allowlisted Markdown (XSS boundary) ----
 // escapeHtml() and sanitizeUrl() now live in js/core/strings.js (imported above).
@@ -1625,16 +565,7 @@ const IDLE_PREVIEW_MS = 10000;
 
 
 // Sweep every live note through the invariant (boot, import, restore, sync).
-function enforceFilingInvariant() {
-  let changed = false;
-  state.notes.forEach((note) => { if (ensureNoteFiled(note)) changed = true; });
-  if (changed) {
-    persistNotes();
-    renderCustomSections();
-    renderNoteList();
-  }
-  return changed;
-}
+
 
 // ---- Nested folders: a folder path is segments joined with FOLDER_SEP
 // ("Work / Projects"). All folder namespaces share
@@ -1686,85 +617,10 @@ state.openTabs = []; // [{ id, vault }] in opening order, capped
 
 // Close one tab; when it was active, fall back to the nearest surviving
 // neighbor (next, then previous, then outward) so selection stays put.
-function closeTab(id, isVault, isShared) {
-  const wasVault = Boolean(isVault);
-  const wasShared = Boolean(isShared);
-  const wasActive = wasShared
-    ? (state.collab.noteId != null && String(state.collab.noteId) === String(id))
-    : (!wasVault && id === state.currentId) || (wasVault && id === state.currentVaultId);
-  const closedAt = state.openTabs.findIndex((tab) => String(tab.id) === String(id) && tab.vault === wasVault && Boolean(tab.shared) === wasShared);
-  state.openTabs = state.openTabs.filter((tab) => !(String(tab.id) === String(id) && tab.vault === wasVault && Boolean(tab.shared) === wasShared));
-  if (wasActive) {
-    const order = [];
-    const at = closedAt === -1 ? state.openTabs.length : closedAt;
-    if (at < state.openTabs.length) order.push(at);
-    for (let d = 1; d < state.openTabs.length; d += 1) {
-      if (at - d >= 0) order.push(at - d);
-      if (at + d < state.openTabs.length) order.push(at + d);
-    }
-    for (const i of order) {
-      if (findTabbedNote(state.openTabs[i].id, state.openTabs[i].vault, state.openTabs[i].shared)) {
-        if (state.openTabs[i].shared) openCollabNote(state.openTabs[i].id);
-        else if (state.openTabs[i].vault) selectVaultNote(state.openTabs[i].id);
-        else selectNote(state.openTabs[i].id);
-        renderTabs();
-        return;
-      }
-    }
-    if (state.collab.noteId != null) closeCollabNote();
-    state.currentId = null;
-    state.currentVaultId = null;
-    clearEditor();
-  }
-  renderTabs();
-}
+
 // Paint the strip; drop tabs whose notes are gone (purged, vault locked) or
 // binned — a deleted note leaves the tabs at once.
-function renderTabs() {
-  const bar = document.getElementById('tab-bar');
-  if (!bar) return;
-  state.openTabs = state.openTabs.filter((tab) => {
-    const note = findTabbedNote(tab.id, tab.vault, tab.shared);
-    return note && !note.deleted;
-  });
-  // No tabs, no collapse toggle.
-  try {
-    const collapseBtn = document.getElementById('toggle-workspace');
-    if (collapseBtn) collapseBtn.hidden = state.openTabs.length === 0;
-  } catch (error) {}
-  const activeAlive = (state.currentId && state.notes.some((entry) => entry.id === state.currentId))
-    || (state.currentVaultId && state.vault.unlocked && state.vault.notes.some((entry) => entry.id === state.currentVaultId))
-    || (state.collab.noteId != null && state.openTabs.some((tab) => tab.shared && String(tab.id) === String(state.collab.noteId)));
-  if ((state.currentId || state.currentVaultId || state.collab.noteId != null) && !activeAlive) {
-    const fallback = [...state.openTabs].reverse().find((tab) => findTabbedNote(tab.id, tab.vault, tab.shared));
-    if (fallback) {
-      if (fallback.shared) openCollabNote(fallback.id);
-      else if (fallback.vault) selectVaultNote(fallback.id);
-      else selectNote(fallback.id);
-      return; // selecting re-renders the strip
-    }
-    state.currentId = null;
-    state.currentVaultId = null;
-    if (state.collab.noteId != null) closeCollabNote();
-    clearEditor();
-    return; // clearing re-renders the strip
-  }
-  bar.innerHTML = `<button type="button" class="tab-home" data-tab-home title="All Notes" aria-label="All Notes">${icon('inbox')}</button>`
-    + state.openTabs.map((tab) => {
-      const note = findTabbedNote(tab.id, tab.vault, tab.shared);
-      const title = (note && note.title) || 'Untitled note';
-      const active = tab.shared
-        ? (state.collab.noteId != null && String(tab.id) === String(state.collab.noteId))
-        : ((!tab.vault && tab.id === state.currentId) || (tab.vault && tab.id === state.currentVaultId));
-      return `<button type="button" class="tab-item${active ? ' active' : ''}" draggable="true" data-tab-id="${escapeHtml(String(tab.id))}" data-tab-vault="${tab.vault ? '1' : ''}" data-tab-shared="${tab.shared ? '1' : ''}" title="${escapeHtml(title)}">`
-        + `<span class="tab-glyph">${icon(tab.shared ? 'share' : noteGlyphFor(note))}</span>`
-        + `<span class="tab-label">${escapeHtml(title)}</span>`
-        + `<span class="tab-close" data-tab-close="${escapeHtml(String(tab.id))}" data-tab-close-vault="${tab.vault ? '1' : ''}" data-tab-close-shared="${tab.shared ? '1' : ''}" role="button" aria-label="Close ${escapeHtml(title)}">×</span>`
-        + `</button>`;
-    }).join('')
-    + `<button type="button" class="tab-overflow" data-tab-overflow title="More tabs" aria-label="More tabs" hidden><span data-overflow-count></span>${icon('chevron-down')}</button>`;
-  fitTabStrip(bar);
-}
+
 // Overflowed tabs (id/vault/title) from the last fit; powers the dropdown.
 
 // Hide whatever does not fit; the active tab always stays, earliest others
@@ -1903,21 +759,7 @@ if (stripBackEl) stripBackEl.addEventListener('click', (event) => {
 
 // Breadcrumb home: reset to All notes with nothing open and an enlarged
 // workspace (editor hidden). Selecting any note exits the enlarged mode.
-function goAllNotes() {
-  clearSectionSelection();
-  state.activeView = 'notes';
-  state.activeFilter = 'all';
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  clearSearch();
-  updateListHeading();
-  state.currentId = null;
-  state.currentVaultId = null;
-  clearEditor();
-  document.querySelector('.app-shell').classList.add('workspace-focus');
-  renderCustomSections();
-  renderNoteList();
-}
+
 
 document.getElementById('breadcrumbs').addEventListener('click', (event) => {
   const crumb = event.target.closest('[data-crumb]');
@@ -1975,28 +817,7 @@ document.getElementById('breadcrumbs').addEventListener('click', (event) => {
 
 
 // Apply the formatter to the open note (button is visible for json/yaml only).
-function applyBeautify() {
-  const note = activeEditorNote();
-  if (!note || note.deleted || note.archived) return;
-  if (note.ext !== 'json' && note.ext !== 'yaml') return;
-  const source = typeof markdownInput.value === 'string' && markdownInput.value ? markdownInput.value : (note.body || '');
-  let formatted;
-  try {
-    formatted = note.ext === 'json' ? beautifyJsonText(source) : beautifyYamlText(source);
-  } catch (error) {
-    showToast(note.ext === 'json' ? 'Invalid JSON — fix the syntax first' : 'Could not format this YAML');
-    return;
-  }
-  if (formatted === source) { showToast('Already tidy'); return; }
-  note.body = formatted;
-  markdownInput.value = formatted;
-  renderPreview(note);
-  updateMeta(note);
-  setSaveLabel('Saving...', 'green');
-  clearTimeout(state.saveTimer);
-  state.saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 200);
-  showToast(`${note.ext === 'json' ? 'JSON' : 'YAML'} beautified`);
-}
+
 
 // Swap the writing area between Markdown source and rendered preview; non-Markdown notes never preview.
 
@@ -2028,77 +849,21 @@ function applyBeautify() {
 
 
 // Edit the recipe lists for whichever source is open (local note or shared doc).
-function recipeMutate(mutator) {
-  if (state.collab.noteId) {
-    if (!state.collab.recipe) return;
-    const data = recipeDataForActive(null);
-    mutator(data);
-    state.collab.recipe.set('ingredients', JSON.stringify(sanitizeIngredients(data.ingredients)));
-    state.collab.recipe.set('steps', JSON.stringify(sanitizeSteps(data.steps)));
-    return;
-  }
-  const note = currentNote();
-  if (!note || note.template !== 'recipe') return;
-  const data = { ingredients: sanitizeIngredients(note.ingredients), steps: sanitizeSteps(note.steps) };
-  mutator(data);
-  note.ingredients = sanitizeIngredients(data.ingredients);
-  note.steps = sanitizeSteps(data.steps);
-  note.date = 'Now';
-  note.updatedAt = Date.now();
-  persistNotes();
-}
 
 
-function requestCoverUpload() {
-  exitCoverRepos(true);
-  const note = currentNote();
-  if (state.activeView === 'vault') return;
-  if (!note) { showToast('Open a note first'); return; }
-  if (!isUnlocked()) { showToast('Log in to edit notes'); return; }
-  if (note.deleted) { showToast('Restore this note to edit it'); return; }
-  if (note.archived) { showToast('Unarchive this note to edit it'); return; }
-  const input = document.getElementById('cover-input');
-  if (input) { input.value = ''; input.click(); }
-}
+
+
 
 
 
 // Downscale to a JPEG banner (max 1200px side, quality 0.82).
 
 
-async function handleCoverFile(file) {
-  const note = currentNote();
-  if (!note || state.activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return;
-  if (!file) return;
-  if (!isImageFile(file)) { showToast('Use a PNG, JPEG, WebP, GIF, AVIF or BMP image'); return; }
-  if (file.size > 5 * 1024 * 1024) { showToast('Image too large (5 MB max)'); return; }
-  const wasOptimized = file.size > 300000;
-  showToast('Loading picture…');
-  try {
-    const raw = await readFileAsDataUrl(file);
-    const dataUrl = wasOptimized ? await downscaleCover(raw) : raw;
-    const clean = cleanCoverSrc(dataUrl) || (!wasOptimized ? await downscaleCover(raw).then(cleanCoverSrc) : null);
-    if (!clean) { showToast('Could not use that image — try a smaller file'); return; }
-    if (!currentNote() || currentNote().id !== note.id) return; // moved on mid-upload
-    note.cover = clean;
-    if (typeof note.coverPos !== 'number' || !Number.isFinite(note.coverPos)) note.coverPos = 50;
-    note.date = 'Now';
-    renderCover(note);
-    persistNotes();
-    showToast(wasOptimized ? 'Cover added (optimized) — Reposition to adjust' : 'Cover added — Reposition to adjust');
-  } catch (error) {
-    showToast('Could not read that image');
-  }
-}
+
 
 // Shared recipe notes keep their meal photo in the collaborative doc
 // (Y.Map 'assets'), so every member sees the same picture.
-function requestCollabCoverUpload() {
-  exitCoverRepos(true);
-  if (!state.collab.noteId || !isUnlocked()) return;
-  const input = document.getElementById('cover-input');
-  if (input) { input.value = ''; input.click(); }
-}
+
 
 
 
@@ -2112,24 +877,6 @@ function requestCollabCoverUpload() {
 
 
 // Leave reposition mode; save persists the staged position, cancel restores it.
-function exitCoverRepos(save) {
-  if (!state.coverRepositioning) return;
-  state.coverRepositioning = false;
-  state.coverDragging = false;
-  const wrap = document.getElementById('cover-wrap');
-  if (wrap) wrap.classList.remove('dragging');
-  const note = currentNote();
-  if (save && note && note.cover) {
-    note.date = 'Now';
-    if (state.currentId === note.id) renderCover(note);
-    persistNotes();
-    showToast('Cover position locked');
-  } else if (!save && note && note.cover) {
-    note.coverPos = state.coverReposStart;
-    if (state.currentId === note.id) renderCover(note);
-  }
-  setCoverReposUI();
-}
 
 
 
@@ -2137,104 +884,17 @@ function exitCoverRepos(save) {
 
 
 
-function removeCover() {
-  exitCoverRepos(false);
-  const note = currentNote();
-  if (!note || state.activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return;
-  if (!note.cover) return;
-  note.cover = null;
-  note.coverPos = null;
-  note.date = 'Now';
-  renderCover(note);
-  persistNotes();
-  showToast('Cover removed');
-}
+
+
 
 // After 10s idle, auto-switch a non-empty Markdown note to preview.
-function resetIdleTimer() {
-  clearTimeout(state.idleTimer);
-  state.idleTimer = setTimeout(() => {
-    const note = currentNote();
-    if (note && note.ext === 'md' && state.writeMode === 'edit' && markdownInput.value.trim()) {
-      setWriteMode('preview');
-    }
-  }, IDLE_PREVIEW_MS);
-}
+
 
 // Switch write/preview mode and refocus the editor when returning to edit.
-function setWriteMode(mode, { focus = false } = {}) {
-  state.writeMode = mode;
-  clearTimeout(state.idleTimer);
-  renderPreview(activeEditorNote());
-  try { renderCollabPresence(); } catch (error) {}
-  if (mode === 'edit') {
-    resetIdleTimer();
-    if (focus) {
-      // Focus without jumping the caret to the end: setSelectionRange(end)
-      // used to scroll the whole editor to the bottom on every Write click.
-      try { markdownInput.focus({ preventScroll: true }); }
-      catch (error) { markdownInput.focus(); }
-    }
-  }
-}
+
 
 // Inline rename for All-Notes folder headers; refused in Bin.
-function startTreeRename(folder) {
-  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
-  if (state.activeView === 'bin') return;
-  const wrap = findTreeWrap(folder);
-  if (!wrap) return;
-  const row = wrap.querySelector('.tree-folder-row');
-  const folderBtn = wrap.querySelector('[data-folder]');
-  const renameBtn = wrap.querySelector('[data-folder-rename]');
-  let input = wrap.querySelector('.tree-rename-input');
-  if (!input) {
-    input = document.createElement('input');
-    input.className = 'tree-rename-input';
-    input.maxLength = 60;
-    input.setAttribute('aria-label', 'Folder name');
-    row.appendChild(input);
-  }
-  input.value = folderLeaf(folder);
-  input.hidden = false;
-  if (folderBtn) folderBtn.hidden = true;
-  if (renameBtn) renameBtn.hidden = true;
-  input.focus();
-  input.select();
-  let done = false;
-  const finish = (commit) => {
-    if (done) return;
-    done = true;
-    if (commit) {
-      // Namespace follows the row; fall back to whichever custom section owns the folder.
-      let sectionId = null;
-      if (state.activeCustom) sectionId = state.activeCustom.section;
-      else {
-        const shell = wrap.closest('[data-list-section]');
-        const kind = shell ? shell.dataset.listSection : null;
-        if (kind === 'custom') {
-          const secBtn = shell.querySelector('[data-section-id]');
-          if (secBtn && secBtn.dataset.sectionId) sectionId = secBtn.dataset.sectionId;
-        }
-      }
-      if (!sectionId) {
-        const owner = state.customSections.find((section) => section.folders.some((entry) => entry === folder || isFolderOrSub(entry, folder) || isFolderOrSub(folder, entry)));
-        if (owner) sectionId = owner.id;
-      }
-      if (!sectionId) { renderNoteList(); return; }
-      renameFolderPath('custom', sectionId, folder, joinLeafRename(folder, input.value));
-    }
-    else renderNoteList();
-  };
-  input.onkeydown = (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
-    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
-    event.stopPropagation();
-  };
-  input.onclick = (event) => event.stopPropagation();
-  input.ondblclick = (event) => event.stopPropagation();
-  input.onblur = () => finish(true);
-}
+
 
 // Swap New/Import vs Empty-Bin buttons per view, then refresh the lock state.
 
@@ -2242,57 +902,9 @@ function startTreeRename(folder) {
 // Drag-and-drop note sorting: drag a row onto another note to reorder (top /
 // bottom half picks the side); dropping onto a folder header moves the note
 // into that folder. Disabled in Bin and Vault, where order is meaningless.
-function dropNoteOnNote(draggedId, targetId, after) {
-  if (!draggedId || !targetId || draggedId === targetId) return;
-  const from = state.notes.findIndex((note) => note.id === draggedId);
-  const target = state.notes.find((note) => note.id === targetId);
-  if (from === -1 || !target) return;
-  const [moved] = state.notes.splice(from, 1);
-  // Adopt the target's folder when inside a specific folder view (same section only).
-  if (state.activeCustom && state.activeCustom.folder) {
-    const folder = customNoteFolder(target, state.activeCustom.section);
-    if (folder) {
-      if (!moved.sections || typeof moved.sections !== 'object') moved.sections = {};
-      moved.sections[state.activeCustom.section] = folder;
-    }
-  }
-  let to = state.notes.findIndex((note) => note.id === targetId);
-  if (after) to += 1;
-  state.notes.splice(to, 0, moved);
-  persistNotes();
-  renderNoteList();
-}
 
-function dropNoteOnFolder(draggedId, folder, sectionId) {
-  const index = state.notes.findIndex((note) => note.id === draggedId);
-  if (index === -1 || typeof folder !== 'string') return;
-  const [moved] = state.notes.splice(index, 1);
-  // Resolve target section: explicit sectionId wins, else active custom section.
-  const targetSection = sectionId || (state.activeCustom ? state.activeCustom.section : null);
-  if (!moved.sections || typeof moved.sections !== 'object') moved.sections = {};
-  if (targetSection) {
-    moved.sections[targetSection] = folder;
-  } else {
-    // No section context (should not happen in unified UI): keep filing unchanged.
-    state.notes.splice(index, 0, moved);
-    persistNotes();
-    renderNoteList();
-    return;
-  }
-  // Append after the folder's last note in global order (empty folders: end).
-  const keyOf = (note) => {
-    if (targetSection) return customNoteFolder(note, targetSection);
-    if (state.activeCustom) return customNoteFolder(note, state.activeCustom.section);
-    return firstFilingOf(note);
-  };
-  let to = state.notes.length;
-  for (let i = state.notes.length - 1; i >= 0; i -= 1) {
-    if (keyOf(state.notes[i]) === folder) { to = i + 1; break; }
-  }
-  state.notes.splice(to, 0, moved);
-  persistNotes();
-  renderNoteList();
-}
+
+
 
 // True when a drag event carries a Notely folder (slide-menu/workspace shared
 // payload), as opposed to a note drag (text/plain) or a file hover.
@@ -2303,411 +915,10 @@ function dropNoteOnFolder(draggedId, folder, sectionId) {
 // then the folder owner).
 
 
-function enableNoteDragDrop() {
-  const canDrag = state.activeView !== 'bin' && state.activeView !== 'vault';
-  const clearIndicators = () => {
-    noteList.querySelectorAll('.drop-before,.drop-after,.drop-target').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-target'));
-  };
-  noteList.querySelectorAll('[data-note-id]').forEach((row) => {
-    const id = row.dataset.noteId;
-    row.draggable = canDrag;
-    if (!canDrag) return;
-    row.addEventListener('dragstart', (event) => {
-      event.dataTransfer.setData('text/plain', id);
-      event.dataTransfer.effectAllowed = 'move';
-      row.classList.add('dragging');
-      closeNoteContextMenu();
-      closeFolderContextMenu();
-    });
-    row.addEventListener('dragend', () => {
-      row.classList.remove('dragging');
-      clearIndicators();
-    });
-    row.addEventListener('dragover', (event) => {
-      if (!event.dataTransfer || isFolderDrag(event)) return;
-      event.preventDefault();
-      event.dataTransfer.dropEffect = 'move';
-      const rect = row.getBoundingClientRect();
-      const after = (event.clientY - rect.top) > rect.height / 2;
-      row.classList.toggle('drop-after', after);
-      row.classList.toggle('drop-before', !after);
-    });
-    row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after'));
-    row.addEventListener('drop', (event) => {
-      if (isFolderDrag(event)) return;
-      event.preventDefault();
-      const rect = row.getBoundingClientRect();
-      dropNoteOnNote(event.dataTransfer.getData('text/plain'), id, (event.clientY - rect.top) > rect.height / 2);
-    });
-  });
-  if (!canDrag) return;
-  noteList.querySelectorAll('[data-folder]').forEach((header) => {
-    header.addEventListener('dragover', (event) => {
-      if (isFolderDrag(event)) return;
-      event.preventDefault();
-      event.dataTransfer.dropEffect = 'move';
-      header.classList.add('drop-target');
-    });
-    header.addEventListener('dragleave', () => header.classList.remove('drop-target'));
-    header.addEventListener('drop', (event) => {
-      if (isFolderDrag(event)) return;
-      event.preventDefault();
-      const wrap = header.closest('[data-folder-wrap]');
-      const shell = header.closest('[data-list-section]');
-      const shellKind = shell ? shell.dataset.listSection : null;
-      let sectionId = state.activeCustom ? state.activeCustom.section : null;
-      if (shellKind === 'custom') {
-        const secBtn = shell.querySelector('[data-section-id]');
-        if (secBtn && secBtn.dataset.sectionId) sectionId = secBtn.dataset.sectionId;
-      }
-      // Resolve section from wrap when possible (flat view has no shell context).
-      if (!sectionId && wrap) {
-        const folder = wrap.dataset.folderWrap;
-        const owner = state.customSections.find((section) => section.folders.some((entry) => entry === folder || isFolderOrSub(folder, entry) || isFolderOrSub(entry, folder)));
-        if (owner) sectionId = owner.id;
-      }
-      dropNoteOnFolder(event.dataTransfer.getData('text/plain'), header.dataset.folder, sectionId);
-    });
-  });
-  // Folder headers drag to re-sort or nest (same payload and rules as the
-  // slide menu): top/bottom quarter reorders, middle nests inside.
-  noteList.querySelectorAll('[data-folder-wrap]').forEach((wrap) => {
-    const header = wrap.querySelector('[data-folder]');
-    if (!header) return;
-    header.draggable = true;
-    const rowEl = header.closest('.tree-folder-row') || header;
-    header.addEventListener('dragstart', (event) => {
-      const target = resolveListFolderTarget(header);
-      const fromList = target ? folderListOf(target.ns, target.section) : null;
-      // Intermediate headers are not real folders: they cannot be dragged.
-      if (!target || !fromList || !fromList.includes(target.path) || !e2ee.masterKey) { event.preventDefault(); return; }
-      event.dataTransfer.setData('application/x-notely-folder', JSON.stringify(target));
-      event.dataTransfer.effectAllowed = 'move';
-      header.classList.add('dragging');
-      closeFolderContextMenu();
-      closeNoteContextMenu();
-    });
-    header.addEventListener('dragend', () => {
-      header.classList.remove('dragging');
-      clearIndicators();
-    });
-    header.addEventListener('dragover', (event) => {
-      if (!isFolderDrag(event) || !e2ee.masterKey) return;
-      const rect = header.getBoundingClientRect();
-      const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
-      event.preventDefault();
-      event.stopPropagation();
-      event.dataTransfer.dropEffect = 'move';
-      clearIndicators();
-      if (ratio < 0.25) rowEl.classList.add('drop-before');
-      else if (ratio > 0.75) rowEl.classList.add('drop-after');
-      else rowEl.classList.add('drop-target');
-    });
-    header.addEventListener('dragleave', (event) => {
-      if (!header.contains(event.relatedTarget)) {
-        rowEl.classList.remove('drop-before', 'drop-after', 'drop-target');
-      }
-    });
-    header.addEventListener('drop', (event) => {
-      if (!isFolderDrag(event) || !e2ee.masterKey) return;
-      let dragged = null;
-      try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notely-folder')); } catch (error) { dragged = null; }
-      if (!dragged || !dragged.path) return;
-      const target = resolveListFolderTarget(header);
-      if (!target || target.ns !== dragged.ns || target.section !== dragged.section) return;
-      if (target.path === dragged.path) return;
-      if (isFolderOrSub(target.path, dragged.path)) {
-        event.preventDefault();
-        showToast("Can't move a folder into itself");
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      const rect = header.getBoundingClientRect();
-      const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
-      const list = folderListOf(dragged.ns, dragged.section);
-      if (!list) return;
-      // Intermediate headers are not real folders: order around their subtree
-      // instead (never nest into them).
-      let anchor = target.path;
-      let after = ratio > 0.75;
-      let nest = ratio >= 0.25 && ratio <= 0.75;
-      if (!list.includes(target.path)) {
-        const under = list.filter((entry) => isFolderOrSub(entry, target.path));
-        if (!under.length) return;
-        nest = false;
-        if (ratio < 0.5) { anchor = under[0]; after = false; }
-        else { anchor = under[under.length - 1]; after = true; }
-      }
-      if (anchor === dragged.path || isFolderOrSub(anchor, dragged.path)) return;
-      if (nest) {
-        // Nest inside the target folder.
-        const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, target.path);
-        if (!newPath) return;
-        const movedHome = newPath !== dragged.path;
-        const moved = folderListOf(dragged.ns, dragged.section).filter((entry) => isFolderOrSub(entry, newPath));
-        const rest = folderListOf(dragged.ns, dragged.section).filter((entry) => !isFolderOrSub(entry, newPath));
-        let index = rest.length;
-        for (let i = rest.length - 1; i >= 0; i -= 1) {
-          if (isFolderOrSub(rest[i], target.path)) { index = i + 1; break; }
-        }
-        const reordered = [...rest.slice(0, index), ...moved, ...rest.slice(index)];
-        const section = state.customSections.find((entry) => entry.id === dragged.section);
-        if (section) section.folders = reordered;
-        persistFolderList(dragged.ns);
-        renderCustomSections();
-        renderNoteList();
-        if (movedHome) showToast(`Moved to “${folderLeaf(target.path)}”`);
-      } else {
-        // Reorder around the anchor (reparenting across levels when needed).
-        const refParent = folderParent(anchor);
-        let movedRoot = dragged.path;
-        if ((refParent || null) !== (folderParent(dragged.path) || null)) {
-          const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, refParent);
-          if (!newPath) return;
-          movedRoot = newPath;
-        }
-        if (reorderFolderBlock(dragged.ns, dragged.section, movedRoot, anchor, after)) {
-          renderCustomSections();
-          renderNoteList();
-        }
-      }
-    });
-  });
-}
+
 
 // Render the grouped note tree: folder ordering, collapse, Bin actions vs rename pencil, scoped counters, and per-row event wiring.
-function renderNoteList() {
-  const sharedNewBtn = document.getElementById('shared-new');
-  if (sharedNewBtn) sharedNewBtn.hidden = true;
-  const refreshBtnTop = document.getElementById('refresh-view');
-  if (refreshBtnTop) refreshBtnTop.hidden = true; // Refresh lives only in Shared.
-  if (state.activeView === 'vault') { renderVaultList(); renderTabs(); renderStripItems(); return; }
-  if (state.activeView === 'shared') { renderSharedView(); renderTabs(); renderStripItems(); updateFoldToggle(); return; }
-  const visible = visibleNotes();
-  const searching = state.searchQuery.trim() !== '';
-  // Grouping follows the active folder namespace: custom-section paths when one
-  // of those is selected, otherwise each note's first filing. The
-  // folder-required invariant guarantees every note has a filing.
-  const groupKeyOfNote = (note) => {
-    if (state.activeCustom) return customNoteFolder(note, state.activeCustom.section);
-    return firstFilingOf(note);
-  };
-  const groups = new Map();
-  visible.forEach((note) => {
-    const folder = groupKeyOfNote(note);
-    if (folder == null) return;
-    if (!groups.has(folder)) groups.set(folder, []);
-    groups.get(folder).push(note);
-  });
-  // Newest-first ordering (item 7): folders sort by their newest note, so a
-  // freshly created note always lands on top of the list.
-  const orderOf = new Map();
-  state.notes.forEach((note, index) => { if (!orderOf.has(note.id)) orderOf.set(note.id, index); });
-  // Render one set of folder groups as a nested, recency-ordered tree.
-  const renderFolderGroups = (groupsMap) => {
-  const folderNewest = (folder) => Math.min(...groupsMap.get(folder).map((note) => orderOf.get(note.id) ?? Infinity));
-  // Build a nested tree from flat "A / B / C" paths; intermediate parents
-  // render as headers even without direct notes.
-  const buildFolderTree = (paths) => {
-    const byPath = new Map();
-    const roots = [];
-    const ensureNode = (fullPath) => {
-      let node = byPath.get(fullPath);
-      if (!node) {
-        node = { fullPath, files: groupsMap.get(fullPath) || [], children: [] };
-        byPath.set(fullPath, node);
-        const parent = folderParent(fullPath);
-        if (parent) ensureNode(parent).children.push(node);
-        else roots.push(node);
-      }
-      return node;
-    };
-    paths.forEach(ensureNode);
-    return roots;
-  };
-  const subtreeNewest = (node) => {
-    let best = node.files.length ? folderNewest(node.fullPath) : Infinity;
-    node.children.forEach((child) => { best = Math.min(best, subtreeNewest(child)); });
-    return best;
-  };
-  const subtreeCount = (node) => node.files.length + node.children.reduce((sum, child) => sum + subtreeCount(child), 0);
-  const byRecency = (a, b) => subtreeNewest(a) - subtreeNewest(b);
-  // Manual folder order wins over recency so drag-sorts stick: folders follow
-  // their section list order (same as the slide menu). Unknown paths (stale
-  // filings) and cross-section ties fall back to recency.
-  const manualPosition = (folder) => {
-    for (const section of state.customSections) {
-      const at = section.folders.indexOf(folder);
-      if (at !== -1) return { section: section.id, index: at };
-    }
-    for (const section of state.customSections) {
-      const under = section.folders.filter((entry) => isFolderOrSub(entry, folder));
-      if (under.length) {
-        let best = Infinity;
-        under.forEach((entry) => { best = Math.min(best, section.folders.indexOf(entry)); });
-        return { section: section.id, index: best };
-      }
-    }
-    return { section: '', index: Infinity };
-  };
-  const byManualOrder = (a, b) => {
-    const pa = manualPosition(a.fullPath);
-    const pb = manualPosition(b.fullPath);
-    if (pa.section && pa.section === pb.section && pa.index !== pb.index) return pa.index - pb.index;
-    return byRecency(a, b);
-  };
-  const renderFolderNode = (node) => {
-    const folder = node.fullPath;
-    const files = node.files;
-    const isCollapsed = !searching && state.collapsedFolders.has(folder);
-    const folderActions = state.activeView === 'bin'
-      ? ''
-      : `<button type="button" class="tree-rename" data-folder-rename="${escapeHtml(folder)}" title="Rename folder" aria-label="Rename ${escapeHtml(folder)}">${icon('pencil')}</button>`;
-    const childrenHtml = node.children.slice().sort(byManualOrder).map(renderFolderNode).join('');
-    return `
-    <div class="tree-folder-wrap${isCollapsed ? ' closed' : ''}" data-folder-wrap="${escapeHtml(folder)}">
-      <div class="tree-folder-row">
-        <button class="tree-folder" data-folder="${escapeHtml(folder)}" aria-expanded="${isCollapsed ? 'false' : 'true'}" title="${escapeHtml(folder)}${state.activeView === 'bin' ? '' : ' — double-click to rename'}">
-          <span class="tree-chevron">${icon('chevron-right')}</span>
-          <span class="tree-folder-icon">${icon(folderIconForDepth(folderDepth(folder)))}</span>
-          <span class="tree-folder-name">${escapeHtml(folderLeaf(folder))}</span>
-          <span class="tree-count">${subtreeCount(node)}</span>
-        </button>
-        ${folderActions}
-        <input class="tree-rename-input" value="${escapeHtml(folder)}" hidden maxlength="180" aria-label="Folder name" />
-      </div>
-      <div class="tree-children">
-        ${childrenHtml}
-        ${files.map((note) => `
-        <button class="tree-file${note.id === state.currentId ? ' selected' : ''}" data-note-id="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}">
-          <span class="tree-file-icon tree-file-icon-${note.ext}">${icon(noteGlyphFor(note))}</span>
-          <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
-          ${state.activeView === 'bin' ? `<span class="bin-meta">${binRemainingText(note)}</span>` : ''}
-          ${note.favorite && state.activeView !== 'bin' ? `<span class="mini-star">${icon('star')}</span>` : ''}
-        </button>`).join('')}
-      </div>
-    </div>`;
-  };
-  return buildFolderTree([...groupsMap.keys()]).sort(byManualOrder).map(renderFolderNode).join('');
-  };
-  // One sidebar section as a list supergroup: clickable title (filters),
-  // rename pencil, note count, then its folder tree.
-  const renderSectionShell = (kind, id, title, groupsMap) => {
-    const total = [...groupsMap.values()].reduce((sum, files) => sum + files.length, 0);
-    return `<div class="list-section" data-list-section="${kind}">
-      <div class="list-section-head">
-        <button class="list-section-title" data-section-jump="${kind}" data-section-id="${escapeHtml(id || '')}" title="Show ${escapeHtml(title)}">${escapeHtml(title)}</button>
-        <span class="tree-count">${total}</span>
-        ${state.activeView === 'bin' ? '' : `<button type="button" class="list-section-add" data-section-add="${escapeHtml(id || '')}" title="Add folder to ${escapeHtml(title)}" aria-label="Add folder to ${escapeHtml(title)}">${icon('folder-plus')}</button>`}
-        <button type="button" class="list-section-rename" data-section-rename="${kind}" data-section-id="${escapeHtml(id || '')}" title="Rename section" aria-label="Rename ${escapeHtml(title)}">${icon('pencil')}</button>
-      </div>
-      ${renderFolderGroups(groupsMap)}
-    </div>`;
-  };
-  // Home-like views (no folder/search/chip filter) separate folders by
-  // section to mirror the slide menu; everything else keeps the flat tree.
-  const homeLike = state.activeView === 'notes' && state.activeFilter === 'all' && !searching
-    && !(state.activeCustom && state.activeCustom.folder);
-  if (homeLike) {
-    const parts = [];
-    const customTargets = state.activeCustom && !state.activeCustom.folder
-      ? state.customSections.filter((section) => section.id === state.activeCustom.section)
-      : ((!state.activeCustom) ? state.customSections : []);
-    customTargets.forEach((section) => {
-      const sectionGroups = new Map();
-      // Seed every folder so newly added (still empty) folders show in the
-      // folder list instead of only folders that already hold notes.
-      section.folders.forEach((folder) => { if (!sectionGroups.has(folder)) sectionGroups.set(folder, []); });
-      visible.forEach((note) => {
-        const folder = customNoteFolder(note, section.id);
-        if (!folder) return;
-        if (!sectionGroups.has(folder)) sectionGroups.set(folder, []);
-        sectionGroups.get(folder).push(note);
-      });
-      if (sectionGroups.size) parts.push(renderSectionShell('custom', section.id, section.name, sectionGroups));
-    });
-    // Folder-required invariant: unfiled notes cannot exist (enforced at
-    // every entry path), so no plain rows outside sections are rendered.
-    noteList.innerHTML = parts.join('');
-  } else {
-    noteList.innerHTML = renderFolderGroups(groups);
-  }
-  const inBin = state.activeView === 'bin';
-  listEmpty.hidden = visible.length !== 0;
-  noteList.hidden = visible.length === 0;
-  const emptyTitle = listEmpty.querySelector('strong');
-  const emptySub = listEmpty.querySelector('span:last-child');
-  if (emptyTitle) emptyTitle.textContent = inBin ? 'Bin is empty' : 'No notes found';
-  if (emptySub) emptySub.textContent = inBin ? 'Deleted notes stay here for 3 days before they are permanently removed.' : 'Try another search or create a new note.';
-  const liveNotes = state.notes.filter((note) => !note.deleted && !note.archived);
-  const archivedNotes = state.notes.filter((note) => !note.deleted && note.archived);
-  const binnedNotes = state.notes.filter((note) => note.deleted);
-  const scope = scopeNotes();
-  if (allCount) allCount.textContent = scope.length;
-  if (recentCountEl) recentCountEl.textContent = scope.filter((note) => isRecentNote(note)).length;
-  if (starredCountEl) starredCountEl.textContent = scope.filter((note) => note.favorite).length;
-  const activeContextName = (state.activeCustom ? (state.activeCustom.folder || sectionDisplayName('custom', state.activeCustom.section)) : null);
-  if (totalCount) totalCount.textContent = inBin ? `${visible.length} in bin` : (activeContextName ? `${visible.length} note${visible.length === 1 ? '' : 's'} in ${activeContextName}` : `${visible.length} note${visible.length === 1 ? '' : 's'}`);
-  const navAllCount = document.getElementById('nav-all-count');
-  if (navAllCount) navAllCount.textContent = liveNotes.length;
-  const navBinCount = document.getElementById('nav-bin-count');
-  if (navBinCount) navBinCount.textContent = binnedNotes.length;
-  const navArchiveCount = document.getElementById('nav-archive-count');
-  if (navArchiveCount) navArchiveCount.textContent = archivedNotes.length;
-  updateBinUI();
-  updateVaultUI();
-  updateBreadcrumbs();
-  updateFoldToggle();
-  noteList.querySelectorAll('[data-note-id]').forEach((item) => item.addEventListener('click', () => selectNote(item.dataset.noteId)));
-  enableNoteDragDrop();
-  noteList.querySelectorAll('[data-folder]').forEach((item) => item.addEventListener('click', () => {
-    // Expanded workspace: clicking a folder just opens/closes its contents in
-    // place. It never "zooms into" the folder (that lives in the workspace
-    // strip when collapsed), so the full list stays put.
-    const folder = item.dataset.folder;
-    if (state.collapsedFolders.has(folder)) state.collapsedFolders.delete(folder);
-    else state.collapsedFolders.add(folder);
-    persistCollapsedFolders();
-    renderNoteList();
-  }));
-  noteList.querySelectorAll('[data-folder-rename]').forEach((item) => item.addEventListener('click', (event) => {
-    event.stopPropagation();
-    startTreeRename(item.dataset.folderRename);
-  }));
-  noteList.querySelectorAll('.tree-folder-name').forEach((item) => item.addEventListener('dblclick', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (state.activeView === 'bin') return;
-    const wrap = item.closest('[data-folder-wrap]');
-    if (!wrap) return;
-    startTreeRename(wrap.dataset.folderWrap);
-  }));
-  noteList.querySelectorAll('[data-section-jump]').forEach((item) => item.addEventListener('click', (event) => {
-    event.stopPropagation();
-    const kind = item.dataset.sectionJump;
-    const id = item.dataset.sectionId || null;
-    if (kind === 'custom' && id) selectCustomSection(id);
-  }));
-  const renameSectionFromList = (kind, id, anchor) => {
-    if (kind === 'custom' && id) startSectionRename({ kind: 'custom', id }, anchor || null);
-  };
-  noteList.querySelectorAll('[data-section-rename]').forEach((item) => item.addEventListener('click', (event) => {
-    event.stopPropagation();
-    renameSectionFromList(item.dataset.sectionRename, item.dataset.sectionId || null, item.closest('.list-section-head') ? item.closest('.list-section-head').querySelector('.list-section-title') : item);
-  }));
-  noteList.querySelectorAll('[data-section-add]').forEach((item) => item.addEventListener('click', (event) => {
-    event.stopPropagation();
-    addFolderToSection(item.dataset.sectionAdd);
-  }));
-  noteList.querySelectorAll('.list-section-title').forEach((item) => item.addEventListener('dblclick', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    renameSectionFromList(item.dataset.sectionJump, item.dataset.sectionId || null, item);
-  }));
-  renderTabs();
-  renderStripItems();
-}
+
 
 // Selected note, falling back to the first note (may be undefined when empty — callers must guard).
 
@@ -2721,41 +932,10 @@ function renderNoteList() {
 // Open a note in the editor and re-render the list; lock state is reapplied afterwards.
 // Every note opens in PREVIEW mode (edit mode never carries over between
 // notes); clicking/focusing the preview switches that note to edit mode.
-function selectNote(id) {
-  if (state.collab.noteId) closeCollabNote();
-  exitCoverRepos(true);
-  const note = state.notes.find((item) => item.id === id);
-  if (!note) return;
-  trackTab(id, false);
-  state.currentId = id;
-  state.currentVaultId = null;
-  document.querySelector('.app-shell').classList.remove('workspace-focus');
-  state.writeMode = 'preview';
-  clearTimeout(state.idleTimer);
-  titleInput.value = typeof note.title === 'string' ? note.title : 'Untitled note';
-  markdownInput.value = typeof note.body === 'string' ? note.body : '';
-  breadcrumbTitle.textContent = note.title;
-  renderCover(note);
-  renderPreview(note);
-  updateMeta(note);
-  renderNoteList();
-  refreshEditorLock();
-}
+
 
 // Debounced save: refuses (with a warning, never truncates) past 2000 notes, then syncs encrypted to the server.
-function persistNotes() {
-  if (state.notes.length > 2000) {
-    // Never silently truncate: refusing to sync preserves data locally until
-    // the user deletes notes; the server would reject oversized payloads.
-    setSaveLabel('Sync failed', 'red');
-    showToast('Too many notes to sync (2000 max) — delete some to keep saving');
-    clearTimeout(state.saveTimer);
-    return;
-  }
-  setSaveLabel('Saving...', 'green');
-  clearTimeout(state.syncTimer);
-  state.syncTimer = setTimeout(() => { syncNotesToServer(); }, 450);
-}
+
 
 
 
@@ -2763,21 +943,7 @@ function persistNotes() {
 
 
 // Add/remove the important tag; important notes require popup confirmation before deletion.
-function toggleImportantById(id) {
-  const note = state.notes.find((item) => item.id === id);
-  if (!note) return;
-  if (!Array.isArray(note.tags)) note.tags = [];
-  if (isImportant(note)) {
-    note.tags = note.tags.filter((tag) => String(tag).toLowerCase() !== IMPORTANT_TAG);
-    showToast('Removed important tag');
-  } else {
-    note.tags = [...note.tags, IMPORTANT_TAG];
-    showToast('Marked as important');
-  }
-  if (id === state.currentId) updateMeta(note);
-  persistNotes();
-  renderNoteList();
-}
+
 
 // Return the shared right-click menu element.
 // ---- Context menu, delete dialogs, note lifecycle (Bin/Archive/restore) ----
@@ -2796,195 +962,34 @@ function toggleImportantById(id) {
 
 
 // Copy a note (fresh id, unique title, reset dates/flags) right after the original and open it.
-function duplicateNoteById(id) {
-  const original = state.notes.find((item) => item.id === id);
-  if (!original) return;
-  const title = uniqueTitle(`${typeof original.title === 'string' ? original.title : 'Untitled note'} copy`);
-  const copy = {
-    ...original,
-    id: newNoteId(),
-    title,
-    date: 'Now',
-    updatedAt: Date.now(),
-    favorite: false,
-    archived: false,
-    deleted: false,
-    tags: [...(Array.isArray(original.tags) ? original.tags.filter((t) => typeof t === 'string') : [])],
-    body: typeof original.body === 'string' ? original.body.slice(0, 500000) : ''
-  };
-  delete copy.deletedAt;
-  const index = state.notes.findIndex((item) => item.id === id);
-  state.notes.splice(index + 1, 0, copy);
-  state.currentId = copy.id;
-  selectNote(copy.id);
-  persistNotes();
-  renderNoteList();
-  showToast('Note duplicated');
-}
+
 
 // Flip the star flag and refresh badges, counts and list.
-function toggleFavoriteById(id) {
-  const note = state.notes.find((item) => item.id === id);
-  if (!note) return;
-  note.favorite = !note.favorite;
-  if (id === state.currentId) updateMeta(note);
-  persistNotes();
-  renderNoteList();
-  showToast(note.favorite ? 'Added to favorites' : 'Removed from favorites');
-}
+
 
 // Empty the editor for the no-notes state and re-render.
-function clearEditor() {
-  exitCoverRepos(true);
-  state.currentId = null;
-  state.currentVaultId = null;
-  titleInput.value = '';
-  titleInput.disabled = false;
-  markdownInput.value = '';
-  markdownInput.disabled = false;
-  breadcrumbTitle.textContent = 'No notes';
-  if (wordCount) wordCount.textContent = '0 words';
-  if (tagList) tagList.innerHTML = '';
-  // Drop rendered preview HTML too: it may hold vault content, which must not
-  // linger in the DOM past lock/logout (separation both ways).
-  preview.innerHTML = '';
-  if (editorToolbar) editorToolbar.hidden = true;
-  renderRecipeHero(null);
-  renderCover(null);
-  // Nothing marked: hide the editor and let the notes panel take the room.
-  // Any selection (selectNote/selectVaultNote) removes it again.
-  try {
-    document.querySelector('.app-shell').classList.add('workspace-focus');
-  } catch (error) {}
-  renderNoteList();
-}
+
 
 // Soft-delete one note into Bin (sets deletedAt); repairs the selection to a neighbor.
-function deleteNoteById(id) {
-  const note = state.notes.find((item) => item.id === id);
-  if (!note || note.deleted) return;
-  const liveBefore = state.notes.filter((item) => !item.deleted);
-  const pos = liveBefore.findIndex((item) => item.id === id);
-  note.deleted = true;
-  note.deletedAt = Date.now();
-  if (state.currentId === id) {
-    const liveAfter = state.notes.filter((item) => !item.deleted);
-    if (liveAfter.length) selectNote(liveAfter[Math.min(Math.max(pos, 0), liveAfter.length - 1)].id);
-    else clearEditor();
-  } else {
-    renderNoteList();
-  }
-  persistNotes();
-  renderNoteList();
-  showToast('Moved to Bin — kept for 3 days');
-}
+
 
 // Restore one binned note; revives its folder too when the folder itself was binned.
-function restoreNoteById(id) {
-  const note = state.notes.find((item) => item.id === id);
-  if (!note || !note.deleted) return;
-  note.deleted = false;
-  delete note.deletedAt;
-  // Revive a binned custom section the note belongs to, so it has a home.
-  // Custom folders inside live sections are re-adopted by the sync below.
-  reviveSectionsForNote(note);
-  syncCustomSections();
-  ensureNoteFiled(note);
-  persistNotes();
-  renderCustomSections();
-  try { renderCustomSections(); } catch (error) {}
-  if (state.activeView === 'bin') {
-    const binned = state.notes.filter((item) => item.deleted);
-    if (binned.length) selectNote(binned[0].id);
-    else clearEditor();
-    renderNoteList();
-  } else {
-    selectNote(id);
-  }
-  renderNoteList();
-  showToast('Note restored');
-}
+
 
 // Move one live note to Archive; repairs the selection from the still-visible list.
-function archiveNoteById(id) {
-  const note = state.notes.find((item) => item.id === id);
-  if (!note || note.deleted || note.archived) return;
-  note.archived = true;
-  if (state.currentId === id) {
-    const pool = visibleNotes().filter((item) => item.id !== id);
-    if (pool.length) selectNote(pool[0].id);
-    else clearEditor();
-  }
-  persistNotes();
-  renderNoteList();
-  showToast('Note archived');
-}
+
 
 // Return one archived note to All notes (refuses deleted notes) and re-sync the sidebar.
-function unarchiveNoteById(id) {
-  const note = state.notes.find((item) => item.id === id);
-  if (!note || note.deleted || !note.archived) return;
-  note.archived = false;
-  syncCustomSections();
-  persistNotes();
-  renderCustomSections();
-  renderNoteList();
-  showToast('Note unarchived');
-}
+
 
 // Erase one binned note immediately; repairs the selection.
-function permanentlyDeleteNoteById(id) {
-  const index = state.notes.findIndex((item) => item.id === id);
-  if (index === -1) return;
-  const wasCurrent = state.currentId === id;
-  state.notes.splice(index, 1);
-  if (wasCurrent) {
-    const pool = state.activeView === 'bin' ? state.notes.filter((item) => item.deleted) : state.notes.filter((item) => !item.deleted);
-    if (pool.length) selectNote(pool[0].id);
-    else clearEditor();
-  } else {
-    renderNoteList();
-  }
-  persistNotes();
-  try { pruneDeletedCustomSections(); } catch (error) {}
-  renderNoteList();
-  showToast('Permanently deleted');
-}
+
 
 // Permanently erase everything in Bin (notes + folder entries) after popup confirmation.
-function emptyBin() {
-  const binned = state.notes.filter((item) => item.deleted);
-  if (!binned.length) { showToast('Bin is already empty'); return; }
-  state.notes = state.notes.filter((item) => !item.deleted);
-  state.deletedCustomSections = [];
-  persistDeletedCustomSections();
-  const currentAlive = state.currentId && state.notes.some((item) => item.id === state.currentId);
-  if (!currentAlive) {
-    if (state.notes.length) selectNote(state.notes[0].id);
-    else clearEditor();
-  } else {
-    renderNoteList();
-  }
-  persistNotes();
-  renderNoteList();
-  showToast(`Emptied Bin (${binned.length})`);
-}
+
 
 // Dispatch a validated context-menu action; unknown ids/actions are ignored.
-function handleNoteMenuAction(action, id) {
-  if (!id || typeof id !== 'string' || !isValidNoteId(id)) return;
-  if (typeof action !== 'string' || !/^(open|favorite|important|tags|restore|duplicate|download|archive|unarchive|delete)$/.test(action)) return;
-  if (action === 'open') selectNote(id);
-  else if (action === 'favorite') toggleFavoriteById(id);
-  else if (action === 'important') toggleImportantById(id);
-  else if (action === 'tags') openTagEditor(id);
-  else if (action === 'restore') restoreNoteById(id);
-  else if (action === 'archive') archiveNoteById(id);
-  else if (action === 'unarchive') unarchiveNoteById(id);
-  else if (action === 'duplicate') duplicateNoteById(id);
-  else if (action === 'download') downloadNoteById(id);
-  else if (action === 'delete') requestDeleteNoteById(id);
-}
+
 
 // ---- Tags -----------------------------------------------------------------
 // Tags live on each note as freeform strings (<=40 chars, max 20 per note).
@@ -2997,73 +1002,13 @@ function handleNoteMenuAction(action, id) {
 // Aggregate every tag with a note count (case-insensitive; first casing wins).
 // User-created tags with no notes yet are included with a count of 0.
 
-function refreshTagsAcrossUi() {
-  persistNotes();
-  renderNoteList();
-  const open = activeEditorNote();
-  if (open) updateMeta(open);
-}
+
 // Rename a tag on every note (folds duplicates created by the rename).
-function renameTagEverywhere(oldName, rawNew) {
-  const from = normalizeTagName(oldName).toLowerCase();
-  const to = normalizeTagName(rawNew);
-  if (!from || !to || from === to.toLowerCase()) return false;
-  let changed = 0;
-  state.notes.forEach((note) => {
-    if (!Array.isArray(note.tags)) return;
-    const next = [];
-    let touched = false;
-    note.tags.forEach((tag) => {
-      if (String(tag).toLowerCase() === from) { touched = true; next.push(to); return; }
-      next.push(tag);
-    });
-    if (!touched) return;
-    changed += 1;
-    const seen = new Set();
-    note.tags = next.filter((tag) => {
-      const key = String(tag).toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  });
-  if (changed) refreshTagsAcrossUi();
-  const hadKnown = state.knownTags.some((tag) => String(tag).toLowerCase() === from);
-  state.knownTags = cleanTagList(state.knownTags.map((tag) => (String(tag).toLowerCase() === from ? to : tag)));
-  if (changed || hadKnown) persistUiVault();
-  return changed > 0 || hadKnown;
-}
+
 // Delete a tag from every note.
-function deleteTagEverywhere(name) {
-  const key = normalizeTagName(name).toLowerCase();
-  let changed = 0;
-  state.notes.forEach((note) => {
-    if (!Array.isArray(note.tags)) return;
-    const before = note.tags.length;
-    note.tags = note.tags.filter((tag) => String(tag).toLowerCase() !== key);
-    if (note.tags.length !== before) changed += 1;
-  });
-  const hadKnown = state.knownTags.some((tag) => String(tag).toLowerCase() === key);
-  if (hadKnown) {
-    state.knownTags = state.knownTags.filter((tag) => String(tag).toLowerCase() !== key);
-    persistUiVault();
-  }
-  if (changed) refreshTagsAcrossUi();
-  return changed > 0 || hadKnown;
-}
+
 // Create a standalone tag (available to every note's tag editor and to search).
-function addKnownTag(raw) {
-  const tag = normalizeTagName(raw);
-  if (!tag) { showToast('Enter a tag name'); return false; }
-  if (state.knownTags.some((entry) => entry.toLowerCase() === tag.toLowerCase())) { showToast(`Tag “${tag}” already exists`); return false; }
-  if (state.knownTags.length >= 500) { showToast('Tag limit reached (500)'); return false; }
-  state.knownTags.push(tag);
-  persistUiVault();
-  try { renderSettingsTags(); } catch (error) {}
-  try { renderTagEditor(); } catch (error) {}
-  showToast(`Tag “${tag}” added`);
-  return true;
-}
+
 
 // ---- Note tag editor (opened from the note right-click menu) --------------
 
@@ -3076,44 +1021,8 @@ function addKnownTag(raw) {
 
 
 
-function tagEditorAdd(raw) {
-  const tag = normalizeTagName(raw);
-  if (!tag) return;
-  if (state.tagEditorShared) {
-    if (!state.collab.noteId || !state.collab.tags) return;
-    const list = sharedTagList();
-    if (list.some((t) => String(t).toLowerCase() === tag.toLowerCase())) return;
-    if (list.length >= 20) { showToast('Tag limit reached (20 per note)'); return; }
-    state.collab.tags.push([tag]);
-    renderTagEditor();
-    return;
-  }
-  const note = state.notes.find((item) => item.id === state.tagEditorNoteId);
-  if (!note) return;
-  if (addNoteTag(note, raw)) {
-    refreshTagsAcrossUi();
-    renderTagEditor();
-    renderSettingsTags();
-  }
-}
-function tagEditorRemove(name) {
-  if (state.tagEditorShared) {
-    if (!state.collab.noteId || !state.collab.tags) return;
-    const list = sharedTagList();
-    const at = list.findIndex((t) => String(t).toLowerCase() === String(name).toLowerCase());
-    if (at === -1) return;
-    state.collab.tags.delete(at, 1);
-    renderTagEditor();
-    return;
-  }
-  const note = state.notes.find((item) => item.id === state.tagEditorNoteId);
-  if (!note) return;
-  if (removeNoteTag(note, name)) {
-    refreshTagsAcrossUi();
-    renderTagEditor();
-    renderSettingsTags();
-  }
-}
+
+
 
 // ---- Settings → Customization → Tags --------------------------------------
 
@@ -3184,253 +1093,27 @@ state.collab = { noteId: null, groupId: null, doc: null, title: null, body: null
 // POST fails: queued Yjs updates are retried until the server acks them. A 409
 // means the section key moved under us, so the full local state is compacted
 // instead (which also clears the queue).
-async function collabBroadcast(update) {
-  if (!state.collab.key || !state.collab.noteId) return;
-  state.collab.outbox.push(update);
-  if (state.collab.outbox.length >= 200) { state.collab.outbox.length = 0; collabCompact(); return; }
-  flushCollabOutbox();
-}
-function scheduleCollabFlush() {
-  if (state.collab.flushTimer || !state.collab.noteId) return;
-  state.collab.flushTimer = setTimeout(() => { state.collab.flushTimer = null; flushCollabOutbox(); }, 5000);
-}
-async function flushCollabOutbox() {
-  if (state.collab.flushing || !state.collab.outbox.length || !state.collab.key || !state.collab.noteId) return;
-  state.collab.flushing = true;
-  try {
-    while (state.collab.outbox.length) {
-      const update = state.collab.outbox[0];
-      let res;
-      try {
-        const payload = await collabEncrypt(state.collab.key, update);
-        res = await apiFetch(`/api/collab/notes/${state.collab.noteId}/updates`, {
-          method: 'POST', body: JSON.stringify({ payload, keyVersion: state.collab.keyVersion }) });
-      } catch (error) {
-        setCollabStatus(`Offline — ${state.collab.outbox.length} unsent`, true);
-        scheduleCollabFlush();
-        return;
-      }
-      if (res.ok) { state.collab.outbox.shift(); continue; }
-      if (res.status === 409) {
-        // Epoch changed under us: drop the stale queue and push the full state.
-        state.collab.outbox.length = 0;
-        await collabCompact();
-        return;
-      }
-      setCollabStatus(`Offline — ${state.collab.outbox.length} unsent`, true);
-      scheduleCollabFlush();
-      return;
-    }
-    setCollabStatus('Live · connected', false);
-  } finally {
-    state.collab.flushing = false;
-  }
-}
 
-function collabConnect(noteId, keyRaw, Y, doc) {
-  if (state.collab.es) { try { state.collab.es.close(); } catch (error) {} state.collab.es = null; }
-  let es;
-  try { es = new EventSource(`/api/collab/notes/${noteId}/stream`); }
-  catch (error) { setCollabStatus('Could not connect', true); return; }
-  state.collab.es = es;
-  es.onopen = () => { setCollabStatus('Live · connected', false); flushCollabOutbox(); };
-  es.onmessage = async (event) => {
-    let msg; try { msg = JSON.parse(event.data); } catch (error) { return; }
-    if (msg.type === 'closed') { setCollabStatus('This note was closed', true); return; }
-    if (msg.type === 'rekey') {
-      // Owner rotated the section key: adopt the new epoch so our edits are
-      // encrypted under the key the removed member does not have.
-      await collabAdoptRekey(msg.version);
-      return;
-    }
-    if (msg.type === 'presence') { collabPresenceReceive(msg); return; }
-    if (msg.type !== 'state' && msg.type !== 'update') return;
-    const key = collabKeyFor(msg.version);
-    if (!key) return;
-    try { Y.applyUpdate(doc, await collabDecrypt(key, msg.payload), 'remote'); } catch (error) {}
-  };
-  // EventSource auto-reconnects; the stream replays state + backlog on reconnect.
-  es.onerror = () => { if (state.collab.noteId === noteId) setCollabStatus('Offline — retrying…', true); };
-}
+
+
+
+
 
 // Fetch and unlock the new epoch key after the owner rotates, and switch to it.
 
-async function openCollabNote(noteId) {
-  if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
-  if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
-  let res;
-  try { res = await apiFetch(`/api/collab/notes/${noteId}`); } catch (error) { res = null; }
-  if (!res || !res.ok) { showToast('Cannot open that shared note'); return; }
-  const meta = await res.json();
-  let keyRaw;
-  try { keyRaw = await unwrapMyKey(meta.myKey, meta.groupId, state.cachedProfile && state.cachedProfile.username, meta.myKeyVersion); }
-  catch (error) { showToast(error && error.message ? error.message : 'You no longer have access to this note'); return; }
-  // Group metadata gives the section name + members.
-  let group = { name: '', members: [] };
-  try { const g = await apiFetch(`/api/collab/groups/${meta.groupId}`); if (g.ok) group = await g.json(); } catch (error) {}
-  // Section-level tags/folders (owner-curated) so the tag editor can suggest them.
-  if (group.encMeta) {
-    try {
-      const gm = await collabDecryptGroupMeta(keyRaw, group.encMeta);
-      sharedGroupTags.set(meta.groupId, gm.tags || []);
-      if (!sharedGroupFolders.has(meta.groupId)) sharedGroupFolders.set(meta.groupId, gm.folders || []);
-      sharedGroupOwners.set(meta.groupId, meta.owner);
-    } catch (error) {}
-  }
-  const Y = await loadYjs();
-  closeCollabNote();
-  const doc = new Y.Doc();
-  let noteMeta = { title: '', folder: '', template: '', tags: [] };
-  try { noteMeta = await collabDecryptMeta(keyRaw, meta.encMeta || ''); } catch (error) {}
-  Object.assign(state.collab, {
-    noteId, groupId: meta.groupId, doc,
-    title: doc.getText('title'), body: doc.getText('body'), desc: doc.getText('desc'),
-    assets: doc.getMap('assets'), recipe: doc.getMap('recipe'), tags: doc.getArray('tags'), cover: '', description: '',
-    es: null, key: keyRaw, keyVersion: Number(meta.keyVersion) || 1,
-    keys: new Map([[Number(meta.keyVersion) || 1, keyRaw]]),
-    members: group.members || [], pending: group.pending || [], owner: meta.owner, groupName: group.name || '',
-    folder: noteMeta.folder || '', template: noteMeta.template || '', updates: 0,
-  });
-  doc.on('update', (update, origin) => {
-    if (origin === 'remote') return;
-    state.collab.updates += 1;
-    collabBroadcast(update);
-    if (state.collab.updates % 40 === 0) collabCompact();
-  });
-  state.collab.title.observe(collabSyncDom);
-  state.collab.body.observe(collabSyncDom);
-  state.collab.desc.observe(collabSyncDom);
-  state.collab.assets.observe(collabAssetsChanged);
-  state.collab.recipe.observe((event, transaction) => { if (transaction && transaction.origin === 'remote') renderRecipeBody(null); });
-  state.collab.tags.observe(() => { renderSharedTags(); scheduleCollabMeta(); });
-  state.collab.body.observe(() => { if (state.collab.noteId != null) sharedBodyCache.set(String(state.collab.noteId), state.collab.body.toString()); });
-  sharedBodyCache.set(String(noteId), state.collab.body.toString());
-  renderSharedTags();
-  const delBtn = document.getElementById('collab-delete');
-  if (delBtn) delBtn.hidden = !(state.collab.owner === (state.cachedProfile && state.cachedProfile.username));
-  // Bind the standard editor to the shared doc (title + Markdown body).
-  state.writeMode = 'edit';
-  if (titleInput) titleInput.value = state.collab.title.toString();
-  if (markdownInput) markdownInput.value = state.collab.body.toString();
-  try { refreshEditorLock(); } catch (error) {}
-  // refreshEditorLock bails out for shared notes, so enable the recipe hero
-  // controls here (a shared recipe is always editable while it is open).
-  const recipeDesc = document.getElementById('recipe-desc');
-  if (recipeDesc) recipeDesc.disabled = false;
-  const recipePhotoBtn = document.getElementById('recipe-photo-btn');
-  if (recipePhotoBtn) recipePhotoBtn.disabled = false;
-  try { renderRecipeHero(null); } catch (error) {}
-  try { collabAssetsChanged(); } catch (error) {}
-  try { renderPreview(null); } catch (error) {}
-  try { markdownInput.focus({ preventScroll: true }); } catch (error) {}
-  renderCollabMembersModal();
-  // Presence: a stable per-open client id + colour, then a heartbeat loop that
-  // broadcasts our cursor and prunes stale peers.
-  state.collab.clientId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : `c${Date.now()}${Math.random()}`;
-  state.collab.color = collabPresenceColor(state.cachedProfile && state.cachedProfile.username);
-  state.collab.typing = false;
-  state.collab.presence.clear();
-  if (state.collab.presenceTimer) { clearTimeout(state.collab.presenceTimer); state.collab.presenceTimer = null; }
-  collabPresenceHeartbeat();
-  // Only the owner may invite members.
-  const inviteBtn = document.getElementById('collab-invite');
-  if (inviteBtn) inviteBtn.hidden = !(state.collab.owner === (state.cachedProfile && state.cachedProfile.username));
-  setCollabStatus('Connecting…', false);
-  const collabTop = document.getElementById('collab-top');
-  if (collabTop) collabTop.hidden = false;
-  const editorPanel = document.querySelector('.editor-panel');
-  if (editorPanel) editorPanel.classList.add('collab-mode');
-  trackTab(noteId, false, true);
-  try { renderTabs(); } catch (error) {}
-  collabConnect(noteId, keyRaw, Y, doc);
-}
+
 
 
 // Start a connection: create a shared section for the person (no note yet).
 // They receive a "<you> wants to connect with you" request to accept.
-async function collabCreateSection(members) {
-  const names = Array.isArray(members) ? members : [];
-  const keyRaw = e2eeRandomBytes(32);
-  let selfPub;
-  try { selfPub = await sharingRecipientPublicKey(state.cachedProfile.username); }
-  catch (error) { showToast('Could not load your public key'); return null; }
-  const wrap = await wrapRawKeyFor(selfPub, keyRaw);
-  // Self-wrap: signed over an empty group id (the group does not exist yet);
-  // verification is skipped for one's own wrap.
-  wrap.sig = await signWrap('', state.cachedProfile.username, 1, wrap);
-  const name = names[0] || 'Connection';
-  const res = await apiFetch('/api/collab/groups', { method: 'POST', body: JSON.stringify({ name, ...wrap }) });
-  if (!res.ok) { showToast('Could not start the connection'); return null; }
-  const data = await res.json();
-  const failed = [];
-  for (const who of names) {
-    try { await collabAddGroupMember(data.id, keyRaw, who, 1); }
-    catch (error) { failed.push(`${who}: ${error && error.message ? error.message : 'failed'}`); }
-  }
-  if (state.activeView === 'shared') renderSharedView();
-  if (failed.length) showToast(`Connection started, but some requests failed — ${failed[0]}`);
-  else showToast(`Connection request sent to ${names.join(', ')}`);
-  return data.id;
-}
+
 // New-note entry in the Shared tree: ask which template to start from first.
-function openSharedNewNote(groupId, folder) {
-  state.pendingSharedTemplate = { groupId, folder: folder || '' };
-  openTemplatePicker();
-}
+
 
 // Start a shared note from the same templates used by All Notes.
-async function createSharedNoteWithTemplate(groupId, folder, templateKey) {
-  const key0 = NOTE_TEMPLATES[templateKey] ? templateKey : 'standard';
-  if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
-  if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
-  let key;
-  try { key = (await collabGroupKey(groupId)).key; }
-  catch (error) { showToast('You no longer have access to this section'); return; }
-  const seed = seedFromTemplate(key0, sharedUniqueTitle(NOTE_TEMPLATES[key0].titleBase, groupId));
-  const encMeta = await collabEncryptMeta(key, { title: seed.title, folder: folder || '', template: key0 });
-  const res = await apiFetch(`/api/collab/groups/${groupId}/notes`, { method: 'POST', body: JSON.stringify({ encMeta }) });
-  if (!res.ok) { showToast('Could not create the note'); return; }
-  const note = await res.json();
-  // Seed the template title + body as the note's first CRDT update, so the
-  // editor and every member joining later start from the (possibly edited)
-  // template instead of racing a post-connect insert.
-  try {
-    const Y = await loadYjs();
-    const doc = new Y.Doc();
-    doc.getText('title').insert(0, seed.title);
-    if (seed.body) doc.getText('body').insert(0, seed.body);
-    const template = NOTE_TEMPLATES[key0];
-    if (key0 === 'recipe' && template.recipe) {
-      doc.getMap('recipe').set('ingredients', JSON.stringify(sanitizeIngredients(template.recipe.ingredients)));
-      doc.getMap('recipe').set('steps', JSON.stringify(sanitizeSteps(template.recipe.steps)));
-    }
-    const update = Y.encodeStateAsUpdate(doc);
-    doc.destroy();
-    const payload = await collabEncrypt(key, update);
-    await apiFetch(`/api/collab/notes/${note.id}/updates`, { method: 'POST', body: JSON.stringify({ payload, keyVersion: 1 }) });
-  } catch (error) {}
-  await openCollabNote(note.id);
-  if (state.activeView === 'shared') renderSharedView();
-}
+
 // Add a subfolder under an existing shared folder (persisted in group meta).
-async function addSubfolder(groupId, parentFolder) {
-  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
-  if (!key) { showToast('Reload the Shared list and try again'); return; }
-  const value = await askInput({ eyebrow: 'Subfolder', title: 'Add a subfolder', desc: `Under ${parentFolder}`, label: 'Name', password: false, placeholder: 'e.g. Notes', okText: 'Add' });
-  if (value == null) return;
-  const name = String(value).trim().replace(/[\/\\]+/g, ' ').replace(/\s+/g, ' ').slice(0, 120);
-  if (!name) return;
-  const folder = `${parentFolder}${FOLDER_SEP}${name}`;
-  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
-  if (existing.some((f) => f.toLowerCase() === folder.toLowerCase())) { showToast('That subfolder already exists'); return; }
-  try {
-    const encMeta = await collabEncryptGroupMeta(key, [...existing, folder], sharedGroupTagList(groupId));
-    const res = await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
-    if (!res.ok) { showToast('Could not add the subfolder'); return; }
-    showToast(`Subfolder \u201c${name}\u201d added`);
-    renderSharedView();
-  } catch (error) { showToast('Could not add the subfolder'); }
-}
+
 
 
 
@@ -3449,60 +1132,16 @@ async function addSubfolder(groupId, parentFolder) {
 // A member leaves a shared section: remove ourselves. The server flags the
 // section so a remaining member rotates the key on next open (the server holds
 // no key to rotate with).
-async function leaveSharedSection(groupId) {
-  const me = state.cachedProfile && state.cachedProfile.username;
-  if (!me) return;
-  const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(me)}`, { method: 'DELETE' });
-  if (res.ok) { showToast('Left the section'); renderSharedView(); }
-  else showToast('Could not leave the section');
-}
-async function collabDeleteNote(noteId) {
-  const me = state.cachedProfile && state.cachedProfile.username;
-  if (state.collab.noteId != null && String(state.collab.noteId) === String(noteId) && state.collab.owner !== me) {
-    showToast('Only the owner can delete a shared note');
-    return;
-  }
-  const res = await apiFetch(`/api/collab/notes/${encodeURIComponent(noteId)}`, { method: 'DELETE' });
-  if (res.ok) {
-    if (state.collab.noteId === Number(noteId) || String(state.collab.noteId) === String(noteId)) closeCollabNote();
-    state.openTabs = state.openTabs.filter((tab) => !(tab.shared && String(tab.id) === String(noteId)));
-    try { renderTabs(); } catch (error) {}
-    if (state.activeView === 'shared') renderSharedView();
-  } else {
-    let msg = 'Could not delete the note';
-    try { const d = await res.json(); if (d && d.error) msg = d.error; } catch (error) {}
-    showToast(msg);
-  }
-}
-async function collabDeleteGroup(groupId) {
-  const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' });
-  if (res.ok) { if (String(state.collab.groupId) === String(groupId)) closeCollabNote(); showToast('Shared section deleted'); if (state.activeView === 'shared') renderSharedView(); }
-  else showToast('Could not delete the section');
-}
+
+
+
 
 // Popup: ask who the new shared section is for.
 
 
 
 
-async function confirmCollabNew() {
-  const input = document.getElementById('collab-new-members');
-  const me = state.cachedProfile && state.cachedProfile.username;
-  const names = parseUsernames(input ? input.value : '').filter((n) => /^[A-Za-z0-9_-]{3,32}$/.test(n) && n !== me);
-  if (!names.length) { setCollabNewStatus('Enter at least one valid username (not your own).'); return; }
-  if (!(await sharingEnsureKeys())) { setCollabNewStatus('Could not set up sharing keys.'); return; }
-  const btn = document.getElementById('collab-new-create');
-  if (btn) btn.disabled = true;
-  setCollabNewStatus('Sending…');
-  try {
-    await collabCreateSection(names);
-    closeCollabNewDialog();
-  } catch (error) {
-    setCollabNewStatus(error && error.message ? error.message : 'Could not create the section.');
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
+
 // Bottom "+ New note" opens the same popup (a new person = a new section).
 
 
@@ -3530,182 +1169,15 @@ async function confirmCollabNew() {
 
 
 
-async function renderSharedView() {
-  updateBinUI();
-  updateVaultUI();
-  updateBreadcrumbs();
-  const emptyTitle = listEmpty.querySelector('strong');
-  const emptySub = listEmpty.querySelector('span:last-child');
-  noteList.hidden = false;
-  listEmpty.hidden = true;
-  if (totalCount) totalCount.textContent = 'Shared notes';
-  if (allCount) allCount.textContent = '0';
-  if (recentCountEl) recentCountEl.textContent = '0';
-  if (starredCountEl) starredCountEl.textContent = '0';
-  const headerNew = document.getElementById('shared-new');
-  if (headerNew) headerNew.hidden = false;
-  const headerRefresh = document.getElementById('refresh-view');
-  if (headerRefresh) headerRefresh.hidden = false;
-  noteList.innerHTML = `<div class="list-section">
-      <div class="list-section-head">
-        <span class="list-section-title">People</span>
-      </div>
-      <div id="shared-view-list"><p class="modal-desc" style="padding:6px 10px">Loading…</p></div>
-    </div>`;
-  const box = document.getElementById('shared-view-list');
-  if (!e2ee.masterKey) { if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Log in and unlock your notes first.</p>'; return; }
-  let res;
-  try { res = await apiFetch('/api/collab/groups'); } catch (error) { res = null; }
-  if (!res || !res.ok) { if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Could not load shared sections.</p>'; return; }
-  const data = await res.json();
-  const groups = Array.isArray(data.groups) ? data.groups : [];
-  const invites = Array.isArray(data.invites) ? data.invites : [];
-  setSharedNavCount(groups.length + invites.length);
-  const me = state.cachedProfile && state.cachedProfile.username;
-  const query = state.searchQuery.trim();
-  const searching = query !== '';
-  // Invitations render first and independently of key handling (hidden while searching).
-  const invitesHtml = (!searching && invites.length) ? `<div class="list-section">
-      <div class="list-section-head"><span class="list-section-title">Invitations</span><span class="shared-group-count">${invites.length}</span></div>
-      ${invites.map((inv) => `<div class="shared-invite">
-        <span class="shared-invite-text"><strong>${escapeHtml(inv.owner)}</strong> wants to connect with you</span>
-        <button type="button" class="btn btn-primary shared-action" data-invite-accept="${inv.id}">Accept</button>
-        <button type="button" class="btn btn-secondary shared-action" data-invite-decline="${inv.id}">Decline</button>
-      </div>`).join('')}
-    </div>` : '';
-  if (!groups.length) {
-    sharedGroupFolders.clear();
-    sharedNoteMeta.clear();
-    box.innerHTML = invitesHtml || '<p class="modal-desc" style="padding:6px 10px">No connections yet. Click + New connection and enter a username to start.</p>';
-    updateFoldToggle();
-    return;
-  }
-  if (!(await sharingEnsureKeys())) {
-    box.innerHTML = invitesHtml + '<p class="modal-desc" style="padding:6px 10px">Could not unlock your sharing keys — reopen Shared to retry.</p>';
-    updateFoldToggle();
-    return;
-  }
-  sharedGroupKeys.clear();
-  sharedGroupFolders.clear();
-  sharedNoteMeta.clear();
-  const groupBlocks = [];
-  let totalMatches = 0;
-  for (const g of groups) {
-    const isOwner = g.owner === me;
-    const displayName = isOwner ? (g.name || 'Shared') : g.owner;
-    let key = null;
-    try { key = (await collabGroupKey(g.id)).key; sharedGroupKeys.set(g.id, key); }
-    catch (error) { /* cannot decrypt (rare) */ }
-    let groupFolders = [];
-    let groupTags = [];
-    if (key) { try { const gm = await collabDecryptGroupMeta(key, g.encMeta || ''); groupFolders = gm.folders; groupTags = gm.tags; } catch (error) {} }
-    sharedGroupFolders.set(g.id, groupFolders);
-    sharedGroupTags.set(g.id, groupTags);
-    sharedGroupOwners.set(g.id, g.owner);
-    const rawNotes = Array.isArray(g.notes) ? g.notes : [];
-    const decoded = [];
-    for (const n of rawNotes) {
-      let meta = { title: '', folder: '', template: '' };
-      if (key) { try { meta = await collabDecryptMeta(key, n.encMeta || ''); } catch (error) {} }
-      const entry = { id: n.id, title: meta.title, folder: meta.folder, template: meta.template, tags: meta.tags || [], groupId: g.id };
-      sharedNoteMeta.set(String(n.id), entry);
-      decoded.push(entry);
-    }
-    // After decoding this render, a flagged section (member left / account
-    // deleted) is re-keyed in the background by a remaining member.
-    if (key && g.rekeyNeeded) rekeyGroupIfNeeded(g, key);
-    const visible = searching ? decoded.filter((entry) => sharedNoteMatchesSearch(entry, query)) : decoded;
-    if (searching && !visible.length) continue;
-    totalMatches += visible.length;
-    groupBlocks.push(`<div class="shared-group">
-      <div class="shared-group-head">
-        <span class="shared-group-name">${escapeHtml(displayName)}</span>
-        <span class="shared-group-count">${searching ? visible.length : decoded.length}</span>
-        <button type="button" class="shared-group-add" data-group-addfolder="${g.id}" title="Add a folder to ${escapeHtml(displayName)}" aria-label="Add a folder to ${escapeHtml(displayName)}">${icon('folder-plus')}</button>
-        ${isOwner
-          ? `<button type="button" class="shared-icon" data-group-settings="${g.id}" title="Section settings" aria-label="Section settings for ${escapeHtml(displayName)}">${icon('settings')}</button>`
-            + `<button type="button" class="shared-icon danger" data-group-delete="${g.id}" title="Delete section" aria-label="Delete section">${icon('trash')}</button>`
-          : `<button type="button" class="shared-icon" data-group-leave="${g.id}" title="Leave section" aria-label="Leave section">${icon('logout')}</button>`}
-      </div>
-      ${sharedFolderTree(visible, g.id, searching ? [] : groupFolders, isOwner)}
-    </div>`);
-  }
-  let html = invitesHtml + groupBlocks.join('');
-  if (searching && totalMatches === 0) html = `<p class="modal-desc" style="padding:6px 10px">No shared notes match “${escapeHtml(query)}”.</p>`;
-  box.innerHTML = html;
-  updateFoldToggle();
-  try { renderTabs(); } catch (error) {}
-}
 
-async function addSharedFolder(groupId) {
-  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
-  if (!key) { showToast('Reload the Shared list and try again'); return; }
-  const value = await askInput({ eyebrow: 'Folder', title: 'Add a folder', desc: 'Type a name, or "Parent / Child" to nest.', label: 'Folder name', password: false, placeholder: 'e.g. Ideas / 2026', okText: 'Add' });
-  if (value == null) return;
-  const folder = String(value).trim().replace(/\s*\/\s*/g, FOLDER_SEP).replace(/^\/+|\/+$/g, '').slice(0, 180);
-  if (!folder) return;
-  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
-  if (existing.some((f) => f.toLowerCase() === folder.toLowerCase())) { showToast('That folder already exists'); return; }
-  try {
-    const encMeta = await collabEncryptGroupMeta(key, [...existing, folder], sharedGroupTagList(groupId));
-    const res = await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
-    if (!res.ok) { showToast('Could not add the folder'); return; }
-    showToast(`Folder \u201c${folder}\u201d added`);
-    renderSharedView();
-  } catch (error) { showToast('Could not add the folder'); }
-}
-async function moveSharedNote(noteId, groupId) {
-  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
-  const entry = sharedNoteMeta.get(String(noteId));
-  if (!key) { showToast('Reload the Shared list and try again'); return; }
-  const value = await askInput({ eyebrow: 'Folder', title: 'Move to folder', desc: 'Type a folder name, or "Parent / Child" to nest.', label: 'Folder', password: false, placeholder: 'e.g. Ideas / 2026', okText: 'Move' });
-  if (value == null) return;
-  const folder = String(value).trim().replace(/\s*\/\s*/g, FOLDER_SEP).replace(/^\/+|\/+$/g, '').slice(0, 180);
-  try {
-    const encMeta = await collabEncryptMeta(key, { title: (entry && entry.title) || '', folder });
-    const res = await apiFetch(`/api/collab/notes/${noteId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
-    if (!res.ok) { showToast('Could not move the note'); return; }
-    if (state.collab.noteId === Number(noteId) || String(state.collab.noteId) === String(noteId)) state.collab.folder = folder;
-    showToast(folder ? `Moved to ${folder}` : 'Moved to the section root');
-    renderSharedView();
-  } catch (error) { showToast('Could not move the note'); }
-}
+
+
+
 
 // Drag-and-drop: move a note into a folder (no prompt).
-async function moveSharedNoteToFolder(noteId, groupId, folder) {
-  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
-  const entry = sharedNoteMeta.get(String(noteId));
-  if (!key) { showToast('Reload the Shared list and try again'); return; }
-  const target = folder || '';
-  if ((entry && entry.folder) === target) return;
-  await updateSharedNoteMeta(key, noteId, { title: (entry && entry.title) || '', folder: target });
-  if (String(state.collab.noteId) === String(noteId)) state.collab.folder = target;
-  renderSharedView();
-  showToast(target ? `Moved to ${target}` : 'Moved to the section root');
-}
+
 // Drag-and-drop: reparent a folder (with its subfolders and notes).
-async function reparentSharedFolder(groupId, folder, newParent) {
-  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
-  if (!key) { showToast('Reload the Shared list and try again'); return; }
-  const parent = newParent || '';
-  if (parent && (parent === folder || isFolderOrSub(parent, folder))) { showToast("Can't move a folder into itself"); return; }
-  const leaf = folderLeaf(folder);
-  const newPath = parent ? `${parent}${FOLDER_SEP}${leaf}` : leaf;
-  if (newPath === folder) return;
-  const prefix = `${folder}${FOLDER_SEP}`;
-  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
-  const nextFolders = existing.map((f) => (f === folder ? newPath : (f.startsWith(prefix) ? newPath + f.slice(folder.length) : f)));
-  for (const e of [...sharedNoteMeta.values()]) {
-    if (String(e.groupId) !== String(groupId) || !e.folder) continue;
-    if (e.folder === folder || e.folder.startsWith(prefix)) {
-      const nf = e.folder === folder ? newPath : newPath + e.folder.slice(folder.length);
-      await updateSharedNoteMeta(key, e.id, { title: e.title || '', folder: nf });
-    }
-  }
-  await saveGroupFolders(groupId, key, nextFolders);
-  renderSharedView();
-  showToast('Folder moved');
-}
+
 
 
 
@@ -3717,73 +1189,21 @@ async function reparentSharedFolder(groupId, folder, newParent) {
 
 
 
-async function renameSharedFolder(groupId, folder) {
-  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
-  if (!key) { showToast('Reload the Shared list and try again'); return; }
-  const value = await askInput({ eyebrow: 'Rename folder', title: folderLeaf(folder), desc: 'Rename this folder in the shared section.', label: 'Name', password: false, placeholder: folderLeaf(folder), okText: 'Rename' });
-  if (value == null) return;
-  const leaf = String(value).trim().replace(/[\/\\]+/g, ' ').replace(/\s+/g, ' ').slice(0, 120);
-  if (!leaf) return;
-  const parent = folderParent(folder);
-  const newPath = parent ? `${parent}${FOLDER_SEP}${leaf}` : leaf;
-  if (newPath.toLowerCase() === folder.toLowerCase()) return;
-  const prefix = `${folder}${FOLDER_SEP}`;
-  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
-  const nextFolders = existing.map((f) => (f === folder ? newPath : (f.startsWith(prefix) ? newPath + f.slice(folder.length) : f)));
-  for (const e of [...sharedNoteMeta.values()]) {
-    if (String(e.groupId) !== String(groupId) || !e.folder) continue;
-    if (e.folder === folder || e.folder.startsWith(prefix)) {
-      const nf = e.folder === folder ? newPath : newPath + e.folder.slice(folder.length);
-      await updateSharedNoteMeta(key, e.id, { title: e.title || '', folder: nf });
-    }
-  }
-  await saveGroupFolders(groupId, key, nextFolders);
-  showToast('Folder renamed');
-  renderSharedView();
-}
 
-async function deleteSharedFolderNow(groupId, folder) {
-  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
-  if (!key) { showToast('Reload the Shared list and try again'); return; }
-  const prefix = `${folder}${FOLDER_SEP}`;
-  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
-  const nextFolders = existing.filter((f) => f !== folder && !f.startsWith(prefix));
-  for (const e of [...sharedNoteMeta.values()]) {
-    if (String(e.groupId) !== String(groupId) || !e.folder) continue;
-    if (e.folder === folder || e.folder.startsWith(prefix)) await updateSharedNoteMeta(key, e.id, { title: e.title || '', folder: '' });
-  }
-  await saveGroupFolders(groupId, key, nextFolders);
-  showToast('Folder deleted');
-  renderSharedView();
-}
+
+
 
 // Right-click menu for shared notes and folders.
 
 
 
-async function acceptInvite(id) {
-  const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(id)}/accept`, { method: 'POST', body: '{}' });
-  if (res.ok) { showToast('Invitation accepted'); renderSharedView(); }
-  else showToast('Could not accept the invitation');
-}
-async function declineInvite(id) {
-  const me = state.cachedProfile && state.cachedProfile.username;
-  const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(me)}`, { method: 'DELETE' });
-  if (res.ok) { showToast('Invitation declined'); renderSharedView(); }
-  else showToast('Could not decline the invitation');
-}
+
+
 
 // Keyboard-accessible delete: mirrors the context-menu rules exactly —
 // binned notes ask for permanent-confirm, important-tagged notes ask for
 // confirm, everything else soft-deletes straight into Bin.
-function requestDeleteNoteById(id) {
-  if (!id || typeof id !== 'string' || !isValidNoteId(id)) return;
-  const note = state.notes.find((item) => item.id === id);
-  if (!note) return;
-  if (note.deleted) openPermanentDeleteConfirm(id);
-  else if (isImportant(note)) openDeleteConfirm(id);
-  else deleteNoteById(id);
-}
+
 
 
 // Fill the shared in-app confirm popup (eyebrow/title/name/message). Name is set via textContent — never HTML.
@@ -3802,53 +1222,10 @@ function requestDeleteNoteById(id) {
 
 
 // Run the pending popup action: soft/permanent/empty/folder/folder-permanent.
-function confirmPendingDelete() {
-  if (!state.pendingDeleteId) return;
-  const id = state.pendingDeleteId;
-  const mode = state.pendingDeleteMode;
-  const sectionId = state.pendingDeleteSection;
-  closeDeleteConfirm();
-  if (mode === 'empty') emptyBin();
-  else if (mode === 'permanent') permanentlyDeleteNoteById(id);
-  else if (mode === 'vault-note') deleteVaultNote(id);
-  else if (mode === 'vault-folder') deleteVaultFolder(id);
-  else if (mode === 'custom-section') deleteCustomSection(id);
-  else if (mode === 'custom-folder') deleteCustomFolder(sectionId, id);
-  else if (mode === 'tag') { if (state.pendingDeleteTag) { deleteTagEverywhere(state.pendingDeleteTag); renderSettingsTags(); } }
-  else if (mode === 'collab-note') { collabDeleteNote(id); }
-  else if (mode === 'collab-group') { collabDeleteGroup(id); }
-  else if (mode === 'shared-folder') { deleteSharedFolderNow(Number(id), sectionId); }
-  else deleteNoteById(id);
-}
+
 
 // Delegated right-click handling on the note list; closes on outside click, resize, scroll and Escape.
-function bindNoteContextMenu() {
-  const menu = getNoteContextMenu();
-  if (!menu || !noteList) return;
-  noteList.addEventListener('contextmenu', (event) => {
-    const item = event.target.closest('[data-note-id]');
-    if (!item) return;
-    event.preventDefault();
-    event.stopPropagation();
-    openNoteContextMenu(item.dataset.noteId, event.clientX, event.clientY);
-  });
-  menu.addEventListener('click', (event) => {
-    const item = event.target.closest('[data-menu-action]');
-    if (!item) return;
-    const action = item.dataset.menuAction;
-    const id = state.contextMenuNoteId;
-    closeNoteContextMenu();
-    handleNoteMenuAction(action, id);
-  });
-  document.addEventListener('click', (event) => {
-    if (state.contextMenuNoteId && !event.target.closest('#note-context-menu')) closeNoteContextMenu();
-  });
-  document.addEventListener('contextmenu', (event) => {
-    if (state.contextMenuNoteId && !event.target.closest('#note-context-menu')) closeNoteContextMenu();
-  });
-  window.addEventListener('resize', closeNoteContextMenu);
-  noteList.addEventListener('scroll', closeNoteContextMenu);
-}
+
 
 // ---- Private Vault (user-facing feature) ----------------------------------
 // Password-locked secret notes behind the single Vault menu button. This is
@@ -3873,344 +1250,51 @@ state.vault = { unlocked: false, dek: null, notes: [], blobs: [], meta: null, fo
 
 
 // Open a vault note in the editor (preview-first, like normal notes).
-function selectVaultNote(id) {
-  exitCoverRepos(true);
-  const note = state.vault.unlocked ? state.vault.notes.find((item) => item.id === id) : null;
-  if (!note) return;
-  trackTab(id, true);
-  state.currentVaultId = id;
-  state.currentId = null;
-  document.querySelector('.app-shell').classList.remove('workspace-focus');
-  state.writeMode = 'preview';
-  clearTimeout(state.idleTimer);
-  titleInput.value = note.title;
-  markdownInput.value = note.body;
-  breadcrumbTitle.textContent = note.title;
-  renderCover(null); // vault notes have no covers; clear any stale banner
-  renderPreview(note);
-  updateMeta(note);
-  renderNoteList();
-  refreshEditorLock();
-}
+
 
 // Save the open vault note into memory; the debounced envelope sync persists it.
-function saveVaultNote() {
-  if (!state.vault.unlocked || !state.currentVaultId) return;
-  const note = state.vault.notes.find((item) => item.id === state.currentVaultId);
-  if (!note) return;
-  note.title = (typeof titleInput.value === 'string' ? titleInput.value : '').trim().slice(0, 200) || 'Untitled note';
-  note.body = typeof markdownInput.value === 'string' ? markdownInput.value.slice(0, 500000) : '';
-  note.date = 'Now';
-  note.updatedAt = Date.now();
-  breadcrumbTitle.textContent = note.title;
-  renderPreview(note);
-  updateMeta(note);
-  renderTabs();
-  setSaveLabel('Saving...', 'green');
-  clearTimeout(state.saveTimer);
-  state.saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
-}
+
 
 // + New secret note entry: like + New Note outside the Vault — asks for the
 // folder first (only when folders exist), then the template.
-function onNewVaultNoteClick() {
-  if (!state.vault.unlocked) { showToast('Unlock the Vault first'); return; }
-  state.pendingVaultFolder = null;
-  state.vaultTemplatePending = false;
-  if (state.vault.folders.length && openVaultFolderPicker()) return;
-  state.vaultTemplatePending = true;
-  openTemplatePicker();
-}
+
 
 // Folder destination picker for new vault notes. Reuses the shared
 // folder-pick overlay with vault entries (root first).
-function openVaultFolderPicker() {
-  const box = document.getElementById('folder-pick-options');
-  const overlay = document.getElementById('folder-pick-overlay');
-  if (!box || !overlay) return false;
-  document.getElementById('folder-pick-desc').textContent = 'Where in the Vault should this note land?';
-  const rows = [{ name: '', label: 'Vault', sub: 'Top level' }]
-    .concat(state.vault.folders.map((folder) => ({ name: folder, label: folderLeaf(folder), sub: folder })));
-  box.innerHTML = rows.map((entry) => `
-    <button class="template-option" data-vault-pick="${escapeHtml(entry.name)}">
-      <span class="template-icon">${icon('folder')}</span>
-      <span class="theme-option-text"><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.sub)}</span></span>
-    </button>`).join('');
-  box.querySelectorAll('[data-vault-pick]').forEach((btn) => btn.addEventListener('click', () => {
-    state.pendingVaultFolder = btn.dataset.vaultPick || null;
-    closeFolderPicker();
-    state.vaultTemplatePending = true;
-    openTemplatePicker();
-  }));
-  overlay.hidden = false;
-  const first = box.querySelector('[data-vault-pick]');
-  if (first) first.focus();
-  return true;
-}
+
 
 // Create a vault note from a template into the picked folder (or Vault root).
-function createVaultNoteFromTemplate(templateKey) {
-  if (!state.vault.unlocked) { showToast('Unlock the Vault first'); return null; }
-  const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
-  const folder = (state.pendingVaultFolder && state.vault.folders.includes(state.pendingVaultFolder)) ? state.pendingVaultFolder : null;
-  state.pendingVaultFolder = null;
-  const title = uniqueVaultTitle(template.titleBase);
-  const note = {
-    id: newNoteId(), title, body: template.body(title),
-    tags: [...template.tags], ext: normalizeExt(template.ext),
-    date: 'Now', favorite: false, folder,
-  };
-  state.vault.notes.unshift(note);
-  state.currentVaultId = note.id;
-  selectVaultNote(note.id);
-  persistNotes();
-  showToast(folder ? `${template.label} created in ${folder}` : `${template.label} created`);
-  return note;
-}
 
-function deleteVaultNote(id) {
-  const index = state.vault.notes.findIndex((item) => item.id === id);
-  if (index === -1) return;
-  state.vault.notes.splice(index, 1);
-  state.vault.blobs = state.vault.blobs.filter((item) => item.id !== id);
-  if (state.currentVaultId === id) {
-    if (state.vault.notes.length) selectVaultNote(state.vault.notes[Math.min(index, state.vault.notes.length - 1)].id);
-    else { state.currentVaultId = null; clearEditor(); }
-  }
-  persistNotes();
-  renderNoteList();
-  showToast('Secret note deleted');
-}
+
+
 
 
 
 // ---- Vault folders (flat, dev): explicit list in the envelope so empty
 // folders survive. Notes carry folder (or null for Vault root).
 
-function addVaultFolder() {
-  if (!state.vault.unlocked) { showToast('Unlock the Vault first'); return; }
-  askInput({ eyebrow: 'Vault', title: 'New vault folder', desc: '', label: 'Folder name', password: false, placeholder: 'e.g. Receipts', okText: 'Create' }).then((value) => {
-    if (value == null) return;
-    const checked = cleanVaultFolderInput(value, null);
-    if (checked.error) { showToast(checked.error); return; }
-    state.vault.folders.push(checked.name);
-    persistNotes();
-    renderNoteList();
-    showToast('Vault folder added');
-  });
-}
 
-function renameVaultFolder(folder) {
-  if (!state.vault.unlocked || !state.vault.folders.includes(folder)) return;
-  askInput({ eyebrow: 'Vault', title: 'Rename vault folder', desc: '', label: 'Folder name', password: false, placeholder: folder, okText: 'Rename' }).then((value) => {
-    if (value == null) return;
-    const checked = cleanVaultFolderInput(value, folder);
-    if (checked.error) { showToast(checked.error); return; }
-    if (checked.name === folder) return;
-    state.vault.folders = state.vault.folders.map((entry) => (entry === folder ? checked.name : entry));
-    state.vault.notes.forEach((note) => { if (note.folder === folder) note.folder = checked.name; });
-    persistNotes();
-    renderNoteList();
-    showToast('Vault folder renamed');
-  });
-}
+
+
 
 
 
 // Delete a vault folder immediately (no Bin in the vault): its notes move to
 // the Vault root and everything syncs encrypted as usual.
-function deleteVaultFolder(folder) {
-  if (!state.vault.unlocked) return;
-  state.vault.folders = state.vault.folders.filter((entry) => entry !== folder);
-  state.vault.notes.forEach((note) => { if (note.folder === folder) { note.folder = null; note.date = 'Now'; } });
-  persistNotes();
-  renderNoteList();
-  showToast('Vault folder deleted');
-}
+
 
 // Render the Vault view: lock notice when locked, otherwise one Vault folder
 // with the decrypted notes. Counts/footer mirror the normal list shape.
-function renderVaultList() {
-  updateBinUI(); // Vault never shows Empty Bin; this also clears stale visibility.
-  updateVaultUI();
-  updateBreadcrumbs();
-  const emptyTitle = listEmpty.querySelector('strong');
-  const emptySub = listEmpty.querySelector('span:last-child');
-  if (!state.vault.unlocked) {
-    noteList.innerHTML = `
-    <div class="vault-locked">
-      <span class="empty-icon" data-icon="lock"></span>
-      <strong>Vault is locked</strong>
-      <span>Unlock to see your secret notes.</span>
-      <button class="btn btn-primary" id="vault-lock-open">Unlock Vault</button>
-    </div>`;
-    const lockIcon = noteList.querySelector('[data-icon="lock"]');
-    if (lockIcon) lockIcon.innerHTML = icon('lock');
-    listEmpty.hidden = true;
-    noteList.hidden = false;
-    if (allCount) allCount.textContent = '0';
-    if (recentCountEl) recentCountEl.textContent = '0';
-    if (starredCountEl) starredCountEl.textContent = '0';
-    if (totalCount) totalCount.textContent = '0 in vault';
-    const openBtn = document.getElementById('vault-lock-open');
-    if (openBtn) openBtn.addEventListener('click', openVaultModal);
-    renderTabs();
-    renderStripItems();
-    return;
-  }
-  if (!state.vault.notes.length && !state.vault.folders.length) {
-    noteList.innerHTML = '';
-    listEmpty.hidden = false;
-    noteList.hidden = true;
-    if (emptyTitle) emptyTitle.textContent = 'Vault is empty';
-    if (emptySub) emptySub.textContent = 'Create your first secret note.';
-  } else {
-    listEmpty.hidden = true;
-    noteList.hidden = false;
-    const knownVaultFolders = new Set(state.vault.folders);
-    const rootNotes = state.vault.notes.filter((note) => !note.folder || !knownVaultFolders.has(note.folder));
-    const renderVaultNoteRow = (note) => `
-        <button class="tree-file${note.id === state.currentVaultId ? ' selected' : ''}" data-vault-id="${escapeHtml(note.id)}" title="${escapeHtml(note.title || 'Untitled note')}" draggable="true">
-          <span class="tree-file-icon tree-file-icon-md">${icon('file')}</span>
-          <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
-          <span class="tree-action danger" data-vault-delete="${escapeHtml(note.id)}" title="Delete secret note" role="button" aria-label="Delete ${escapeHtml(note.title || 'Untitled note')}">${icon('trash')}</span>
-        </button>`;
-    noteList.innerHTML = `
-    <div class="tree-folder-wrap" data-folder-wrap="Vault">
-      <div class="tree-folder-row">
-        <button class="tree-folder" data-folder="Vault" aria-expanded="true" title="Vault">
-          <span class="tree-chevron">${icon('chevron-right')}</span>
-          <span class="tree-folder-icon">${icon('lock')}</span>
-          <span class="tree-folder-name">Vault</span>
-          <span class="tree-count">${state.vault.notes.length}</span>
-        </button>
-        <button type="button" class="strip-btn" data-vault-folder-add title="New vault folder" aria-label="New vault folder">${icon('folder-plus')}</button>
-      </div>
-      <div class="tree-children">
-        ${state.vault.folders.map((folder) => {
-          const files = state.vault.notes.filter((note) => note.folder === folder);
-          const isCollapsed = state.collapsedFolders.has(folder);
-          return `
-        <div class="tree-folder-wrap${isCollapsed ? ' closed' : ''}" data-vault-folder-wrap="${escapeHtml(folder)}">
-          <div class="tree-folder-row">
-            <button class="tree-folder" data-vault-folder="${escapeHtml(folder)}" aria-expanded="${isCollapsed ? 'false' : 'true'}" title="${escapeHtml(folder)}">
-              <span class="tree-chevron">${icon('chevron-right')}</span>
-          <span class="tree-folder-icon">${icon(folderIconForDepth(folderDepth(folder)))}</span>
-              <span class="tree-folder-name vault-folder-name">${escapeHtml(folder)}</span>
-              <span class="tree-count">${files.length}</span>
-            </button>
-            <button type="button" class="section-delete" data-vault-folder-delete="${escapeHtml(folder)}" title="Delete folder" aria-label="Delete folder ${escapeHtml(folder)}">×</button>
-          </div>
-          <div class="tree-children">
-            ${files.map(renderVaultNoteRow).join('')}
-          </div>
-        </div>`;
-        }).join('')}
-        ${rootNotes.map(renderVaultNoteRow).join('')}
-      </div>
-    </div>`;
-  }
-  if (allCount) allCount.textContent = state.vault.notes.length;
-  if (recentCountEl) recentCountEl.textContent = state.vault.notes.filter((note) => isRecentNote(note)).length;
-  if (starredCountEl) starredCountEl.textContent = state.vault.notes.filter((note) => note.favorite).length;
-  if (totalCount) totalCount.textContent = `${state.vault.notes.length} in vault`;
-  noteList.querySelectorAll('[data-vault-id]').forEach((item) => item.addEventListener('click', (event) => {
-    if (event.target.closest('[data-vault-delete]')) return;
-    selectVaultNote(item.dataset.vaultId);
-  }));
-  noteList.querySelectorAll('[data-vault-delete]').forEach((item) => item.addEventListener('click', (event) => {
-    event.stopPropagation();
-    openVaultNoteDeleteConfirm(item.dataset.vaultDelete);
-  }));
-  const vaultAddBtn = noteList.querySelector('[data-vault-folder-add]');
-  if (vaultAddBtn) vaultAddBtn.addEventListener('click', (event) => {
-    event.stopPropagation();
-    addVaultFolder();
-  });
-  noteList.querySelectorAll('[data-vault-folder]').forEach((header) => {
-    header.addEventListener('click', () => {
-      const folder = header.dataset.vaultFolder;
-      if (state.collapsedFolders.has(folder)) state.collapsedFolders.delete(folder);
-      else state.collapsedFolders.add(folder);
-      persistCollapsedFolders();
-      renderNoteList();
-    });
-  });
-  noteList.querySelectorAll('[data-vault-folder] .vault-folder-name').forEach((label) => label.addEventListener('dblclick', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const header = label.closest('[data-vault-folder]');
-    if (header) renameVaultFolder(header.dataset.vaultFolder);
-  }));
-  noteList.querySelectorAll('[data-vault-folder-delete]').forEach((item) => item.addEventListener('click', (event) => {
-    event.stopPropagation();
-    openVaultFolderDeleteConfirm(item.dataset.vaultFolderDelete);
-  }));
-  // Vault note sorting: drag a secret note onto a vault folder to file it.
-  noteList.querySelectorAll('[data-vault-id]').forEach((row) => {
-    row.addEventListener('dragstart', (event) => {
-      if (!state.vault.unlocked) { event.preventDefault(); return; }
-      event.dataTransfer.setData('text/plain', row.dataset.vaultId);
-      event.dataTransfer.effectAllowed = 'move';
-      row.classList.add('dragging');
-    });
-    row.addEventListener('dragend', () => row.classList.remove('dragging'));
-  });
-  noteList.querySelectorAll('[data-vault-folder]').forEach((header) => {
-    header.addEventListener('dragover', (event) => {
-      if (!state.vault.unlocked) return;
-      event.preventDefault();
-      event.dataTransfer.dropEffect = 'move';
-      header.classList.add('drop-target');
-    });
-    header.addEventListener('dragleave', () => header.classList.remove('drop-target'));
-    header.addEventListener('drop', (event) => {
-      event.preventDefault();
-      const folder = header.dataset.vaultFolder;
-      const note = state.vault.unlocked ? state.vault.notes.find((entry) => entry.id === event.dataTransfer.getData('text/plain')) : null;
-      if (!note || !state.vault.folders.includes(folder)) return;
-      note.folder = folder;
-      note.date = 'Now';
-      persistNotes();
-      renderNoteList();
-      showToast(`Moved to “${folder}”`);
-    });
-  });
-  renderTabs();
-  renderStripItems();
-}
+
 
 // Toggle the vault-only action buttons and the nav lock icon.
 
-function enterVaultView() {
-  if (!state.vault.unlocked) { openVaultModal(); return; }
-  state.activeView = 'vault';
-  state.activeCustom = null;
-  state.activeFilter = 'all';
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'vault'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  clearSearch();
-  updateListHeading();
-  renderCustomSections();
-  renderNoteList();
-}
+
 
 // Wipe vault plaintext (keeping ciphertext blobs AND the folder list) and
 // leave the view. Folders stay so a background sync while locked can never
 // strand or erase them from the envelope.
-async function lockVault() {
-  if (state.activeView === 'vault' && state.currentVaultId) saveVaultNote();
-  try { await currentVaultBlobs(); } catch (error) {}
-  persistNotes();
-  state.vault.unlocked = false;
-  state.vault.dek = null;
-  state.vault.notes = [];
-  state.vault.meta = null;
-  state.currentVaultId = null;
-  goAllNotes();
-  renderNoteList();
-  showToast('Vault locked');
-}
+
 
 // Vault password modal: 'setup' (first run), 'unlock', or 'reset-confirm'.
 // reset-confirm reuses the masked unlock password field for the LOGIN
@@ -4220,108 +1304,11 @@ async function lockVault() {
 
 
 
-async function setupVaultFromModal() {
-  const password = String(document.getElementById('vault-new-password').value || '');
-  const confirm = String(document.getElementById('vault-confirm-password').value || '');
-  if (password !== confirm) { vaultFail('Passwords do not match.'); return; }
-  const missing = passwordPolicyCheck(password);
-  if (missing.length) { vaultFail(`Vault password needs ${missing.join(', ')}.`); return; }
-  try {
-    const saltAuthBytes = e2eeRandomBytes(16);
-    const saltEncBytes = e2eeRandomBytes(16);
-    const verifier = await argon2id32(password, saltAuthBytes);
-    const dekRaw = e2eeRandomBytes(32);
-    const kekRaw = await argon2id32(password, saltEncBytes);
-    const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
-    const iv = e2eeRandomBytes(12);
-    const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, dekRaw);
-    const response = await apiFetch('/api/vault-meta', {
-      method: 'POST',
-      body: JSON.stringify({
-        verifier: e2eeBytesToB64(verifier),
-        saltAuth: e2eeBytesToB64(saltAuthBytes),
-        saltEnc: e2eeBytesToB64(saltEncBytes),
-        encDek: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) },
-      }),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    state.vault.dek = await window.crypto.subtle.importKey('raw', dekRaw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
-    state.vault.notes = [];
-    state.vault.unlocked = true;
-    closeVaultModal();
-    enterVaultView();
-    showToast('Vault ready');
-  } catch (error) {
-    vaultFail('Could not set up the vault. Try again.');
-  }
-}
 
-async function unlockVaultFromModal() {
-  const password = String(document.getElementById('vault-password').value || '');
-  const meta = state.vault.meta;
-  if (!meta || !meta.exists) { setVaultModal('setup'); return; }
-  try {
-    const verifier = await argon2id32(password, e2eeB64ToBytes(meta.saltAuth));
-    if (!timingSafeEqualStr(e2eeBytesToB64(verifier), meta.verifier)) {
-      vaultFail('Incorrect vault password.');
-      return;
-    }
-    const kekRaw = await argon2id32(password, e2eeB64ToBytes(meta.saltEnc));
-    const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-    const dekRaw = await window.crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: e2eeB64ToBytes(meta.encDek.iv) }, kek, e2eeB64ToBytes(meta.encDek.data));
-    state.vault.dek = await window.crypto.subtle.importKey('raw', dekRaw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
-    state.vault.notes = await decryptAllVaultBlobs();
-    state.vault.unlocked = true;
-    closeVaultModal();
-    enterVaultView();
-    showToast('Vault unlocked');
-  } catch (error) {
-    vaultFail('Incorrect vault password.');
-  }
-}
 
-async function resetVault() {
-  // Re-auth fix: stolen cookie alone cannot wipe the vault. Read the LOGIN
-  // password from the masked modal field (shown in reset-confirm mode),
-  // derive the account verifier, and send as proof.
-  let proof = null;
-  try {
-    const input = document.getElementById('vault-password');
-    const pwd = String((input && input.value) || '');
-    if (!pwd) { vaultFail('Enter your login password to confirm reset.'); return; }
-    if (!e2ee.saltAuth) { vaultFail('Log in again, then retry reset.'); return; }
-    const saltBytes = (e2ee.saltAuth instanceof Uint8Array) ? e2ee.saltAuth : e2eeB64ToBytes(e2ee.saltAuth);
-    const raw = await argon2id32(pwd, saltBytes);
-    proof = e2eeBytesToB64(raw);
-  } catch (error) {
-    vaultFail('Could not confirm password.');
-    return;
-  }
-  try {
-    const response = await apiFetch('/api/vault-meta', { method: 'DELETE', body: JSON.stringify({ currentAccountAuth: proof }) });
-    if (response.status === 401) {
-      vaultFail('Incorrect login password — vault not reset.');
-      return;
-    }
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  } catch (error) {
-    vaultFail('Could not reset the vault. Try again.');
-    return;
-  }
-  state.vault.unlocked = false;
-  state.vault.dek = null;
-  state.vault.notes = [];
-  state.vault.blobs = [];
-  state.vault.folders = [];
-  state.vault.meta = null;
-  state.currentVaultId = null;
-  persistNotes();
-  closeVaultModal();
-  goAllNotes();
-  renderNoteList();
-  showToast('Vault reset');
-}
+
+
+
 
 document.getElementById('vault-confirm').addEventListener('click', async () => {
   if (state.vaultModalMode === 'setup') await setupVaultFromModal();
@@ -4345,41 +1332,7 @@ document.getElementById('lock-vault').addEventListener('click', lockVault);
 
 // Detect a trailing file extension typed in the title and switch the note type instead.
 // Persist title/body from the editor (debounced server sync); refuses deleted/archived notes.
-function saveCurrentNote() {
-  // Shared (collaborative) note: edits go to the Yjs doc, not to a local note.
-  if (state.collab.noteId && state.collab.title && state.collab.body) {
-    applyTextDiff(state.collab.title, state.collab.title.toString(), String(titleInput.value || '').slice(0, 200));
-    applyTextDiff(state.collab.body, state.collab.body.toString(), String(markdownInput.value || ''));
-    if (state.collab.desc && state.collab.template === 'recipe') {
-      const descEl = document.getElementById('recipe-desc');
-      applyTextDiff(state.collab.desc, state.collab.desc.toString(), descEl && typeof descEl.value === 'string' ? descEl.value.slice(0, 2000) : '');
-    }
-    scheduleCollabMeta();
-    return;
-  }
-  if (state.activeView === 'vault') { saveVaultNote(); return; }
-  const note = currentNote();
-  if (!note || note.deleted || note.archived) return;
-  const rawTitle = (typeof titleInput.value === 'string' ? titleInput.value : '').trim().slice(0, 200) || 'Untitled note';
-  note.title = parseTitleExtension(rawTitle, note);
-  if (typeof note.title !== 'string' || !note.title.trim()) note.title = 'Untitled note';
-  note.title = note.title.slice(0, 200);
-  note.body = typeof markdownInput.value === 'string' ? markdownInput.value.slice(0, 500000) : '';
-  if (note.template === 'recipe') {
-    const descEl = document.getElementById('recipe-desc');
-    note.description = descEl && typeof descEl.value === 'string' ? descEl.value.slice(0, 2000) : '';
-  } else if ('description' in note) delete note.description;
-  note.date = 'Now';
-  note.updatedAt = Date.now();
-  breadcrumbTitle.textContent = note.title;
-  renderPreview(note);
-  updateMeta(note);
-  renderTabs();
-  setSaveLabel('Saving...', 'green');
-  clearTimeout(state.saveTimer);
-  state.saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
-  resetIdleTimer();
-}
+
 
 // De-duplicate a note title (case-insensitive) by appending a counter.
 // Binned notes don't squat names — only live ones count.
@@ -4397,108 +1350,13 @@ function saveCurrentNote() {
 
 
 // Create a note from a template (Standard/Recipe/To-Do) into the current view+collection and open it.
-function createNoteFromTemplate(templateKey) {
-  const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
-  if (state.activeView === 'bin') {
-    state.activeView = 'notes';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    updateListHeading();
-  }
-  const id = newNoteId();
-  const title = uniqueTitle(template.titleBase);
-  const tags = [...template.tags];
-  // Filing follows the workspace: a picked folder files the note there; a bare
-  // section view asks first (state.pendingSectionFolder), falling back to the
-  // section's first folder only when the picker had nothing to offer.
-  const picked = state.pendingSectionFolder;
-  state.pendingSectionFolder = null;
-  // A picked folder always wins when it still exists (covers both the
-  // bare-section flow and the folder-required gate resume, where the active
-  // view may be a different section or none at all). Stale picks (folder
-  // deleted since) fall through to the normal resolution below.
-  const pickedSection = picked && picked.ns === 'custom'
-    ? state.customSections.find((entry) => entry.id === picked.section) : null;
-  const pickedFolder = pickedSection && typeof picked.folder === 'string'
-    && pickedSection.folders.includes(picked.folder) ? picked.folder : null;
-  const customSection = state.activeCustom ? state.customSections.find((entry) => entry.id === state.activeCustom.section) : null;
-  // No active folder context (e.g. All notes): inherit filing from the open
-  // note so the new note lands next to it instead of staying unfiled.
-  // Only live locations count — binned/deleted/removed folders are skipped.
-  const inheritSections = {};
-  if (!state.activeCustom && state.currentId) {
-    const openNote = state.notes.find((entry) => entry.id === state.currentId);
-    if (openNote) {
-      if (openNote.sections && typeof openNote.sections === 'object') {
-        for (const secId of Object.keys(openNote.sections)) {
-          const folder = openNote.sections[secId];
-          if (typeof folder !== 'string' || !folder) continue;
-          const sec = state.customSections.find((entry) => entry.id === secId);
-          if (sec && sec.folders.includes(folder)) inheritSections[secId] = folder;
-        }
-      }
-    }
-  }
-  const customFolder = pickedFolder
-    || (state.activeCustom && state.activeCustom.folder)
-    || (customSection && customSection.folders.length ? customSection.folders[0] : null);
-  const filedSections = (pickedFolder && pickedSection) ? { [pickedSection.id]: pickedFolder }
-    : (state.activeCustom && customFolder) ? { [state.activeCustom.section]: customFolder } : inheritSections;
-  // Folder-required rule: a note must land in a folder or subfolder. If no
-  // filing resolved above, park the template choice and ask for a
-  // destination first — creation resumes after the pick. A workspace with no
-  // folders at all cannot file anything: say so instead of silently
-  // creating an unfiled note.
-  if (!customFolder && !Object.values(filedSections).some((value) => typeof value === 'string' && value)) {
-    state.pendingTemplate = templateKey;
-    if (!openFolderPicker()) {
-      state.pendingTemplate = null;
-      showToast('Create a folder first, then add your note there');
-      return null;
-    }
-    return null;
-  }
-  const note = { id, title, date: 'Now', updatedAt: Date.now(), tags, favorite: false, archived: false, deleted: false, ext: normalizeExt(template.ext), sections: filedSections, body: seedFromTemplate(templateKey, title).body };
-  if (templateKey === 'recipe' || templateKey === 'todo') note.template = templateKey;
-  if (templateKey === 'recipe' && template.recipe) {
-    note.ingredients = sanitizeIngredients(template.recipe.ingredients);
-    note.steps = sanitizeSteps(template.recipe.steps);
-  }
-  if (templateKey === 'recipe') note.body = '';
-  state.notes.unshift(note);
-  state.activeFilter = 'all';
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  // A stale search query must never swallow the brand-new note.
-  clearSearch();
-  state.currentId = id;
-  selectNote(id);
-  // Mirror the new filing in the workspace sidebar immediately.
-  renderCustomSections();
-  markdownInput.focus();
-  markdownInput.setSelectionRange(markdownInput.value.length, markdownInput.value.length);
-  persistNotes();
-  // Confirm where it landed: if the current view filters it out, name the
-  // destination so the note is findable instead of seemingly lost.
-  const shown = visibleNotes().some((entry) => entry.id === id);
-  const sectionValues = Object.values(note.sections || {}).filter((value) => typeof value === 'string' && value);
-  const dest = customFolder || sectionValues[0] || 'All Notes';
-  showToast(shown ? `${template.label} created` : `${template.label} created in ${dest}`);
-  return note;
-}
+
 
 // Shortcut for a blank Standard note.
-function addNote() {
-  createNoteFromTemplate('standard');
-}
+
 
 // Show the New-note template chooser popup.
-function openTemplatePicker() {
-  const overlay = document.getElementById('template-overlay');
-  if (!overlay) { addNote(); return; }
-  renderTemplateOptions();
-  overlay.hidden = false;
-  const first = overlay.querySelector('.template-option');
-  if (first) first.focus();
-}
+
 
 // Hide the template chooser popup.
 
@@ -4510,19 +1368,7 @@ function openTemplatePicker() {
 // destination folder first, so the note lands where the user wants. A section
 // with no folders yet cannot file anything — say so instead of silently
 // creating an invisible note.
-function onNewNoteClick() {
-  state.pendingSectionFolder = null;
-  state.pendingTemplate = null;
-  if (state.activeCustom && !state.activeCustom.folder) {
-    const section = state.customSections.find((entry) => entry.id === state.activeCustom.section);
-    if (section && !section.folders.length) {
-      showToast(`Create a folder in ${section.name} first`);
-      return;
-    }
-    if (openFolderPicker('custom', state.activeCustom.section)) return;
-  }
-  openTemplatePicker();
-}
+
 
 // Order picker entries like the expanded workspace note list: a parent is
 // followed immediately by all its children (recursively), matching the
@@ -4533,60 +1379,7 @@ function onNewNoteClick() {
 // (bare-section flow, resumes at the template picker). With no args it lists
 // every folder in the workspace (folder-required gate, resumes a parked
 // template choice). Returns false when there is nothing to choose.
-function openFolderPicker(ns, sectionId) {
-  const box = document.getElementById('folder-pick-options');
-  const overlay = document.getElementById('folder-pick-overlay');
-  if (!box || !overlay) return false;
-  let entries = [];
-  let heading;
-  if (ns === 'custom') {
-    const section = state.customSections.find((entry) => entry.id === sectionId);
-    if (!section || !section.folders.length) return false;
-    entries = orderFoldersLikeWorkspace(section.folders).map((folder) => ({ ns, section: sectionId, folder, context: section.name }));
-    heading = `Where in ${entries[0].context} should this note land?`;
-  } else {
-    (state.customSections || []).forEach((section) => {
-      orderFoldersLikeWorkspace(section.folders || []).forEach((folder) => {
-        entries.push({ ns: 'custom', section: section.id, folder, context: section.name });
-      });
-    });
-    if (!entries.length) return false;
-    heading = 'Every note needs a folder — where should this one land?';
-  }
-  document.getElementById('folder-pick-desc').textContent = heading;
-  box.innerHTML = entries.map((entry) => {
-    const leaf = folderLeaf(entry.folder);
-    const sub = leaf === entry.folder ? entry.context : entry.folder;
-    // Indent icon + label text (not the button) one notch per depth level.
-    // Icons mirror the workspace strip: colored folder, nested glyph for subs.
-    const section = state.customSections.find((sec) => sec.id === entry.section);
-    const depth = folderDepth(entry.folder);
-    const glyphClass = `strip-folder-glyph ${section ? customFolderColor(section, entry.folder) : 'blue'}`;
-    const glyph = `<span class="${glyphClass}">${icon(folderIconForDepth(depth))}</span>`;
-    return `
-    <button class="template-option" data-pick-ns="${entry.ns}" data-pick-section="${escapeHtml(entry.section || '')}" data-pick-folder="${escapeHtml(entry.folder)}">
-      <span class="template-icon template-icon-bare" style="margin-left:${depth * 14}px">${glyph}</span>
-      <span class="theme-option-text"><strong>${escapeHtml(leaf)}</strong><span>${escapeHtml(sub)}</span></span>
-    </button>`;
-  }).join('');
-  box.querySelectorAll('[data-pick-folder]').forEach((btn) => btn.addEventListener('click', () => {
-    state.pendingSectionFolder = { ns: btn.dataset.pickNs, section: btn.dataset.pickSection || null, folder: btn.dataset.pickFolder };
-    closeFolderPicker();
-    // Folder-required gate resumes here: a parked template choice goes
-    // straight to creation; the bare-section flow picks a template next.
-    if (state.pendingTemplate) {
-      const templateKey = state.pendingTemplate;
-      state.pendingTemplate = null;
-      createNoteFromTemplate(templateKey);
-    } else {
-      openTemplatePicker();
-    }
-  }));
-  overlay.hidden = false;
-  const first = box.querySelector('[data-pick-folder]');
-  if (first) first.focus();
-  return true;
-}
+
 
 
 
@@ -4599,27 +1392,10 @@ function openFolderPicker(ns, sectionId) {
 
 
 // Wrap the editor selection (or placeholder word) with a Markdown marker and save.
-function wrapSelection(before, after = before) {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
-  const start = markdownInput.selectionStart;
-  const end = markdownInput.selectionEnd;
-  const selected = markdownInput.value.slice(start, end) || 'text';
-  markdownInput.setRangeText(`${before}${selected}${after}`, start, end, 'select');
-  markdownInput.focus();
-  saveCurrentNote();
-}
+
 
 // Insert a Markdown line prefix (heading/list/quote) at the start of the current line and save.
-function linePrefix(prefix) {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
-  const start = markdownInput.selectionStart;
-  const lineStart = markdownInput.value.lastIndexOf('\n', start - 1) + 1;
-  markdownInput.setRangeText(prefix, lineStart, lineStart, 'end');
-  markdownInput.focus();
-  saveCurrentNote();
-}
+
 
 document.getElementById('new-note').addEventListener('click', onNewNoteClick);
 document.getElementById('close-templates').addEventListener('click', closeTemplatePicker);
@@ -4804,12 +1580,7 @@ noteList.addEventListener('drop', (event) => {
 });
 noteList.addEventListener('dragend', () => clearSharedDropTargets());
 
-function refreshCurrent() {
-  // Refresh only the workspace sidebar (the notes list / Shared inbox).
-  if (state.activeView === 'shared') { renderSharedView(); return; }
-  if (state.activeView === 'vault') { renderVaultList(); return; }
-  renderNoteList();
-}
+
 {
   const sharedNewBtn = document.getElementById('shared-new');
   if (sharedNewBtn) sharedNewBtn.addEventListener('click', collabCreate);
@@ -5064,49 +1835,13 @@ if (foldToggle) {
 
 
 // Persist custom sections + section display names into the encrypted UI vault.
-function persistCustomSections() {
-  persistUiVault();
-}
+
 
 // Filter the list to a custom section (folder null) or one of its folders.
 // Clears every other filter, like its built-in counterparts.
-function selectCustomSection(sectionId) {
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!section) return;
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  state.activeView = 'notes';
-  state.activeFilter = 'all';
-  state.activeCustom = { section: sectionId, folder: null };
-  clearSearch();
-  updateListHeading();
-  renderCustomSections();
-  renderNoteList();
-}
 
-function selectCustomFolder(sectionId, folder) {
-  const section = state.customSections.find((entry) => entry.id === sectionId);
-  if (!section || !folder) return;
-  // Intermediate parents are not always stored in the folder list (a note can
-  // be filed three levels deep without its ancestors listed). Accept any
-  // ancestor of a known folder, registering it so it stays navigable.
-  if (!section.folders.includes(folder)) {
-    const isAncestor = section.folders.some((entry) => isFolderOrSub(entry, folder));
-    if (!isAncestor) return;
-    section.folders.push(folder);
-    persistCustomSections();
-    renderCustomSections();
-  }
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
-  state.activeView = 'notes';
-  state.activeFilter = 'all';
-  state.activeCustom = { section: sectionId, folder };
-  clearSearch();
-  updateListHeading();
-  renderCustomSections();
-  renderNoteList();
-}
+
+
 
 // Clear section/folder filters and sidebar highlights (unified custom implementation).
 
@@ -5394,38 +2129,7 @@ state.cachedProfile = null;
 
 
 // Load the decrypted workspace after an unlock (login or session restore).
-async function enterWorkspace() {
-  // Fresh account context: never leak the previous login's sidebar into this one.
-  state.serverUiLoaded = false;
-  state.collapsedFolders = new Set();
-  state.customSections = [];
-  state.deletedCustomSections = [];
-  state.activeCustom = null;
-  state.knownTags = [];
-  await loadNotesFromServer();
-  if (purgeExpiredBin()) persistNotes();
-  await loadUiVault();
-  // No default section/folder seeding: new accounts start with an empty
-  // sidebar. ensureMigratedCollectionsSection only runs for genuine legacy data.
-  syncCustomSections();
-  // First login on a v1 row (or a device that knew more than the server):
-  // push the merged sidebar up so the next relog/device sees it.
-  if (!state.serverUiLoaded) {
-    try { await writeUiVaultLocal(); } catch (error) {}
-    persistNotes();
-  }
-  renderCustomSections();
-  const firstActiveNote = state.notes.find((note) => !note.deleted && !note.archived)
-    || state.notes.find((note) => !note.deleted)
-    || state.notes[0];
-  state.currentId = firstActiveNote ? firstActiveNote.id : null;
-  if (state.currentId) selectNote(state.currentId);
-  else clearEditor();
-  refreshEditorLock();
-  restoreWorkspaceCollapsed();
-  try { sharingEnsureKeys(); } catch (error) {}
-  try { refreshSharedNavCount(); } catch (error) {}
-}
+
 
 // Display name from an E2EE profile (first + last, falls back to username).
 
@@ -5454,72 +2158,7 @@ async function enterWorkspace() {
 // Pending edits are flushed to the server FIRST so nothing made in this
 // session is lost by the relog. The per-account encrypted local cache is kept
 // (it needs the master key to read); only legacy plaintext keys are removed.
-async function logout() {
-  // Flush while still unlocked: local UI cache + server envelope (notes + UI).
-  clearSessionUnlock();
-  try {
-    clearTimeout(state.uiVaultTimer);
-    if (state.cachedProfile && e2ee.masterKey) {
-      try { await writeUiVaultLocal(); } catch (error) {}
-      try { await flushNotesToServer(); } catch (error) {}
-    } else {
-      clearTimeout(state.syncTimer);
-    }
-  } catch (error) {}
-  try { await apiFetch('/api/logout', { method: 'POST' }); } catch (error) {}
-  state.cachedProfile = null;
-  state.profileAvatar = '';
-  state.knownTags = [];
-  setSharedNavCount(0);
-  e2eeLock();
-  // Wipe decrypted workspace: memory, editor DOM and any legacy local copy.
-  state.notes = [];
-  state.openTabs = [];
-  state.notesLoaded = false;
-  state.serverNotesVersion = 0;
-  state.serverUiLoaded = false;
-  state.currentId = null;
-  state.currentVaultId = null;
-  state.vault.unlocked = false;
-  state.vault.dek = null;
-  state.vault.notes = [];
-  state.vault.blobs = [];
-  state.vault.folders = [];
-  state.vault.meta = null;
-  state.activeView = 'notes';
-  state.activeFilter = 'all';
-  state.activeCustom = null;
-  state.searchQuery = '';
-  clearTimeout(state.syncTimer);
-  try { clearTimeout(state.saveTimer); } catch (error) {}
-  const searchInput = document.getElementById('search-input');
-  if (searchInput) searchInput.value = '';
-  wipeLegacyLocalNotes();
-  try {
-    // Drop only legacy plaintext keys (CWE-312). Per-account encrypted caches
-    // (`notely-ui-vault:<user>`) stay so the next login boots fast offline —
-    // the server envelope remains the source of truth.
-    localStorage.removeItem('notely-collections');
-    localStorage.removeItem('notely-deleted-collections');
-    localStorage.removeItem(COLLAPSED_FOLDERS_KEY);
-    localStorage.removeItem(SECTION_DATA_KEY);
-  } catch (error) {}
-  state.collapsedFolders = new Set();
-  state.customSections = [];
-  state.deletedCustomSections = [];
-  state.activeCustom = null;
-  titleInput.value = '';
-  markdownInput.value = '';
-  breadcrumbTitle.textContent = 'No notes';
-  if (wordCount) wordCount.textContent = '0 words';
-  if (tagList) tagList.innerHTML = '';
-  const passwordInput = document.getElementById('login-password');
-  if (passwordInput) passwordInput.value = '';
-  document.getElementById('sidebar').classList.remove('open');
-  renderCustomSections();
-  clearEditor();
-  showLogin();
-}
+
 
 // Show the login error message with a shake; defaults to the generic (non-enumerating) text.
 
@@ -6143,89 +2782,8 @@ if (mfaDisableBtn) mfaDisableBtn.addEventListener('click', async () => {
 // Attach a PRF wrap to an existing passkey (no remove/re-add needed), so it can
 // unlock notes without the password. Requires an unlocked session (master key
 // is in memory) and a PRF-capable authenticator.
-async function enablePasswordlessPasskey(credIdB64, prfSaltB64, btn) {
-  const errEl = document.getElementById('passkey-error');
-  try {
-    if (!e2ee.masterKey) throw new Error('Unlock your notes first (log in with your password), then retry.');
-    if (!prfSaltB64) throw new Error('Passwordless is not available for this account.');
-    if (btn) btn.disabled = true;
-    // Best-effort browser check (Chromium exposes this). Helps tell "browser
-    // can't do it" apart from "this authenticator didn't return a PRF".
-    let caps = null;
-    try {
-      if (window.PublicKeyCredential && PublicKeyCredential.getClientCapabilities) {
-        caps = await PublicKeyCredential.getClientCapabilities();
-      }
-    } catch (error) { caps = null; }
-    if (caps && caps['extension:prf'] === false) {
-      throw new Error('This browser doesn’t support the passkey PRF extension needed for passwordless — use Chrome or Edge.');
-    }
-    const prfSecret = await prfSecretViaAssertion(b64urlToBuf(credIdB64), undefined, prfSaltB64);
-    if (!prfSecret) {
-      throw new Error('This authenticator returned no PRF, so passwordless can’t be enabled. Chrome/Edge usually support it; Firefox currently does not.');
-    }
-    const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
-    const prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
-    const r = await apiFetch('/api/passkey/prf-wrap', { method: 'POST', body: JSON.stringify({ id: credIdB64, prfWrap }) });
-    if (r.status === 401) throw new Error('Session expired — log in again, then retry.');
-    if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
-      throw new Error(d.error || 'Could not enable passwordless.');
-    }
-    if (errEl) errEl.hidden = true;
-    showToast('Passwordless unlock enabled for this passkey');
-    await refreshPasskeys();
-  } catch (error) {
-    if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
-      if (errEl) errEl.hidden = true;
-    } else if (errEl) {
-      errEl.textContent = error.message || 'Could not enable passwordless.';
-      errEl.hidden = false;
-    }
-    if (btn) btn.disabled = false;
-  }
-}
-async function refreshPasskeys() {
-  const listEl = document.getElementById('passkey-list');
-  const errEl = document.getElementById('passkey-error');
-  try {
-    const r = await apiFetch('/api/passkey/list');
-    if (!r.ok) throw new Error();
-    const data = await r.json();
-    const keys = (data && data.keys) || [];
-    const prfSalt = (data && data.prfSalt) || null;
-    if (listEl) {
-      listEl.innerHTML = '';
-      if (!keys.length) listEl.textContent = 'No passkeys yet.';
-      keys.forEach((k) => {
-        const row = document.createElement('div');
-        // passwordless flag tells whether THIS key unlocks notes alone or
-        // still needs the password afterwards.
-        row.textContent = `${String(k.id).slice(0, 16)}… (added ${new Date((k.created_at || 0) * 1000).toLocaleDateString()} · ${k.passwordless ? 'no password needed' : 'password still needed'}) `;
-        if (!k.passwordless) {
-          const enable = document.createElement('button');
-          enable.textContent = 'Enable passwordless';
-          enable.className = 'btn btn-secondary';
-          enable.addEventListener('click', () => enablePasswordlessPasskey(k.id, prfSalt, enable));
-          row.appendChild(enable);
-          row.appendChild(document.createTextNode(' '));
-        }
-        const del = document.createElement('button');
-        del.textContent = 'Remove';
-        del.className = 'btn btn-secondary';
-        del.addEventListener('click', async () => {
-          await apiFetch('/api/passkey/remove', { method: 'POST', body: JSON.stringify({ id: k.id }) });
-          await refreshPasskeys();
-        });
-        row.appendChild(del);
-        listEl.appendChild(row);
-      });
-    }
-    if (errEl) errEl.hidden = true;
-  } catch (error) {
-    if (listEl) listEl.textContent = 'Could not load passkeys.';
-  }
-}
+
+
 
 if (passkeyAddBtn) passkeyAddBtn.addEventListener('click', async () => {
   const errEl = document.getElementById('passkey-error');
@@ -6382,24 +2940,7 @@ if (accountSaveNameBtn) accountSaveNameBtn.addEventListener('click', saveAccount
 
 // Center-crop to a square 256px JPEG for a compact avatar.
 
-async function handleAvatarFile(file) {
-  if (!file) return;
-  if (!e2ee.masterKey) { showToast('Log in and unlock your notes to change your photo'); return; }
-  if (!isImageFile(file)) { showToast('Use a PNG, JPEG, WebP, GIF, AVIF or BMP image'); return; }
-  if (file.size > 5 * 1024 * 1024) { showToast('Image too large (5 MB max)'); return; }
-  showToast('Loading picture…');
-  try {
-    const raw = await readFileAsDataUrl(file);
-    const scaled = await downscaleAvatar(raw).catch(() => raw);
-    const clean = cleanAvatarSrc(scaled) || cleanAvatarSrc(raw);
-    if (!clean) { showToast('Could not use that image — try a smaller one'); return; }
-    state.profileAvatar = clean;
-    paintAvatar(document.querySelector('.profile-card .avatar'), initialsFor(state.cachedProfile ? fullNameOf(state.cachedProfile) : ''));
-    refreshProfilePopup();
-    persistUiVault();
-    showToast('Profile photo updated');
-  } catch (error) { showToast('Could not read that image'); }
-}
+
 
 if (profileCardEl) profileCardEl.addEventListener('click', (event) => {
   if (event.target.closest('#logout-button')) return;
@@ -6698,27 +3239,7 @@ document.getElementById('open-settings').addEventListener('click', () => {
   try { refreshAcctRecStatus(); } catch (error) {}
 });
 // Apply a theme, persist the choice and update the meta theme-color.
-function applyTheme(theme, announce = false) {
-  const normalized = THEMES.includes(theme) ? theme : 'light';
-  document.documentElement.dataset.theme = normalized;
-  try { localStorage.setItem('notely-theme', normalized); } catch (error) {}
-  // Sync to the per-account envelope so the choice survives logout, restart
-  // and other devices. No-op while logged out/locked (localStorage still keeps
-  // the login screen on the picked theme).
-  try {
-    if (typeof persistUiVault === 'function' && state.cachedProfile && e2ee.masterKey) persistUiVault();
-  } catch (error) {}
-  const metaTheme = document.querySelector('meta[name="theme-color"]');
-  if (metaTheme) metaTheme.setAttribute('content', THEME_META_COLORS[normalized]);
-  const themeSelectEl = document.getElementById('theme-select');
-  if (themeSelectEl) themeSelectEl.value = normalized;
-  document.querySelectorAll('.login-theme-item').forEach((option) => {
-    const selected = option.dataset.themeValue === normalized;
-    option.classList.toggle('selected', selected);
-    option.setAttribute('aria-selected', selected ? 'true' : 'false');
-  });
-  if (announce) showToast(`${THEME_LABELS[normalized] || normalized} theme on`);
-}
+
 // Show the settings modal and close the mobile sidebar.
 
 // Keep Side Menu settings in sync (unified custom sections have no hide toggles).

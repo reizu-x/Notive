@@ -1,3 +1,5 @@
+
+
 // --- Password-loss recovery codes (E2EE-safe wraps, server stores hashes only) ---
 export const REC_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
@@ -90,3 +92,10 @@ export const WELCOME_FOLDERS = ['General', 'Personal'];
 // stable (`welcome-*`) so this runs at most once per account — any saved
 // envelope (even an empty one) means the server row exists and this never fires.
 export const WELCOME_SECTION_ID = 'section-notes';
+
+
+export const IDLE_PREVIEW_MS = 10000;
+
+// Default folders carried over from the removed built-in Collections section.
+// New custom sections share the same folder palette/behavior (same value).
+export const DEFAULT_CUSTOM_FOLDERS = ['Work', 'Personal', 'Reading list'];

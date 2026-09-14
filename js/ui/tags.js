@@ -7,6 +7,10 @@ import { escapeHtml } from '../core/strings.js';
 import { sharedGroupTags } from '../domain/constants.js';
 import { state } from '../domain/state.js';
 import { showToast } from './modal.js';
+import { updateMeta } from './misc.js';
+import { activeEditorNote, persistNotes, renderNoteList } from './notes.js';
+import { persistUiVault } from './vault.js';
+
 export function sharedGroupTagList(groupId) {
   return sharedGroupTags.get(groupId) || sharedGroupTags.get(Number(groupId)) || [];
 }
@@ -172,4 +176,116 @@ export function cleanTagList(value) {
     out.push(tag);
   });
   return out;
+}
+
+
+export function tagEditorRemove(name) {
+  if (state.tagEditorShared) {
+    if (!state.collab.noteId || !state.collab.tags) return;
+    const list = sharedTagList();
+    const at = list.findIndex((t) => String(t).toLowerCase() === String(name).toLowerCase());
+    if (at === -1) return;
+    state.collab.tags.delete(at, 1);
+    renderTagEditor();
+    return;
+  }
+  const note = state.notes.find((item) => item.id === state.tagEditorNoteId);
+  if (!note) return;
+  if (removeNoteTag(note, name)) {
+    refreshTagsAcrossUi();
+    renderTagEditor();
+    renderSettingsTags();
+  }
+}
+
+export function tagEditorAdd(raw) {
+  const tag = normalizeTagName(raw);
+  if (!tag) return;
+  if (state.tagEditorShared) {
+    if (!state.collab.noteId || !state.collab.tags) return;
+    const list = sharedTagList();
+    if (list.some((t) => String(t).toLowerCase() === tag.toLowerCase())) return;
+    if (list.length >= 20) { showToast('Tag limit reached (20 per note)'); return; }
+    state.collab.tags.push([tag]);
+    renderTagEditor();
+    return;
+  }
+  const note = state.notes.find((item) => item.id === state.tagEditorNoteId);
+  if (!note) return;
+  if (addNoteTag(note, raw)) {
+    refreshTagsAcrossUi();
+    renderTagEditor();
+    renderSettingsTags();
+  }
+}
+
+// Create a standalone tag (available to every note's tag editor and to search).
+export function addKnownTag(raw) {
+  const tag = normalizeTagName(raw);
+  if (!tag) { showToast('Enter a tag name'); return false; }
+  if (state.knownTags.some((entry) => entry.toLowerCase() === tag.toLowerCase())) { showToast(`Tag “${tag}” already exists`); return false; }
+  if (state.knownTags.length >= 500) { showToast('Tag limit reached (500)'); return false; }
+  state.knownTags.push(tag);
+  persistUiVault();
+  try { renderSettingsTags(); } catch (error) {}
+  try { renderTagEditor(); } catch (error) {}
+  showToast(`Tag “${tag}” added`);
+  return true;
+}
+
+// Delete a tag from every note.
+export function deleteTagEverywhere(name) {
+  const key = normalizeTagName(name).toLowerCase();
+  let changed = 0;
+  state.notes.forEach((note) => {
+    if (!Array.isArray(note.tags)) return;
+    const before = note.tags.length;
+    note.tags = note.tags.filter((tag) => String(tag).toLowerCase() !== key);
+    if (note.tags.length !== before) changed += 1;
+  });
+  const hadKnown = state.knownTags.some((tag) => String(tag).toLowerCase() === key);
+  if (hadKnown) {
+    state.knownTags = state.knownTags.filter((tag) => String(tag).toLowerCase() !== key);
+    persistUiVault();
+  }
+  if (changed) refreshTagsAcrossUi();
+  return changed > 0 || hadKnown;
+}
+
+// Rename a tag on every note (folds duplicates created by the rename).
+export function renameTagEverywhere(oldName, rawNew) {
+  const from = normalizeTagName(oldName).toLowerCase();
+  const to = normalizeTagName(rawNew);
+  if (!from || !to || from === to.toLowerCase()) return false;
+  let changed = 0;
+  state.notes.forEach((note) => {
+    if (!Array.isArray(note.tags)) return;
+    const next = [];
+    let touched = false;
+    note.tags.forEach((tag) => {
+      if (String(tag).toLowerCase() === from) { touched = true; next.push(to); return; }
+      next.push(tag);
+    });
+    if (!touched) return;
+    changed += 1;
+    const seen = new Set();
+    note.tags = next.filter((tag) => {
+      const key = String(tag).toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  });
+  if (changed) refreshTagsAcrossUi();
+  const hadKnown = state.knownTags.some((tag) => String(tag).toLowerCase() === from);
+  state.knownTags = cleanTagList(state.knownTags.map((tag) => (String(tag).toLowerCase() === from ? to : tag)));
+  if (changed || hadKnown) persistUiVault();
+  return changed > 0 || hadKnown;
+}
+
+export function refreshTagsAcrossUi() {
+  persistNotes();
+  renderNoteList();
+  const open = activeEditorNote();
+  if (open) updateMeta(open);
 }

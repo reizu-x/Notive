@@ -11,6 +11,14 @@ import { updateStripScrollButton } from './feedback.js';
 import { showToast } from './modal.js';
 import { renderStripItems, setSettingsTab } from './tabs.js';
 import { FONTS } from './theme.js';
+import { isImageFile } from '../core/schema.js';
+import { refreshSharedNavCount } from '../data/collab-crypto.js';
+import { readFileAsDataUrl, refreshEditorLock, sharingEnsureKeys } from './misc.js';
+import { clearEditor, loadNotesFromServer, persistNotes, purgeExpiredBin, selectNote } from './notes.js';
+import { renderCustomSections, syncCustomSections } from './sections.js';
+import { THEMES, THEME_LABELS, THEME_META_COLORS } from './theme.js';
+import { loadUiVault, persistUiVault, writeUiVaultLocal } from './vault.js';
+
 export function setLoginThemeMenu(open) {
   if (!loginThemeToggle || !loginThemeMenu) return;
   loginThemeMenu.hidden = !open;
@@ -349,4 +357,81 @@ drafts, anything that is yours.
       body: personalWelcome,
     },
   ];
+}
+
+
+// Apply a theme, persist the choice and update the meta theme-color.
+export function applyTheme(theme, announce = false) {
+  const normalized = THEMES.includes(theme) ? theme : 'light';
+  document.documentElement.dataset.theme = normalized;
+  try { localStorage.setItem('notely-theme', normalized); } catch (error) {}
+  // Sync to the per-account envelope so the choice survives logout, restart
+  // and other devices. No-op while logged out/locked (localStorage still keeps
+  // the login screen on the picked theme).
+  try {
+    if (typeof persistUiVault === 'function' && state.cachedProfile && e2ee.masterKey) persistUiVault();
+  } catch (error) {}
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  if (metaTheme) metaTheme.setAttribute('content', THEME_META_COLORS[normalized]);
+  const themeSelectEl = document.getElementById('theme-select');
+  if (themeSelectEl) themeSelectEl.value = normalized;
+  document.querySelectorAll('.login-theme-item').forEach((option) => {
+    const selected = option.dataset.themeValue === normalized;
+    option.classList.toggle('selected', selected);
+    option.setAttribute('aria-selected', selected ? 'true' : 'false');
+  });
+  if (announce) showToast(`${THEME_LABELS[normalized] || normalized} theme on`);
+}
+
+export async function handleAvatarFile(file) {
+  if (!file) return;
+  if (!e2ee.masterKey) { showToast('Log in and unlock your notes to change your photo'); return; }
+  if (!isImageFile(file)) { showToast('Use a PNG, JPEG, WebP, GIF, AVIF or BMP image'); return; }
+  if (file.size > 5 * 1024 * 1024) { showToast('Image too large (5 MB max)'); return; }
+  showToast('Loading picture…');
+  try {
+    const raw = await readFileAsDataUrl(file);
+    const scaled = await downscaleAvatar(raw).catch(() => raw);
+    const clean = cleanAvatarSrc(scaled) || cleanAvatarSrc(raw);
+    if (!clean) { showToast('Could not use that image — try a smaller one'); return; }
+    state.profileAvatar = clean;
+    paintAvatar(document.querySelector('.profile-card .avatar'), initialsFor(state.cachedProfile ? fullNameOf(state.cachedProfile) : ''));
+    refreshProfilePopup();
+    persistUiVault();
+    showToast('Profile photo updated');
+  } catch (error) { showToast('Could not read that image'); }
+}
+
+// Load the decrypted workspace after an unlock (login or session restore).
+export async function enterWorkspace() {
+  // Fresh account context: never leak the previous login's sidebar into this one.
+  state.serverUiLoaded = false;
+  state.collapsedFolders = new Set();
+  state.customSections = [];
+  state.deletedCustomSections = [];
+  state.activeCustom = null;
+  state.knownTags = [];
+  await loadNotesFromServer();
+  if (purgeExpiredBin()) persistNotes();
+  await loadUiVault();
+  // No default section/folder seeding: new accounts start with an empty
+  // sidebar. ensureMigratedCollectionsSection only runs for genuine legacy data.
+  syncCustomSections();
+  // First login on a v1 row (or a device that knew more than the server):
+  // push the merged sidebar up so the next relog/device sees it.
+  if (!state.serverUiLoaded) {
+    try { await writeUiVaultLocal(); } catch (error) {}
+    persistNotes();
+  }
+  renderCustomSections();
+  const firstActiveNote = state.notes.find((note) => !note.deleted && !note.archived)
+    || state.notes.find((note) => !note.deleted)
+    || state.notes[0];
+  state.currentId = firstActiveNote ? firstActiveNote.id : null;
+  if (state.currentId) selectNote(state.currentId);
+  else clearEditor();
+  refreshEditorLock();
+  restoreWorkspaceCollapsed();
+  try { sharingEnsureKeys(); } catch (error) {}
+  try { refreshSharedNavCount(); } catch (error) {}
 }

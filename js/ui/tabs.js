@@ -13,6 +13,13 @@ import { clearTabDropMarks, noteGlyphFor, updateStripScrollButton, viewLabel } f
 import { visibleNotes } from './notes.js';
 import { customFolderColor, customNoteFolder, sectionDisplayName } from './sections.js';
 import { renderSettingsTags } from './tags.js';
+import { closeCollabNote, openCollabNote } from '../data/collab-crypto.js';
+import { e2ee } from '../data/crypto.js';
+import { showToast } from './modal.js';
+import { clearEditor, closeNoteContextMenu, persistNotes, renderNoteList, selectNote } from './notes.js';
+import { closeFolderContextMenu, dropNoteOnFolder, folderListOf, isFolderDrag, persistFolderList, renderCustomSections, reorderFolderBlock, reparentFolder, resolveListFolderTarget } from './sections.js';
+import { selectVaultNote } from './vault.js';
+
 // Switch the settings left-nav tab and its right-side pane.
 export function setSettingsTab(name) {
   document.querySelectorAll('.settings-nav-item').forEach((item) => item.classList.toggle('active', item.dataset.settingsTab === name));
@@ -304,4 +311,285 @@ export function findTabbedNote(id, isVault, isShared) {
   }
   if (isVault) return state.vault.unlocked ? state.vault.notes.find((entry) => entry.id === id) || null : null;
   return state.notes.find((entry) => entry.id === id) || null;
+}
+
+
+export function enableNoteDragDrop() {
+  const canDrag = state.activeView !== 'bin' && state.activeView !== 'vault';
+  const clearIndicators = () => {
+    noteList.querySelectorAll('.drop-before,.drop-after,.drop-target').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-target'));
+  };
+  noteList.querySelectorAll('[data-note-id]').forEach((row) => {
+    const id = row.dataset.noteId;
+    row.draggable = canDrag;
+    if (!canDrag) return;
+    row.addEventListener('dragstart', (event) => {
+      event.dataTransfer.setData('text/plain', id);
+      event.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+      closeNoteContextMenu();
+      closeFolderContextMenu();
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      clearIndicators();
+    });
+    row.addEventListener('dragover', (event) => {
+      if (!event.dataTransfer || isFolderDrag(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      const rect = row.getBoundingClientRect();
+      const after = (event.clientY - rect.top) > rect.height / 2;
+      row.classList.toggle('drop-after', after);
+      row.classList.toggle('drop-before', !after);
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after'));
+    row.addEventListener('drop', (event) => {
+      if (isFolderDrag(event)) return;
+      event.preventDefault();
+      const rect = row.getBoundingClientRect();
+      dropNoteOnNote(event.dataTransfer.getData('text/plain'), id, (event.clientY - rect.top) > rect.height / 2);
+    });
+  });
+  if (!canDrag) return;
+  noteList.querySelectorAll('[data-folder]').forEach((header) => {
+    header.addEventListener('dragover', (event) => {
+      if (isFolderDrag(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      header.classList.add('drop-target');
+    });
+    header.addEventListener('dragleave', () => header.classList.remove('drop-target'));
+    header.addEventListener('drop', (event) => {
+      if (isFolderDrag(event)) return;
+      event.preventDefault();
+      const wrap = header.closest('[data-folder-wrap]');
+      const shell = header.closest('[data-list-section]');
+      const shellKind = shell ? shell.dataset.listSection : null;
+      let sectionId = state.activeCustom ? state.activeCustom.section : null;
+      if (shellKind === 'custom') {
+        const secBtn = shell.querySelector('[data-section-id]');
+        if (secBtn && secBtn.dataset.sectionId) sectionId = secBtn.dataset.sectionId;
+      }
+      // Resolve section from wrap when possible (flat view has no shell context).
+      if (!sectionId && wrap) {
+        const folder = wrap.dataset.folderWrap;
+        const owner = state.customSections.find((section) => section.folders.some((entry) => entry === folder || isFolderOrSub(folder, entry) || isFolderOrSub(entry, folder)));
+        if (owner) sectionId = owner.id;
+      }
+      dropNoteOnFolder(event.dataTransfer.getData('text/plain'), header.dataset.folder, sectionId);
+    });
+  });
+  // Folder headers drag to re-sort or nest (same payload and rules as the
+  // slide menu): top/bottom quarter reorders, middle nests inside.
+  noteList.querySelectorAll('[data-folder-wrap]').forEach((wrap) => {
+    const header = wrap.querySelector('[data-folder]');
+    if (!header) return;
+    header.draggable = true;
+    const rowEl = header.closest('.tree-folder-row') || header;
+    header.addEventListener('dragstart', (event) => {
+      const target = resolveListFolderTarget(header);
+      const fromList = target ? folderListOf(target.ns, target.section) : null;
+      // Intermediate headers are not real folders: they cannot be dragged.
+      if (!target || !fromList || !fromList.includes(target.path) || !e2ee.masterKey) { event.preventDefault(); return; }
+      event.dataTransfer.setData('application/x-notely-folder', JSON.stringify(target));
+      event.dataTransfer.effectAllowed = 'move';
+      header.classList.add('dragging');
+      closeFolderContextMenu();
+      closeNoteContextMenu();
+    });
+    header.addEventListener('dragend', () => {
+      header.classList.remove('dragging');
+      clearIndicators();
+    });
+    header.addEventListener('dragover', (event) => {
+      if (!isFolderDrag(event) || !e2ee.masterKey) return;
+      const rect = header.getBoundingClientRect();
+      const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'move';
+      clearIndicators();
+      if (ratio < 0.25) rowEl.classList.add('drop-before');
+      else if (ratio > 0.75) rowEl.classList.add('drop-after');
+      else rowEl.classList.add('drop-target');
+    });
+    header.addEventListener('dragleave', (event) => {
+      if (!header.contains(event.relatedTarget)) {
+        rowEl.classList.remove('drop-before', 'drop-after', 'drop-target');
+      }
+    });
+    header.addEventListener('drop', (event) => {
+      if (!isFolderDrag(event) || !e2ee.masterKey) return;
+      let dragged = null;
+      try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notely-folder')); } catch (error) { dragged = null; }
+      if (!dragged || !dragged.path) return;
+      const target = resolveListFolderTarget(header);
+      if (!target || target.ns !== dragged.ns || target.section !== dragged.section) return;
+      if (target.path === dragged.path) return;
+      if (isFolderOrSub(target.path, dragged.path)) {
+        event.preventDefault();
+        showToast("Can't move a folder into itself");
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = header.getBoundingClientRect();
+      const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
+      const list = folderListOf(dragged.ns, dragged.section);
+      if (!list) return;
+      // Intermediate headers are not real folders: order around their subtree
+      // instead (never nest into them).
+      let anchor = target.path;
+      let after = ratio > 0.75;
+      let nest = ratio >= 0.25 && ratio <= 0.75;
+      if (!list.includes(target.path)) {
+        const under = list.filter((entry) => isFolderOrSub(entry, target.path));
+        if (!under.length) return;
+        nest = false;
+        if (ratio < 0.5) { anchor = under[0]; after = false; }
+        else { anchor = under[under.length - 1]; after = true; }
+      }
+      if (anchor === dragged.path || isFolderOrSub(anchor, dragged.path)) return;
+      if (nest) {
+        // Nest inside the target folder.
+        const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, target.path);
+        if (!newPath) return;
+        const movedHome = newPath !== dragged.path;
+        const moved = folderListOf(dragged.ns, dragged.section).filter((entry) => isFolderOrSub(entry, newPath));
+        const rest = folderListOf(dragged.ns, dragged.section).filter((entry) => !isFolderOrSub(entry, newPath));
+        let index = rest.length;
+        for (let i = rest.length - 1; i >= 0; i -= 1) {
+          if (isFolderOrSub(rest[i], target.path)) { index = i + 1; break; }
+        }
+        const reordered = [...rest.slice(0, index), ...moved, ...rest.slice(index)];
+        const section = state.customSections.find((entry) => entry.id === dragged.section);
+        if (section) section.folders = reordered;
+        persistFolderList(dragged.ns);
+        renderCustomSections();
+        renderNoteList();
+        if (movedHome) showToast(`Moved to “${folderLeaf(target.path)}”`);
+      } else {
+        // Reorder around the anchor (reparenting across levels when needed).
+        const refParent = folderParent(anchor);
+        let movedRoot = dragged.path;
+        if ((refParent || null) !== (folderParent(dragged.path) || null)) {
+          const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, refParent);
+          if (!newPath) return;
+          movedRoot = newPath;
+        }
+        if (reorderFolderBlock(dragged.ns, dragged.section, movedRoot, anchor, after)) {
+          renderCustomSections();
+          renderNoteList();
+        }
+      }
+    });
+  });
+}
+
+// Drag-and-drop note sorting: drag a row onto another note to reorder (top /
+// bottom half picks the side); dropping onto a folder header moves the note
+// into that folder. Disabled in Bin and Vault, where order is meaningless.
+export function dropNoteOnNote(draggedId, targetId, after) {
+  if (!draggedId || !targetId || draggedId === targetId) return;
+  const from = state.notes.findIndex((note) => note.id === draggedId);
+  const target = state.notes.find((note) => note.id === targetId);
+  if (from === -1 || !target) return;
+  const [moved] = state.notes.splice(from, 1);
+  // Adopt the target's folder when inside a specific folder view (same section only).
+  if (state.activeCustom && state.activeCustom.folder) {
+    const folder = customNoteFolder(target, state.activeCustom.section);
+    if (folder) {
+      if (!moved.sections || typeof moved.sections !== 'object') moved.sections = {};
+      moved.sections[state.activeCustom.section] = folder;
+    }
+  }
+  let to = state.notes.findIndex((note) => note.id === targetId);
+  if (after) to += 1;
+  state.notes.splice(to, 0, moved);
+  persistNotes();
+  renderNoteList();
+}
+
+// Paint the strip; drop tabs whose notes are gone (purged, vault locked) or
+// binned — a deleted note leaves the tabs at once.
+export function renderTabs() {
+  const bar = document.getElementById('tab-bar');
+  if (!bar) return;
+  state.openTabs = state.openTabs.filter((tab) => {
+    const note = findTabbedNote(tab.id, tab.vault, tab.shared);
+    return note && !note.deleted;
+  });
+  // No tabs, no collapse toggle.
+  try {
+    const collapseBtn = document.getElementById('toggle-workspace');
+    if (collapseBtn) collapseBtn.hidden = state.openTabs.length === 0;
+  } catch (error) {}
+  const activeAlive = (state.currentId && state.notes.some((entry) => entry.id === state.currentId))
+    || (state.currentVaultId && state.vault.unlocked && state.vault.notes.some((entry) => entry.id === state.currentVaultId))
+    || (state.collab.noteId != null && state.openTabs.some((tab) => tab.shared && String(tab.id) === String(state.collab.noteId)));
+  if ((state.currentId || state.currentVaultId || state.collab.noteId != null) && !activeAlive) {
+    const fallback = [...state.openTabs].reverse().find((tab) => findTabbedNote(tab.id, tab.vault, tab.shared));
+    if (fallback) {
+      if (fallback.shared) openCollabNote(fallback.id);
+      else if (fallback.vault) selectVaultNote(fallback.id);
+      else selectNote(fallback.id);
+      return; // selecting re-renders the strip
+    }
+    state.currentId = null;
+    state.currentVaultId = null;
+    if (state.collab.noteId != null) closeCollabNote();
+    clearEditor();
+    return; // clearing re-renders the strip
+  }
+  bar.innerHTML = `<button type="button" class="tab-home" data-tab-home title="All Notes" aria-label="All Notes">${icon('inbox')}</button>`
+    + state.openTabs.map((tab) => {
+      const note = findTabbedNote(tab.id, tab.vault, tab.shared);
+      const title = (note && note.title) || 'Untitled note';
+      const active = tab.shared
+        ? (state.collab.noteId != null && String(tab.id) === String(state.collab.noteId))
+        : ((!tab.vault && tab.id === state.currentId) || (tab.vault && tab.id === state.currentVaultId));
+      return `<button type="button" class="tab-item${active ? ' active' : ''}" draggable="true" data-tab-id="${escapeHtml(String(tab.id))}" data-tab-vault="${tab.vault ? '1' : ''}" data-tab-shared="${tab.shared ? '1' : ''}" title="${escapeHtml(title)}">`
+        + `<span class="tab-glyph">${icon(tab.shared ? 'share' : noteGlyphFor(note))}</span>`
+        + `<span class="tab-label">${escapeHtml(title)}</span>`
+        + `<span class="tab-close" data-tab-close="${escapeHtml(String(tab.id))}" data-tab-close-vault="${tab.vault ? '1' : ''}" data-tab-close-shared="${tab.shared ? '1' : ''}" role="button" aria-label="Close ${escapeHtml(title)}">×</span>`
+        + `</button>`;
+    }).join('')
+    + `<button type="button" class="tab-overflow" data-tab-overflow title="More tabs" aria-label="More tabs" hidden><span data-overflow-count></span>${icon('chevron-down')}</button>`;
+  fitTabStrip(bar);
+}
+
+// Close one tab; when it was active, fall back to the nearest surviving
+// neighbor (next, then previous, then outward) so selection stays put.
+export function closeTab(id, isVault, isShared) {
+  const wasVault = Boolean(isVault);
+  const wasShared = Boolean(isShared);
+  const wasActive = wasShared
+    ? (state.collab.noteId != null && String(state.collab.noteId) === String(id))
+    : (!wasVault && id === state.currentId) || (wasVault && id === state.currentVaultId);
+  const closedAt = state.openTabs.findIndex((tab) => String(tab.id) === String(id) && tab.vault === wasVault && Boolean(tab.shared) === wasShared);
+  state.openTabs = state.openTabs.filter((tab) => !(String(tab.id) === String(id) && tab.vault === wasVault && Boolean(tab.shared) === wasShared));
+  if (wasActive) {
+    const order = [];
+    const at = closedAt === -1 ? state.openTabs.length : closedAt;
+    if (at < state.openTabs.length) order.push(at);
+    for (let d = 1; d < state.openTabs.length; d += 1) {
+      if (at - d >= 0) order.push(at - d);
+      if (at + d < state.openTabs.length) order.push(at + d);
+    }
+    for (const i of order) {
+      if (findTabbedNote(state.openTabs[i].id, state.openTabs[i].vault, state.openTabs[i].shared)) {
+        if (state.openTabs[i].shared) openCollabNote(state.openTabs[i].id);
+        else if (state.openTabs[i].vault) selectVaultNote(state.openTabs[i].id);
+        else selectNote(state.openTabs[i].id);
+        renderTabs();
+        return;
+      }
+    }
+    if (state.collab.noteId != null) closeCollabNote();
+    state.currentId = null;
+    state.currentVaultId = null;
+    clearEditor();
+  }
+  renderTabs();
 }

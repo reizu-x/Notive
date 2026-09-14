@@ -13,6 +13,21 @@ import { state } from '../domain/state.js';
 import { showToast } from './modal.js';
 import { setDeleteDialog } from './notes.js';
 import { normalizeTagName, sharedGroupTagList } from './tags.js';
+import { BIN_RETENTION_MS } from '../core/dates.js';
+import { noteList } from '../core/elements.js';
+import { cleanFolderPath, folderIconForDepth, joinLeafRename } from '../core/paths.js';
+import { MIGRATED_COLLECTIONS_SECTION_ID } from '../core/schema.js';
+import { collabAddGroupMember, renderSharedView, updateSharedNoteMeta } from '../data/collab-crypto.js';
+import { e2ee } from '../data/crypto.js';
+import { cleanVaultFolderInput } from '../data/vault.js';
+import { DEFAULT_CUSTOM_FOLDERS } from '../domain/constants.js';
+import { findCustomItem, repathList, updateListHeading } from './misc.js';
+import { askInput } from './modal.js';
+import { openTemplatePicker } from './notes-core.js';
+import { clearEditor, clearSearch, closeNoteContextMenu, createNoteFromTemplate, firstFilingOf, persistNotes, renderNoteList, selectNote } from './notes.js';
+import { slideMenuCollapsed } from './shell.js';
+import { persistUiVault } from './vault.js';
+
 // Clear section/folder filters and sidebar highlights (unified custom implementation).
 export function clearSectionSelection() {
   state.activeCustom = null;
@@ -676,4 +691,1281 @@ export function cleanCustomSections(value) {
 export function sectionIconName(section) {
   const name = section && typeof section.icon === 'string' ? section.icon : '';
   return SECTION_ICONS.includes(name) ? name : SECTION_ICONS[0];
+}
+
+
+export function selectCustomFolder(sectionId, folder) {
+  const section = state.customSections.find((entry) => entry.id === sectionId);
+  if (!section || !folder) return;
+  // Intermediate parents are not always stored in the folder list (a note can
+  // be filed three levels deep without its ancestors listed). Accept any
+  // ancestor of a known folder, registering it so it stays navigable.
+  if (!section.folders.includes(folder)) {
+    const isAncestor = section.folders.some((entry) => isFolderOrSub(entry, folder));
+    if (!isAncestor) return;
+    section.folders.push(folder);
+    persistCustomSections();
+    renderCustomSections();
+  }
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
+  state.activeView = 'notes';
+  state.activeFilter = 'all';
+  state.activeCustom = { section: sectionId, folder };
+  clearSearch();
+  updateListHeading();
+  renderCustomSections();
+  renderNoteList();
+}
+
+// Filter the list to a custom section (folder null) or one of its folders.
+// Clears every other filter, like its built-in counterparts.
+export function selectCustomSection(sectionId) {
+  const section = state.customSections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
+  state.activeView = 'notes';
+  state.activeFilter = 'all';
+  state.activeCustom = { section: sectionId, folder: null };
+  clearSearch();
+  updateListHeading();
+  renderCustomSections();
+  renderNoteList();
+}
+
+// Persist custom sections + section display names into the encrypted UI vault.
+export function persistCustomSections() {
+  persistUiVault();
+}
+
+// Fill + show the folder chooser. With (ns, sectionId) it lists one section
+// (bare-section flow, resumes at the template picker). With no args it lists
+// every folder in the workspace (folder-required gate, resumes a parked
+// template choice). Returns false when there is nothing to choose.
+export function openFolderPicker(ns, sectionId) {
+  const box = document.getElementById('folder-pick-options');
+  const overlay = document.getElementById('folder-pick-overlay');
+  if (!box || !overlay) return false;
+  let entries = [];
+  let heading;
+  if (ns === 'custom') {
+    const section = state.customSections.find((entry) => entry.id === sectionId);
+    if (!section || !section.folders.length) return false;
+    entries = orderFoldersLikeWorkspace(section.folders).map((folder) => ({ ns, section: sectionId, folder, context: section.name }));
+    heading = `Where in ${entries[0].context} should this note land?`;
+  } else {
+    (state.customSections || []).forEach((section) => {
+      orderFoldersLikeWorkspace(section.folders || []).forEach((folder) => {
+        entries.push({ ns: 'custom', section: section.id, folder, context: section.name });
+      });
+    });
+    if (!entries.length) return false;
+    heading = 'Every note needs a folder — where should this one land?';
+  }
+  document.getElementById('folder-pick-desc').textContent = heading;
+  box.innerHTML = entries.map((entry) => {
+    const leaf = folderLeaf(entry.folder);
+    const sub = leaf === entry.folder ? entry.context : entry.folder;
+    // Indent icon + label text (not the button) one notch per depth level.
+    // Icons mirror the workspace strip: colored folder, nested glyph for subs.
+    const section = state.customSections.find((sec) => sec.id === entry.section);
+    const depth = folderDepth(entry.folder);
+    const glyphClass = `strip-folder-glyph ${section ? customFolderColor(section, entry.folder) : 'blue'}`;
+    const glyph = `<span class="${glyphClass}">${icon(folderIconForDepth(depth))}</span>`;
+    return `
+    <button class="template-option" data-pick-ns="${entry.ns}" data-pick-section="${escapeHtml(entry.section || '')}" data-pick-folder="${escapeHtml(entry.folder)}">
+      <span class="template-icon template-icon-bare" style="margin-left:${depth * 14}px">${glyph}</span>
+      <span class="theme-option-text"><strong>${escapeHtml(leaf)}</strong><span>${escapeHtml(sub)}</span></span>
+    </button>`;
+  }).join('');
+  box.querySelectorAll('[data-pick-folder]').forEach((btn) => btn.addEventListener('click', () => {
+    state.pendingSectionFolder = { ns: btn.dataset.pickNs, section: btn.dataset.pickSection || null, folder: btn.dataset.pickFolder };
+    closeFolderPicker();
+    // Folder-required gate resumes here: a parked template choice goes
+    // straight to creation; the bare-section flow picks a template next.
+    if (state.pendingTemplate) {
+      const templateKey = state.pendingTemplate;
+      state.pendingTemplate = null;
+      createNoteFromTemplate(templateKey);
+    } else {
+      openTemplatePicker();
+    }
+  }));
+  overlay.hidden = false;
+  const first = box.querySelector('[data-pick-folder]');
+  if (first) first.focus();
+  return true;
+}
+
+// Delete a vault folder immediately (no Bin in the vault): its notes move to
+// the Vault root and everything syncs encrypted as usual.
+export function deleteVaultFolder(folder) {
+  if (!state.vault.unlocked) return;
+  state.vault.folders = state.vault.folders.filter((entry) => entry !== folder);
+  state.vault.notes.forEach((note) => { if (note.folder === folder) { note.folder = null; note.date = 'Now'; } });
+  persistNotes();
+  renderNoteList();
+  showToast('Vault folder deleted');
+}
+
+export function renameVaultFolder(folder) {
+  if (!state.vault.unlocked || !state.vault.folders.includes(folder)) return;
+  askInput({ eyebrow: 'Vault', title: 'Rename vault folder', desc: '', label: 'Folder name', password: false, placeholder: folder, okText: 'Rename' }).then((value) => {
+    if (value == null) return;
+    const checked = cleanVaultFolderInput(value, folder);
+    if (checked.error) { showToast(checked.error); return; }
+    if (checked.name === folder) return;
+    state.vault.folders = state.vault.folders.map((entry) => (entry === folder ? checked.name : entry));
+    state.vault.notes.forEach((note) => { if (note.folder === folder) note.folder = checked.name; });
+    persistNotes();
+    renderNoteList();
+    showToast('Vault folder renamed');
+  });
+}
+
+export function addVaultFolder() {
+  if (!state.vault.unlocked) { showToast('Unlock the Vault first'); return; }
+  askInput({ eyebrow: 'Vault', title: 'New vault folder', desc: '', label: 'Folder name', password: false, placeholder: 'e.g. Receipts', okText: 'Create' }).then((value) => {
+    if (value == null) return;
+    const checked = cleanVaultFolderInput(value, null);
+    if (checked.error) { showToast(checked.error); return; }
+    state.vault.folders.push(checked.name);
+    persistNotes();
+    renderNoteList();
+    showToast('Vault folder added');
+  });
+}
+
+// Folder destination picker for new vault notes. Reuses the shared
+// folder-pick overlay with vault entries (root first).
+export function openVaultFolderPicker() {
+  const box = document.getElementById('folder-pick-options');
+  const overlay = document.getElementById('folder-pick-overlay');
+  if (!box || !overlay) return false;
+  document.getElementById('folder-pick-desc').textContent = 'Where in the Vault should this note land?';
+  const rows = [{ name: '', label: 'Vault', sub: 'Top level' }]
+    .concat(state.vault.folders.map((folder) => ({ name: folder, label: folderLeaf(folder), sub: folder })));
+  box.innerHTML = rows.map((entry) => `
+    <button class="template-option" data-vault-pick="${escapeHtml(entry.name)}">
+      <span class="template-icon">${icon('folder')}</span>
+      <span class="theme-option-text"><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.sub)}</span></span>
+    </button>`).join('');
+  box.querySelectorAll('[data-vault-pick]').forEach((btn) => btn.addEventListener('click', () => {
+    state.pendingVaultFolder = btn.dataset.vaultPick || null;
+    closeFolderPicker();
+    state.vaultTemplatePending = true;
+    openTemplatePicker();
+  }));
+  overlay.hidden = false;
+  const first = box.querySelector('[data-vault-pick]');
+  if (first) first.focus();
+  return true;
+}
+
+export async function deleteSharedFolderNow(groupId, folder) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const prefix = `${folder}${FOLDER_SEP}`;
+  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
+  const nextFolders = existing.filter((f) => f !== folder && !f.startsWith(prefix));
+  for (const e of [...sharedNoteMeta.values()]) {
+    if (String(e.groupId) !== String(groupId) || !e.folder) continue;
+    if (e.folder === folder || e.folder.startsWith(prefix)) await updateSharedNoteMeta(key, e.id, { title: e.title || '', folder: '' });
+  }
+  await saveGroupFolders(groupId, key, nextFolders);
+  showToast('Folder deleted');
+  renderSharedView();
+}
+
+export async function renameSharedFolder(groupId, folder) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const value = await askInput({ eyebrow: 'Rename folder', title: folderLeaf(folder), desc: 'Rename this folder in the shared section.', label: 'Name', password: false, placeholder: folderLeaf(folder), okText: 'Rename' });
+  if (value == null) return;
+  const leaf = String(value).trim().replace(/[\/\\]+/g, ' ').replace(/\s+/g, ' ').slice(0, 120);
+  if (!leaf) return;
+  const parent = folderParent(folder);
+  const newPath = parent ? `${parent}${FOLDER_SEP}${leaf}` : leaf;
+  if (newPath.toLowerCase() === folder.toLowerCase()) return;
+  const prefix = `${folder}${FOLDER_SEP}`;
+  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
+  const nextFolders = existing.map((f) => (f === folder ? newPath : (f.startsWith(prefix) ? newPath + f.slice(folder.length) : f)));
+  for (const e of [...sharedNoteMeta.values()]) {
+    if (String(e.groupId) !== String(groupId) || !e.folder) continue;
+    if (e.folder === folder || e.folder.startsWith(prefix)) {
+      const nf = e.folder === folder ? newPath : newPath + e.folder.slice(folder.length);
+      await updateSharedNoteMeta(key, e.id, { title: e.title || '', folder: nf });
+    }
+  }
+  await saveGroupFolders(groupId, key, nextFolders);
+  showToast('Folder renamed');
+  renderSharedView();
+}
+
+// Drag-and-drop: reparent a folder (with its subfolders and notes).
+export async function reparentSharedFolder(groupId, folder, newParent) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const parent = newParent || '';
+  if (parent && (parent === folder || isFolderOrSub(parent, folder))) { showToast("Can't move a folder into itself"); return; }
+  const leaf = folderLeaf(folder);
+  const newPath = parent ? `${parent}${FOLDER_SEP}${leaf}` : leaf;
+  if (newPath === folder) return;
+  const prefix = `${folder}${FOLDER_SEP}`;
+  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
+  const nextFolders = existing.map((f) => (f === folder ? newPath : (f.startsWith(prefix) ? newPath + f.slice(folder.length) : f)));
+  for (const e of [...sharedNoteMeta.values()]) {
+    if (String(e.groupId) !== String(groupId) || !e.folder) continue;
+    if (e.folder === folder || e.folder.startsWith(prefix)) {
+      const nf = e.folder === folder ? newPath : newPath + e.folder.slice(folder.length);
+      await updateSharedNoteMeta(key, e.id, { title: e.title || '', folder: nf });
+    }
+  }
+  await saveGroupFolders(groupId, key, nextFolders);
+  renderSharedView();
+  showToast('Folder moved');
+}
+
+// Drag-and-drop: move a note into a folder (no prompt).
+export async function moveSharedNoteToFolder(noteId, groupId, folder) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  const entry = sharedNoteMeta.get(String(noteId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const target = folder || '';
+  if ((entry && entry.folder) === target) return;
+  await updateSharedNoteMeta(key, noteId, { title: (entry && entry.title) || '', folder: target });
+  if (String(state.collab.noteId) === String(noteId)) state.collab.folder = target;
+  renderSharedView();
+  showToast(target ? `Moved to ${target}` : 'Moved to the section root');
+}
+
+export async function addSharedFolder(groupId) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const value = await askInput({ eyebrow: 'Folder', title: 'Add a folder', desc: 'Type a name, or "Parent / Child" to nest.', label: 'Folder name', password: false, placeholder: 'e.g. Ideas / 2026', okText: 'Add' });
+  if (value == null) return;
+  const folder = String(value).trim().replace(/\s*\/\s*/g, FOLDER_SEP).replace(/^\/+|\/+$/g, '').slice(0, 180);
+  if (!folder) return;
+  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
+  if (existing.some((f) => f.toLowerCase() === folder.toLowerCase())) { showToast('That folder already exists'); return; }
+  try {
+    const encMeta = await collabEncryptGroupMeta(key, [...existing, folder], sharedGroupTagList(groupId));
+    const res = await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
+    if (!res.ok) { showToast('Could not add the folder'); return; }
+    showToast(`Folder \u201c${folder}\u201d added`);
+    renderSharedView();
+  } catch (error) { showToast('Could not add the folder'); }
+}
+
+// A member leaves a shared section: remove ourselves. The server flags the
+// section so a remaining member rotates the key on next open (the server holds
+// no key to rotate with).
+export async function leaveSharedSection(groupId) {
+  const me = state.cachedProfile && state.cachedProfile.username;
+  if (!me) return;
+  const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(me)}`, { method: 'DELETE' });
+  if (res.ok) { showToast('Left the section'); renderSharedView(); }
+  else showToast('Could not leave the section');
+}
+
+// Add a subfolder under an existing shared folder (persisted in group meta).
+export async function addSubfolder(groupId, parentFolder) {
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showToast('Reload the Shared list and try again'); return; }
+  const value = await askInput({ eyebrow: 'Subfolder', title: 'Add a subfolder', desc: `Under ${parentFolder}`, label: 'Name', password: false, placeholder: 'e.g. Notes', okText: 'Add' });
+  if (value == null) return;
+  const name = String(value).trim().replace(/[\/\\]+/g, ' ').replace(/\s+/g, ' ').slice(0, 120);
+  if (!name) return;
+  const folder = `${parentFolder}${FOLDER_SEP}${name}`;
+  const existing = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
+  if (existing.some((f) => f.toLowerCase() === folder.toLowerCase())) { showToast('That subfolder already exists'); return; }
+  try {
+    const encMeta = await collabEncryptGroupMeta(key, [...existing, folder], sharedGroupTagList(groupId));
+    const res = await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
+    if (!res.ok) { showToast('Could not add the subfolder'); return; }
+    showToast(`Subfolder \u201c${name}\u201d added`);
+    renderSharedView();
+  } catch (error) { showToast('Could not add the subfolder'); }
+}
+
+// Start a connection: create a shared section for the person (no note yet).
+// They receive a "<you> wants to connect with you" request to accept.
+export async function collabCreateSection(members) {
+  const names = Array.isArray(members) ? members : [];
+  const keyRaw = e2eeRandomBytes(32);
+  let selfPub;
+  try { selfPub = await sharingRecipientPublicKey(state.cachedProfile.username); }
+  catch (error) { showToast('Could not load your public key'); return null; }
+  const wrap = await wrapRawKeyFor(selfPub, keyRaw);
+  // Self-wrap: signed over an empty group id (the group does not exist yet);
+  // verification is skipped for one's own wrap.
+  wrap.sig = await signWrap('', state.cachedProfile.username, 1, wrap);
+  const name = names[0] || 'Connection';
+  const res = await apiFetch('/api/collab/groups', { method: 'POST', body: JSON.stringify({ name, ...wrap }) });
+  if (!res.ok) { showToast('Could not start the connection'); return null; }
+  const data = await res.json();
+  const failed = [];
+  for (const who of names) {
+    try { await collabAddGroupMember(data.id, keyRaw, who, 1); }
+    catch (error) { failed.push(`${who}: ${error && error.message ? error.message : 'failed'}`); }
+  }
+  if (state.activeView === 'shared') renderSharedView();
+  if (failed.length) showToast(`Connection started, but some requests failed — ${failed[0]}`);
+  else showToast(`Connection request sent to ${names.join(', ')}`);
+  return data.id;
+}
+
+export function dropNoteOnFolder(draggedId, folder, sectionId) {
+  const index = state.notes.findIndex((note) => note.id === draggedId);
+  if (index === -1 || typeof folder !== 'string') return;
+  const [moved] = state.notes.splice(index, 1);
+  // Resolve target section: explicit sectionId wins, else active custom section.
+  const targetSection = sectionId || (state.activeCustom ? state.activeCustom.section : null);
+  if (!moved.sections || typeof moved.sections !== 'object') moved.sections = {};
+  if (targetSection) {
+    moved.sections[targetSection] = folder;
+  } else {
+    // No section context (should not happen in unified UI): keep filing unchanged.
+    state.notes.splice(index, 0, moved);
+    persistNotes();
+    renderNoteList();
+    return;
+  }
+  // Append after the folder's last note in global order (empty folders: end).
+  const keyOf = (note) => {
+    if (targetSection) return customNoteFolder(note, targetSection);
+    if (state.activeCustom) return customNoteFolder(note, state.activeCustom.section);
+    return firstFilingOf(note);
+  };
+  let to = state.notes.length;
+  for (let i = state.notes.length - 1; i >= 0; i -= 1) {
+    if (keyOf(state.notes[i]) === folder) { to = i + 1; break; }
+  }
+  state.notes.splice(to, 0, moved);
+  persistNotes();
+  renderNoteList();
+}
+
+export function bindFolderDragDrop() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+  const clearIndicators = () => {
+    sidebar.querySelectorAll('.drop-before,.drop-after,.drop-target').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-target'));
+  };
+  sidebar.addEventListener('dragstart', (event) => {
+    const row = event.target.closest('.collection-item');
+    if (!row) return;
+    const target = sidebarFolderTarget(event);
+    if (!target || !e2ee.masterKey) { event.preventDefault(); return; }
+    event.dataTransfer.setData('application/x-notely-folder', JSON.stringify(target));
+    event.dataTransfer.effectAllowed = 'move';
+    row.classList.add('dragging');
+    closeFolderContextMenu();
+    closeNoteContextMenu();
+  });
+  sidebar.addEventListener('dragend', () => {
+    sidebar.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
+    clearIndicators();
+  });
+  sidebar.addEventListener('dragover', (event) => {
+    const row = event.target.closest('.collection-item');
+    if (!row || !e2ee.masterKey) return;
+    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes('application/x-notely-folder')) return;
+    const rect = row.getBoundingClientRect();
+    const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    clearIndicators();
+    if (ratio < 0.25) row.classList.add('drop-before');
+    else if (ratio > 0.75) row.classList.add('drop-after');
+    else row.classList.add('drop-target');
+  });
+  sidebar.addEventListener('dragleave', (event) => {
+    const row = event.target.closest('.collection-item');
+    if (row && !row.contains(event.relatedTarget)) {
+      row.classList.remove('drop-before', 'drop-after', 'drop-target');
+    }
+  });
+  sidebar.addEventListener('drop', (event) => {
+    const row = event.target.closest('.collection-item');
+    if (!row || !e2ee.masterKey) return;
+    let dragged = null;
+    try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notely-folder')); } catch (error) { dragged = null; }
+    if (!dragged || !dragged.path) return;
+    const target = sidebarFolderTarget(event);
+    if (!target || target.ns !== dragged.ns || target.section !== dragged.section) return;
+    if (target.path === dragged.path) return;
+    if (isFolderOrSub(target.path, dragged.path)) {
+      event.preventDefault();
+      showToast("Can't move a folder into itself");
+      return;
+    }
+    event.preventDefault();
+    const rect = row.getBoundingClientRect();
+    const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
+    const list = folderListOf(dragged.ns, dragged.section);
+    if (!list) return;
+    if (ratio >= 0.25 && ratio <= 0.75) {
+      // Nest inside the target folder.
+      const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, target.path);
+      if (!newPath) return;
+      const movedHome = newPath !== dragged.path;
+      // Group visually right after the new parent's subtree.
+      const moved = folderListOf(dragged.ns, dragged.section).filter((entry) => isFolderOrSub(entry, newPath));
+      const rest = folderListOf(dragged.ns, dragged.section).filter((entry) => !isFolderOrSub(entry, newPath));
+      let index = rest.length;
+      for (let i = rest.length - 1; i >= 0; i -= 1) {
+        if (isFolderOrSub(rest[i], target.path)) { index = i + 1; break; }
+      }
+      const reordered = [...rest.slice(0, index), ...moved, ...rest.slice(index)];
+      const section = state.customSections.find((entry) => entry.id === dragged.section);
+      if (section) section.folders = reordered;
+      persistFolderList(dragged.ns);
+      renderCustomSections();
+      renderNoteList();
+      if (movedHome) showToast(`Moved to “${folderLeaf(target.path)}”`);
+    } else {
+      // Reorder among siblings (reparenting across levels when needed).
+      const newParent = folderParent(target.path);
+      let movedRoot = dragged.path;
+      if ((newParent || null) !== (folderParent(dragged.path) || null)) {
+        const newPath = reparentFolder(dragged.ns, dragged.section, dragged.path, newParent);
+        if (!newPath) return;
+        movedRoot = newPath;
+      }
+      // Anchor may have been renamed if it sat inside the moved subtree —
+      // guarded above, so it is stable here.
+      if (reorderFolderBlock(dragged.ns, dragged.section, movedRoot, target.path, ratio > 0.75)) {
+        renderCustomSections();
+        renderNoteList();
+      }
+    }
+  });
+}
+
+// Reparent a folder under a new parent (null = top level). Returns the new
+// full path, or null when blocked. Shows toasts itself.
+export function reparentFolder(ns, sectionId, oldPath, newParent) {
+  if (newParent && (newParent === oldPath || isFolderOrSub(newParent, oldPath))) {
+    showToast("Can't move a folder into itself");
+    return null;
+  }
+  const list = folderListOf(ns, sectionId);
+  if (!list || !list.includes(oldPath)) return null;
+  if (newParent && !list.includes(newParent)) return null;
+  const leaf = folderLeaf(oldPath);
+  let newPath = newParent ? `${newParent}${FOLDER_SEP}${leaf}` : leaf;
+  if (newPath !== oldPath) {
+    const others = list.filter((entry) => !isFolderOrSub(entry, oldPath)).map((entry) => entry.toLowerCase());
+    if (others.includes(newPath.toLowerCase())) {
+      let counter = 2;
+      const stem = (suffix) => (newParent ? `${newParent}${FOLDER_SEP}${leaf} ${suffix}` : `${leaf} ${suffix}`);
+      while (others.includes(stem(counter).toLowerCase())) counter += 1;
+      newPath = stem(counter);
+    }
+    const ok = renameFolderPath(ns, sectionId, oldPath, newPath, { silent: true });
+    if (!ok) return null;
+  }
+  return newPath;
+}
+
+// Move a folder block (path + descendants) within its list.
+export function reorderFolderBlock(ns, sectionId, movedRoot, anchorPath, after) {
+  const list = folderListOf(ns, sectionId);
+  if (!list) return false;
+  const block = list.filter((entry) => isFolderOrSub(entry, movedRoot));
+  if (!block.length) return false;
+  const rest = list.filter((entry) => !isFolderOrSub(entry, movedRoot));
+  let index = rest.indexOf(anchorPath);
+  if (index === -1) index = rest.length;
+  else if (after) index += 1;
+  const reordered = [...rest.slice(0, index), ...block, ...rest.slice(index)];
+  const section = state.customSections.find((entry) => entry.id === sectionId);
+  if (!section) return false;
+  section.folders = reordered;
+  persistFolderList(ns);
+  return true;
+}
+
+export function renameFolderPath(ns, sectionId, oldPath, newPath, opts) {
+  return renameCustomFolder(sectionId, oldPath, newPath, opts);
+}
+
+export function persistFolderList(ns) {
+  persistCustomSections();
+}
+
+export function bindFolderContextMenu() {
+  const menu = getFolderContextMenu();
+  if (!menu) return;
+  if (noteList) noteList.addEventListener('contextmenu', (event) => {
+    // The Vault header is not a workspace folder: no folder menu there.
+    if (state.activeView === 'vault') return;
+    const row = event.target.closest('.tree-folder-row');
+    if (!row || event.target.closest('.tree-rename-input')) return;
+    const wrap = row.closest('[data-folder-wrap]');
+    if (!wrap) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // Resolve the row's namespace so "New subfolder" becomes a child of the
+    // right-clicked folder: the active custom filter wins, otherwise
+    // the enclosing list-section shell (home view shows all namespaces).
+    const shell = wrap.closest('[data-list-section]');
+    const shellKind = shell ? shell.dataset.listSection : null;
+    if (state.activeCustom) {
+      openFolderContextMenu('custom', wrap.dataset.folderWrap, event.clientX, event.clientY, state.activeCustom.section);
+      return;
+    }
+    if (shellKind === 'custom') {
+      const secBtn = shell.querySelector('[data-section-id]');
+      const secId = secBtn ? secBtn.dataset.sectionId : null;
+      if (secId) {
+        openFolderContextMenu('custom', wrap.dataset.folderWrap, event.clientX, event.clientY, secId);
+        return;
+      }
+    }
+    // Unknown shell: no folder menu.
+    return;
+  });
+  menu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-folder-action]');
+    if (!item) return;
+    const action = item.dataset.folderAction;
+    const target = state.folderMenuTarget;
+    closeFolderContextMenu();
+    handleFolderMenuAction(action, target);
+  });
+  document.addEventListener('click', (event) => {
+    if (state.folderMenuTarget && !event.target.closest('#folder-context-menu')) closeFolderContextMenu();
+  });
+  document.addEventListener('contextmenu', (event) => {
+    if (state.folderMenuTarget && !event.target.closest('#folder-context-menu')) closeFolderContextMenu();
+  });
+  window.addEventListener('resize', closeFolderContextMenu);
+}
+
+// Create a nested folder under a parent path and jump straight into naming
+// it. Without a parent, a top-level folder is created.
+export function createSubfolder(ns, parentPath, sectionId) {
+  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
+  // Depth limit: top-level -> sub -> sub-sub, but no deeper.
+  if (folderDepth(parentPath) >= MAX_SUBFOLDER_PARENT_DEPTH) {
+    showToast('Subfolders can only nest two levels deep');
+    return;
+  }
+  let slideCollapsed = false;
+  try { slideCollapsed = document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) {}
+  if (slideCollapsed) {
+    // The inline rename row lives in the slide menu and is hidden while it
+    // is collapsed: ask for the name in a popup instead.
+    askInput({ eyebrow: 'New subfolder', title: 'Name the subfolder', desc: `Under ${parentPath}`, label: 'Subfolder name', password: false, placeholder: 'e.g. Projects', okText: 'Create' }).then((value) => {
+      if (value == null) return;
+      const leaf = String(value).trim().slice(0, 60);
+      if (!leaf) { showToast('Give the subfolder a name'); return; }
+      if (/[/\\]/.test(leaf)) { showToast('Use a plain name without slashes'); return; }
+      const section = state.customSections.find((entry) => entry.id === sectionId);
+      if (!section) return;
+      const name = `${parentPath}${FOLDER_SEP}${leaf}`;
+      if (section.folders.some((entry) => entry.toLowerCase() === name.toLowerCase())) {
+        showToast('A folder with that name already exists');
+        return;
+      }
+      insertFolderAfterParent(section.folders, parentPath, name);
+      persistCustomSections();
+      renderCustomSections();
+      renderNoteList();
+      showToast('Subfolder created');
+    });
+    return;
+  }
+  const section = state.customSections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  const name = uniqueCustomFolderName(sectionId, `${parentPath}${FOLDER_SEP}New folder`);
+  insertFolderAfterParent(section.folders, parentPath, name);
+  persistCustomSections();
+  renderCustomSections();
+  renderNoteList();
+  showToast('Folder added — name it');
+  startCustomFolderRename(sectionId, name);
+  return;
+}
+
+export function handleFolderMenuAction(action, target) {
+  const resolved = target || state.folderMenuTarget;
+  if (!resolved || typeof action !== 'string') return;
+  const { path, section: sectionId } = resolved;
+  if (action === 'open') {
+    selectCustomFolder(sectionId, path);
+  } else if (action === 'new-note') {
+    // File the new note straight into the right-clicked folder.
+    state.pendingSectionFolder = { ns: 'custom', section: sectionId, folder: path };
+    state.pendingTemplate = null;
+    openTemplatePicker();
+  } else if (action === 'rename') {
+    startCustomFolderRename(sectionId, path);
+  } else if (action === 'subfolder') {
+    if (folderDepth(path) >= MAX_SUBFOLDER_PARENT_DEPTH) return; // depth limit
+    createSubfolder('custom', path, sectionId);
+  } else if (action === 'restore') {
+    return;
+  } else if (action === 'delete') {
+    openCustomFolderDeleteConfirm(sectionId, path);
+  }
+}
+
+export function bindSectionContextMenu() {
+  const menu = document.getElementById('section-context-menu');
+  if (menu) menu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-section-action]');
+    if (!item) return;
+    const target = state.sectionMenuTarget;
+    closeSectionContextMenu();
+    handleSectionMenuAction(item.dataset.sectionAction, target);
+  });
+  document.addEventListener('click', (event) => {
+    if (state.sectionMenuTarget && !event.target.closest('#section-context-menu')) closeSectionContextMenu();
+  });
+  document.addEventListener('contextmenu', (event) => {
+    if (state.sectionMenuTarget && !event.target.closest('#section-context-menu')) closeSectionContextMenu();
+  });
+  window.addEventListener('resize', closeSectionContextMenu);
+}
+
+export function chooseSectionIcon(name) {
+  const section = state.customSections.find((entry) => entry.id === state.sectionIconTarget);
+  if (!section || !SECTION_ICONS.includes(name)) { closeSectionIconPicker(); return; }
+  section.icon = name;
+  closeSectionIconPicker();
+  persistCustomSections();
+  renderCustomSections();
+  renderNoteList();
+  showToast(`Icon set to “${name}”`);
+}
+
+export function handleSectionMenuAction(action, sectionId) {
+  if (!sectionId || typeof action !== 'string') return;
+  const section = state.customSections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  if (action === 'add') {
+    addCustomFolder(sectionId);
+  } else if (action === 'icon') {
+    openSectionIconPicker(sectionId);
+  } else if (action === 'rename') {
+    if (slideMenuCollapsed()) {
+      askInput({ eyebrow: 'Rename section', title: section.name, desc: '', label: 'Section name', password: false, placeholder: section.name, okText: 'Rename' }).then((value) => {
+        if (value == null) return;
+        renameSectionDisplay(sectionId, value);
+      });
+    } else {
+      startSectionRename({ kind: 'custom', id: sectionId });
+    }
+  } else if (action === 'delete') {
+    openCustomSectionDeleteConfirm(sectionId);
+  }
+}
+
+export function bindCustomSectionsEvents() {
+  const container = document.getElementById('custom-sections');
+  if (container) {
+    container.addEventListener('click', (event) => {
+      if (event.target.closest('.collection-rename-input') || event.target.closest('.section-rename-input')) return;
+      const addBtn = event.target.closest('[data-custom-add]');
+      if (addBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        addCustomFolder(addBtn.dataset.customAdd);
+        return;
+      }
+      const delSectionBtn = event.target.closest('[data-custom-del-section]');
+      if (delSectionBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        openCustomSectionDeleteConfirm(delSectionBtn.dataset.customDelSection);
+        return;
+      }
+      const renameBtn = event.target.closest('[data-cf-rename]');
+      if (renameBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        startCustomFolderRename(renameBtn.dataset.cfSection, renameBtn.dataset.cfRename);
+        return;
+      }
+      const item = event.target.closest('.collection-item');
+      if (item && item.dataset.cfolder) {
+        event.preventDefault();
+        selectCustomFolder(item.dataset.csection, item.dataset.cfolder);
+      }
+    });
+    container.addEventListener('dblclick', (event) => {
+      if (event.target.closest('.collection-rename-input') || event.target.closest('.section-rename-input')
+        || event.target.closest('.collection-action') || event.target.closest('button')) return;
+      const label = event.target.closest('.section-label-text');
+      if (label) {
+        const wrap = label.closest('[data-custom-section]');
+        if (wrap) {
+          event.preventDefault();
+          startSectionRename({ kind: 'custom', id: wrap.dataset.customSection });
+        }
+        return;
+      }
+      const item = event.target.closest('.collection-item');
+      if (item && item.dataset.cfolder) {
+        event.preventDefault();
+        startCustomFolderRename(item.dataset.csection, item.dataset.cfolder);
+      }
+    });
+    container.addEventListener('contextmenu', (event) => {
+      const head = event.target.closest('.section-label');
+      const headWrap = event.target.closest('[data-custom-section]');
+      if (head && headWrap && !event.target.closest('input')) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeFolderContextMenu();
+        openSectionContextMenu(headWrap.dataset.customSection, event.clientX, event.clientY);
+        return;
+      }
+      const item = event.target.closest('.collection-item');
+      if (!item || !item.dataset.cfolder || event.target.closest('.collection-rename-input')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeSectionContextMenu();
+      openFolderContextMenu('custom', item.dataset.cfolder, event.clientX, event.clientY, item.dataset.csection);
+    });
+  }
+  const newSectionBtn = document.getElementById('new-section');
+  if (newSectionBtn) newSectionBtn.addEventListener('click', (event) => {
+    event.preventDefault();
+    addCustomSection();
+  });
+}
+
+// Adopt custom folders found on live notes that the sidebar does not list
+// yet (imports, older data), normalizing case onto the sidebar spelling.
+export function syncCustomSections() {
+  let notesDirty = false;
+  let sectionsDirty = false;
+  state.customSections.forEach((section) => {
+    state.notes.forEach((note) => {
+      if (note.deleted) return;
+      const folder = customNoteFolder(note, section.id);
+      if (!folder) return;
+      const canonical = section.folders.find((entry) => entry.toLowerCase() === folder.toLowerCase());
+      if (canonical) {
+        if (note.sections[section.id] !== canonical) { note.sections[section.id] = canonical; notesDirty = true; }
+      } else {
+        section.folders.push(folder);
+        sectionsDirty = true;
+      }
+    });
+  });
+  if (notesDirty) persistNotes();
+  if (sectionsDirty) persistCustomSections();
+}
+
+// Delete a custom folder and its nested subfolders: the folder is removed
+// from the sidebar and every live note inside moves to Bin for 3 days (tags
+// are kept, so restoring a note revives its folder via the sidebar sync).
+export function deleteCustomFolder(sectionId, folder) {
+  const section = state.customSections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  const movedAt = Date.now();
+  let count = 0;
+  state.notes.forEach((note) => {
+    if (note.deleted || !note.sections || typeof note.sections !== 'object') return;
+    const current = customNoteFolder(note, sectionId);
+    if (current !== null && isFolderOrSub(current, folder)) {
+      note.deleted = true;
+      note.deletedAt = movedAt;
+      count += 1;
+    }
+  });
+  section.folders = section.folders.filter((entry) => !isFolderOrSub(entry, folder));
+  if (state.activeCustom && state.activeCustom.section === sectionId && state.activeCustom.folder && isFolderOrSub(state.activeCustom.folder, folder)) {
+    state.activeCustom = null;
+    state.activeFilter = 'all';
+    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+    document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
+    updateListHeading();
+  }
+  const current = state.currentId ? state.notes.find((item) => item.id === state.currentId) : null;
+  if (!current || current.deleted) {
+    state.activeView = 'notes';
+    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+    const live = state.notes.filter((item) => !item.deleted && !item.archived);
+    if (live.length) selectNote(live[0].id);
+    else clearEditor();
+  }
+  persistCustomSections();
+  persistNotes();
+  renderCustomSections();
+  renderNoteList();
+  showToast(count
+    ? `Folder “${folderLeaf(folder)}” moved to Bin — ${count} note${count === 1 ? '' : 's'} kept for 3 days`
+    : `Folder “${folderLeaf(folder)}” deleted`);
+}
+
+// Validate and rename a custom folder on the section and matching notes.
+export function renameCustomFolder(sectionId, oldName, rawNewName, opts) {
+  const newName = cleanFolderPath(rawNewName);
+  if (!newName) { renderCustomSections(); renderNoteList(); return false; }
+  if (newName === oldName) { renderCustomSections(); renderNoteList(); return true; }
+  const section = state.customSections.find((entry) => entry.id === sectionId);
+  if (!section) return false;
+  if (section.folders.some((entry) => entry !== oldName && entry.toLowerCase() === newName.toLowerCase())) {
+    showToast('A folder with that name already exists');
+    renderCustomSections(); renderNoteList();
+    return false;
+  }
+  section.folders = repathList(section.folders, oldName, newName);
+  state.notes.forEach((note) => {
+    const current = customNoteFolder(note, sectionId);
+    if (current !== null && isFolderOrSub(current, oldName)) {
+      note.sections[sectionId] = current === oldName ? newName : newName + current.slice(oldName.length);
+    }
+  });
+  // Keep collapsed state following the rename (same value as Collections had).
+  if (state.collapsedFolders.size) {
+    const oldPrefix = `${oldName}${FOLDER_SEP}`;
+    const next = new Set();
+    state.collapsedFolders.forEach((entry) => {
+      next.add(entry === oldName ? newName : (entry.startsWith(oldPrefix) ? newName + entry.slice(oldName.length) : entry));
+    });
+    state.collapsedFolders = next;
+    persistCollapsedFolders();
+  }
+  if (state.activeCustom && state.activeCustom.section === sectionId && state.activeCustom.folder && isFolderOrSub(state.activeCustom.folder, oldName)) {
+    state.activeCustom.folder = state.activeCustom.folder === oldName ? newName : newName + state.activeCustom.folder.slice(oldName.length);
+    updateListHeading();
+  }
+  persistCustomSections();
+  persistNotes();
+  renderCustomSections();
+  renderNoteList();
+  if (!opts || !opts.silent) showToast(`Folder renamed to “${folderLeaf(newName)}”`);
+  return true;
+}
+
+// Inline rename for a custom-section folder row.
+export function startCustomFolderRename(sectionId, folder) {
+  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
+  renderCustomSections();
+  const item = findCustomItem(sectionId, folder);
+  if (!item) return;
+  const input = item.querySelector('.collection-rename-input');
+  const label = item.querySelector('.collection-label');
+  const actions = item.querySelector('.collection-actions');
+  if (!input) return;
+  input.hidden = false;
+  if (label) label.hidden = true;
+  if (actions) actions.hidden = true;
+  input.value = folderLeaf(folder);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    // Leaf-only commit: the parent prefix is re-attached so the folder (and
+    // its children) cannot slip out of place.
+    if (commit) renameCustomFolder(sectionId, folder, joinLeafRename(folder, input.value));
+    else { renderCustomSections(); renderNoteList(); }
+  };
+  input.onkeydown = (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    event.stopPropagation();
+  };
+  input.onclick = (event) => event.stopPropagation();
+  input.onblur = () => finish(true);
+}
+
+// Add a folder to one section from its All-Notes header (folder-plus beside
+// the edit pencil). Keeps the current view. When the slide menu is collapsed
+// the inline rename row is hidden, so the name is asked in a popup instead.
+export function addFolderToSection(sectionId) {
+  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
+  const section = state.customSections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  let slideCollapsed = false;
+  try { slideCollapsed = document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) {}
+  const commit = (leaf) => {
+    const clean = String(leaf == null ? '' : leaf).trim().slice(0, 60);
+    if (!clean) { showToast('Give the folder a name'); return; }
+    if (/[/\\]/.test(clean)) { showToast('Use a plain name without slashes'); return; }
+    if (section.folders.some((entry) => entry.toLowerCase() === clean.toLowerCase())) {
+      showToast('A folder with that name already exists');
+      return;
+    }
+    section.folders.push(clean);
+    persistCustomSections();
+    renderCustomSections();
+    renderNoteList();
+    showToast('Folder added');
+  };
+  if (slideCollapsed) {
+    askInput({ eyebrow: 'New folder', title: 'Name the folder', desc: `In ${section.name}`, label: 'Folder name', password: false, placeholder: 'e.g. Projects', okText: 'Create' }).then((value) => {
+      if (value != null) commit(value);
+    });
+    return;
+  }
+  const name = uniqueCustomFolderName(sectionId, 'New folder');
+  section.folders.push(name);
+  persistCustomSections();
+  renderCustomSections();
+  renderNoteList();
+  showToast('Folder added — name it');
+  startCustomFolderRename(sectionId, name);
+}
+
+export function addCustomFolder(sectionId) {
+  if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
+  const section = state.customSections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  if (slideMenuCollapsed()) {
+    // Inline naming lives in the slide menu and is hidden while collapsed.
+    askInput({ eyebrow: 'New folder', title: 'Name the folder', desc: `In ${section.name}`, label: 'Folder name', password: false, placeholder: 'e.g. Projects', okText: 'Create' }).then((value) => {
+      if (value == null) return;
+      const leaf = String(value).trim().slice(0, 60);
+      if (!leaf) { showToast('Give the folder a name'); return; }
+      if (/[/\\]/.test(leaf)) { showToast('Use a plain name without slashes'); return; }
+      if (section.folders.some((entry) => entry.toLowerCase() === leaf.toLowerCase())) {
+        showToast('A folder with that name already exists');
+        return;
+      }
+      section.folders.push(leaf);
+      persistCustomSections();
+      state.activeView = 'notes';
+      state.activeCustom = null;
+      state.activeFilter = 'all';
+      document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+      document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
+      clearSearch();
+      updateListHeading();
+      renderCustomSections();
+      renderNoteList();
+      showToast('Folder added');
+    });
+    return;
+  }
+  const name = uniqueCustomFolderName(sectionId, 'New folder');
+  section.folders.push(name);
+  persistCustomSections();
+  state.activeView = 'notes';
+  state.activeCustom = null;
+  state.activeFilter = 'all';
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
+  clearSearch();
+  updateListHeading();
+  renderCustomSections();
+  renderNoteList();
+  showToast('Folder added — name it');
+  startCustomFolderRename(sectionId, name);
+}
+
+// Delete a custom section: the section is removed from the sidebar, stashed
+// in Bin, and every live note inside moves to Bin for 3 days (section tags
+// are kept, so restoring a note revives its section).
+export function deleteCustomSection(id) {
+  const index = state.customSections.findIndex((entry) => entry.id === id);
+  if (index === -1) return;
+  const removed = state.customSections[index];
+  const name = removed.name;
+  const movedAt = Date.now();
+  let count = 0;
+  state.notes.forEach((note) => {
+    if (!note.deleted && customNoteFolder(note, id) !== null) {
+      note.deleted = true;
+      note.deletedAt = movedAt;
+      count += 1;
+    }
+  });
+  state.customSections.splice(index, 1);
+  if (count) {
+    state.deletedCustomSections = (state.deletedCustomSections || []).filter((entry) => entry.id !== id);
+    state.deletedCustomSections.push({
+      id, name, folders: [...(removed.folders || [])], deletedAt: movedAt,
+    });
+    persistDeletedCustomSections();
+  }
+  if (state.activeCustom && state.activeCustom.section === id) {
+    state.activeCustom = null;
+    state.activeFilter = 'all';
+    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+    document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
+    updateListHeading();
+  }
+  const current = state.currentId ? state.notes.find((item) => item.id === state.currentId) : null;
+  if (!current || current.deleted) {
+    state.activeView = 'notes';
+    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+    const live = state.notes.filter((item) => !item.deleted && !item.archived);
+    if (live.length) selectNote(live[0].id);
+    else clearEditor();
+  }
+  persistCustomSections();
+  persistNotes();
+  renderCustomSections();
+  renderNoteList();
+  showToast(count
+    ? `Section “${name}” moved to Bin — ${count} note${count === 1 ? '' : 's'} kept for 3 days`
+    : `Section “${name}” deleted`);
+}
+
+// Validate and apply a section display-name edit (all sections share the same implementation).
+export function renameSectionDisplay(id, rawNewName) {
+  const newName = String(rawNewName == null ? '' : rawNewName).replace(/[\x00-\x1F<>"]/g, '').trim().replace(/\s+/g, ' ').slice(0, 40);
+  if (!newName) { renderCustomSections(); renderNoteList(); return false; }
+  const section = state.customSections.find((entry) => entry.id === id);
+  if (!section) { renderCustomSections(); renderNoteList(); return false; }
+  const current = section.name || '';
+  if (newName === current) { renderCustomSections(); renderNoteList(); return true; }
+  if (takenSectionNames(id).includes(newName.toLowerCase())) {
+    showToast('A section with that name already exists');
+    renderCustomSections(); renderNoteList();
+    return false;
+  }
+  section.name = newName;
+  persistCustomSections();
+  updateListHeading();
+  renderCustomSections();
+  renderNoteList();
+  showToast('Section renamed');
+  return true;
+}
+
+// Inline rename for a section header (built-in or custom); Enter commits.
+export function startSectionRename(target, anchorEl) {
+  // Workspace-anchored rename (pencil/dblclick in the note list): edit inline
+  // in the list header where clicked — never in the slide menu.
+  if (anchorEl && anchorEl.isConnected && anchorEl.closest('#note-list')) {
+    const head = anchorEl.closest('.list-section-head');
+    if (head && !head.querySelector('.section-rename-input')) {
+      const section = state.customSections.find((entry) => entry.id === target.id);
+      const input = document.createElement('input');
+      input.className = 'section-rename-input';
+      input.value = (section || {}).name || '';
+      input.maxLength = 40;
+      input.setAttribute('aria-label', 'Section name');
+      anchorEl.hidden = true;
+      anchorEl.after(input);
+      input.focus();
+      input.select();
+      let done = false;
+      const finish = (commit) => {
+        if (done) return;
+        done = true;
+        input.remove();
+        anchorEl.hidden = false;
+        if (commit) renameSectionDisplay(target.id, input.value);
+        else renderNoteList();
+      };
+      input.onkeydown = (event) => {
+        if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+        if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+        event.stopPropagation();
+      };
+      input.onclick = (event) => event.stopPropagation();
+      input.onblur = () => finish(true);
+      return;
+    }
+    if (head) {
+      const pending = head.querySelector('.section-rename-input');
+      if (pending) { pending.focus(); pending.select(); return; }
+    }
+  }
+  renderCustomSections();
+  let label = null;
+  if (target.kind === 'custom') {
+    const wrap = [...document.querySelectorAll('#custom-sections [data-custom-section]')]
+      .find((el) => el.dataset.customSection === target.id);
+    label = wrap ? wrap.querySelector('.section-label-text') : null;
+  }
+  if (!label) return;
+  // The label is hidden (not replaced): built-in headers are static markup
+  // that no render rebuilds, so removing it would lose the label forever.
+  // A second double-click while open just refocuses the pending input.
+  const pending = label.parentElement ? label.parentElement.querySelector('.section-rename-input') : null;
+  if (pending) { pending.focus(); pending.select(); return; }
+  const input = document.createElement('input');
+  input.className = 'section-rename-input';
+  input.value = (state.customSections.find((section) => section.id === target.id) || {}).name || '';
+  input.maxLength = 40;
+  input.setAttribute('aria-label', 'Section name');
+  label.hidden = true;
+  label.after(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    input.remove();
+    label.hidden = false;
+    if (commit) renameSectionDisplay(target.id, input.value);
+    else { renderCustomSections(); renderNoteList(); }
+  };
+  input.onkeydown = (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+    event.stopPropagation();
+  };
+  input.onclick = (event) => event.stopPropagation();
+  input.onblur = () => finish(true);
+}
+
+export function addCustomSection() {
+  if (!e2ee.masterKey) { showToast('Log in to manage sections'); return; }
+  const section = { id: uniqueSectionId(), name: uniqueSectionName(), folders: [], icon: SECTION_ICONS[0] };
+  state.customSections.push(section);
+  persistCustomSections();
+  state.activeView = 'notes';
+  state.activeFilter = 'all';
+  state.activeCustom = null;
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
+  clearSearch();
+  updateListHeading();
+  renderCustomSections();
+  renderNoteList();
+  showToast('Section added — name it');
+  startSectionRename({ kind: 'custom', id: section.id });
+}
+
+// Delete every folder in a built-in section and hide the section header;
+// notes keep everything else. Restore via Settings → Side Menu.
+// (Custom sections have deleteCustomSection; single folders use their own confirms.)
+export function bindSectionHeaderEvents() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+  sidebar.addEventListener('click', (event) => {
+    if (event.target.closest('button') || event.target.closest('input')) return;
+    // The section name and its icon both select (mark) the section.
+    const label = event.target.closest('.section-label-text, .section-icon');
+    if (!label) return;
+    const section = label.closest('.sidebar-section');
+    if (!section) return;
+    event.preventDefault();
+    if (section.dataset.customSection) {
+      if (!isSectionEmpty('custom', section.dataset.customSection)) selectCustomSection(section.dataset.customSection);
+    }
+  });
+  sidebar.addEventListener('dblclick', (event) => {
+    if (event.target.closest('button') || event.target.closest('input')) return;
+    const label = event.target.closest('.section-label-text');
+    if (!label) return;
+    const section = label.closest('.sidebar-section');
+    if (!section) return;
+    event.preventDefault();
+    if (section.dataset.customSection) startSectionRename({ kind: 'custom', id: section.dataset.customSection });
+  });
+  // Collapsed slide menu shows section initials: clicking one opens the
+  // section in the workspace (empty sections stay put, like labels).
+  sidebar.addEventListener('click', (event) => {
+    const initial = event.target.closest('.section-initial');
+    if (!initial) return;
+    const section = initial.closest('.sidebar-section');
+    if (!section || !section.dataset.customSection) return;
+    event.preventDefault();
+    if (!isSectionEmpty('custom', section.dataset.customSection)) selectCustomSection(section.dataset.customSection);
+  });
+}
+
+// Revive binned custom sections a (newly live) note belongs to, so it has
+// a home. Custom folders inside live sections are re-adopted by the
+// sidebar sync that callers run afterwards.
+export function reviveSectionsForNote(note) {
+  if (!note || !note.sections || typeof note.sections !== 'object') return false;
+  let revived = false;
+  Object.keys(note.sections).forEach((sectionId) => {
+    if (customNoteFolder(note, sectionId) === null) return;
+    if (state.customSections.some((entry) => entry.id === sectionId)) return;
+    const stashed = (state.deletedCustomSections || []).find((entry) => entry.id === sectionId);
+    if (stashed) {
+      const folders = [...(stashed.folders || [])];
+      if (!folders.some((entry) => entry === note.sections[sectionId])) folders.push(note.sections[sectionId]);
+      state.customSections.push({ id: stashed.id, name: stashed.name, folders });
+    } else {
+      state.customSections.push({ id: sectionId, name: 'Restored section', folders: [note.sections[sectionId]] });
+    }
+    revived = true;
+  });
+  if (revived) {
+    persistCustomSections();
+    pruneDeletedCustomSections();
+  }
+  return revived;
+}
+
+// Persist collapsed tree-folder state into the encrypted UI vault.
+export function persistCollapsedFolders() {
+  persistUiVault();
+}
+
+// Drop section Bin records with no binned notes left (or past retention).
+export function pruneDeletedCustomSections() {
+  const now = Date.now();
+  const before = (state.deletedCustomSections || []).length;
+  state.deletedCustomSections = (state.deletedCustomSections || []).filter((entry) => (
+    now - entry.deletedAt <= BIN_RETENTION_MS
+    && state.notes.some((note) => note.deleted && note.sections
+      && typeof note.sections === 'object' && customNoteFolder(note, entry.id) !== null)
+  ));
+  if (state.deletedCustomSections.length !== before) persistDeletedCustomSections();
+}
+
+// Persist binned custom-section records {id, name, folders, deletedAt}.
+export function persistDeletedCustomSections() {
+  persistUiVault();
+}
+
+// Ensure the migrated former-Collections custom section exists and carries
+// the same folders/value. All new sections share this implementation.
+export function ensureMigratedCollectionsSection(legacyFolders, legacyName) {
+  const folders = Array.isArray(legacyFolders)
+    ? legacyFolders.filter((name) => typeof name === 'string' && name.trim()).map((name) => name.trim().slice(0, 180)).slice(0, 200)
+    : [];
+  let section = state.customSections.find((entry) => entry.id === MIGRATED_COLLECTIONS_SECTION_ID);
+  if (!section) {
+    const baseName = (typeof legacyName === 'string' && legacyName.trim() ? legacyName.trim().slice(0, 40) : 'Collections');
+    const taken = new Set(state.customSections.map((entry) => entry.name.toLowerCase()));
+    let name = baseName;
+    if (taken.has(name.toLowerCase())) {
+      let counter = 2;
+      while (taken.has(`${baseName} ${counter}`.toLowerCase())) counter += 1;
+      name = `${baseName} ${counter}`;
+    }
+    const merged = [...folders];
+    if (!merged.length) DEFAULT_CUSTOM_FOLDERS.forEach((name) => { if (!merged.some((entry) => entry.toLowerCase() === name.toLowerCase())) merged.push(name); });
+    section = { id: MIGRATED_COLLECTIONS_SECTION_ID, name, folders: merged };
+    state.customSections.unshift(section);
+  } else {
+    folders.forEach((name) => {
+      if (!section.folders.some((entry) => entry.toLowerCase() === name.toLowerCase())) section.folders.push(name);
+    });
+    if (typeof legacyName === 'string' && legacyName.trim() && section.name !== legacyName.trim()) {
+      const taken = new Set(state.customSections.filter((entry) => entry.id !== section.id).map((entry) => entry.name.toLowerCase()));
+      if (!taken.has(legacyName.trim().toLowerCase())) section.name = legacyName.trim().slice(0, 40);
+    }
+  }
+  // Migrate note.collection -> note.sections[migratedId] (same value, new home).
+  let notesDirty = false;
+  state.notes.forEach((note) => {
+    if (typeof note.collection === 'string' && note.collection.trim()) {
+      const folder = note.collection.trim().slice(0, 180);
+      if (!note.sections || typeof note.sections !== 'object' || Array.isArray(note.sections)) note.sections = {};
+      if (typeof note.sections[section.id] !== 'string' || !note.sections[section.id]) {
+        note.sections[section.id] = folder;
+        notesDirty = true;
+      }
+      if (!section.folders.some((entry) => entry.toLowerCase() === folder.toLowerCase())) {
+        section.folders.push(folder);
+      }
+    }
+    if ('collection' in note) { delete note.collection; notesDirty = true; }
+  });
+  if (notesDirty) persistNotes();
+  persistCustomSections();
+  return section;
 }

@@ -13,6 +13,8 @@ import { b64urlToBuf } from '../data/collab-crypto.js';
 import { clearRecoveryCodesLocal, loadRecoveryCodesLocal } from './editor.js';
 import { showToast } from './modal.js';
 import { applyProfile } from './shell.js';
+import { prfWrapMasterKey } from './editor.js';
+
 
 
 export async function e2eeUnlockWithPassword(username, password, bundle) {
@@ -333,4 +335,93 @@ export function accountScopeKey(base) {
     const name = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
     return `${base}:${name}`;
   } catch (error) { return base; }
+}
+
+
+export async function refreshPasskeys() {
+  const listEl = document.getElementById('passkey-list');
+  const errEl = document.getElementById('passkey-error');
+  try {
+    const r = await apiFetch('/api/passkey/list');
+    if (!r.ok) throw new Error();
+    const data = await r.json();
+    const keys = (data && data.keys) || [];
+    const prfSalt = (data && data.prfSalt) || null;
+    if (listEl) {
+      listEl.innerHTML = '';
+      if (!keys.length) listEl.textContent = 'No passkeys yet.';
+      keys.forEach((k) => {
+        const row = document.createElement('div');
+        // passwordless flag tells whether THIS key unlocks notes alone or
+        // still needs the password afterwards.
+        row.textContent = `${String(k.id).slice(0, 16)}… (added ${new Date((k.created_at || 0) * 1000).toLocaleDateString()} · ${k.passwordless ? 'no password needed' : 'password still needed'}) `;
+        if (!k.passwordless) {
+          const enable = document.createElement('button');
+          enable.textContent = 'Enable passwordless';
+          enable.className = 'btn btn-secondary';
+          enable.addEventListener('click', () => enablePasswordlessPasskey(k.id, prfSalt, enable));
+          row.appendChild(enable);
+          row.appendChild(document.createTextNode(' '));
+        }
+        const del = document.createElement('button');
+        del.textContent = 'Remove';
+        del.className = 'btn btn-secondary';
+        del.addEventListener('click', async () => {
+          await apiFetch('/api/passkey/remove', { method: 'POST', body: JSON.stringify({ id: k.id }) });
+          await refreshPasskeys();
+        });
+        row.appendChild(del);
+        listEl.appendChild(row);
+      });
+    }
+    if (errEl) errEl.hidden = true;
+  } catch (error) {
+    if (listEl) listEl.textContent = 'Could not load passkeys.';
+  }
+}
+
+// Attach a PRF wrap to an existing passkey (no remove/re-add needed), so it can
+// unlock notes without the password. Requires an unlocked session (master key
+// is in memory) and a PRF-capable authenticator.
+export async function enablePasswordlessPasskey(credIdB64, prfSaltB64, btn) {
+  const errEl = document.getElementById('passkey-error');
+  try {
+    if (!e2ee.masterKey) throw new Error('Unlock your notes first (log in with your password), then retry.');
+    if (!prfSaltB64) throw new Error('Passwordless is not available for this account.');
+    if (btn) btn.disabled = true;
+    // Best-effort browser check (Chromium exposes this). Helps tell "browser
+    // can't do it" apart from "this authenticator didn't return a PRF".
+    let caps = null;
+    try {
+      if (window.PublicKeyCredential && PublicKeyCredential.getClientCapabilities) {
+        caps = await PublicKeyCredential.getClientCapabilities();
+      }
+    } catch (error) { caps = null; }
+    if (caps && caps['extension:prf'] === false) {
+      throw new Error('This browser doesn’t support the passkey PRF extension needed for passwordless — use Chrome or Edge.');
+    }
+    const prfSecret = await prfSecretViaAssertion(b64urlToBuf(credIdB64), undefined, prfSaltB64);
+    if (!prfSecret) {
+      throw new Error('This authenticator returned no PRF, so passwordless can’t be enabled. Chrome/Edge usually support it; Firefox currently does not.');
+    }
+    const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
+    const prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
+    const r = await apiFetch('/api/passkey/prf-wrap', { method: 'POST', body: JSON.stringify({ id: credIdB64, prfWrap }) });
+    if (r.status === 401) throw new Error('Session expired — log in again, then retry.');
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'Could not enable passwordless.');
+    }
+    if (errEl) errEl.hidden = true;
+    showToast('Passwordless unlock enabled for this passkey');
+    await refreshPasskeys();
+  } catch (error) {
+    if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
+      if (errEl) errEl.hidden = true;
+    } else if (errEl) {
+      errEl.textContent = error.message || 'Could not enable passwordless.';
+      errEl.hidden = false;
+    }
+    if (btn) btn.disabled = false;
+  }
 }
