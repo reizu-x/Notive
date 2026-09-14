@@ -81,4 +81,6 @@ export const state = {
   syncTimer: null,
   saveTimer: null,
   idleTimer: null,
+  // Timestamp of the last successful server sync (drives the "Synced ago" label).
+  lastSyncedAt: 0,
 };
