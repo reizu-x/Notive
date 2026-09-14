@@ -107,15 +107,12 @@ document.querySelectorAll('[data-icon]').forEach((element) => {
 // AES-GCM encrypted at rest). Nothing note-shaped is written to localStorage:
 // legacy plaintext keys are migrated once, then wiped (CWE-312 fix).
 // notes now lives on the shared state object (js/domain/state.js).
-let notesLoaded = false;
 // Last server updated_at seen (optimistic concurrency: sent as baseVersion on
 // PUT; server rejects 409 on stale overwrites so hijacked/racing writes fail
 // instead of silently destroying newer data).
-let serverNotesVersion = 0;
 // True when the server E2EE envelope already supplied per-account UI state
 // (v2 `ui`). loadUiVault() respects it and never overwrites it with a stale
 // device-local copy from another account.
-let serverUiLoaded = false;
 
 // One-time read of pre-server localStorage note keys. Returns null when absent or invalid.
 function readLegacyLocalNotes() {
@@ -230,7 +227,6 @@ function welcomeSeedUi() {
   };
 }
 
-let syncTimer;
 
 // --- End-to-end encryption -------------------------------------------------
 // Note bodies/titles/tags/sections are encrypted on this device with the
@@ -298,8 +294,8 @@ function isUnlocked() {
 // through this so vault notes behave like normal ones.
 function activeEditorNote() {
   if (state.activeView === 'vault') {
-    if (!state.vault.unlocked || !currentVaultId) return null;
-    return state.vault.notes.find((item) => item.id === currentVaultId) || null;
+    if (!state.vault.unlocked || !state.currentVaultId) return null;
+    return state.vault.notes.find((item) => item.id === state.currentVaultId) || null;
   }
   return currentNote();
 }
@@ -315,7 +311,7 @@ function refreshEditorLock() {
   let locked = !isUnlocked();
   if (state.activeView === 'vault') {
     locked = locked || !state.vault.unlocked;
-    if (!locked && currentVaultId) note = state.vault.notes.find((item) => item.id === currentVaultId) || null;
+    if (!locked && state.currentVaultId) note = state.vault.notes.find((item) => item.id === state.currentVaultId) || null;
   } else if (state.currentId) {
     note = state.notes.find((item) => item.id === state.currentId) || null;
   }
@@ -414,7 +410,7 @@ async function adoptNotesEnvelope(envelope) {
   try {
     if (!Array.isArray(envelope) && envelope && envelope.ui && typeof applyUiSnapshot === 'function') {
       if (applyUiSnapshot(envelope.ui)) {
-        serverUiLoaded = true;
+        state.serverUiLoaded = true;
         try { await writeUiVaultLocal(); } catch (error) {}
       }
     }
@@ -431,7 +427,7 @@ async function loadNotesFromDevice() {
     if (raw) {
       const payload = JSON.parse(raw);
       await adoptNotesEnvelope(await e2eeDecryptPayload(payload));
-      notesLoaded = true;
+      state.notesLoaded = true;
       setSaveLabel('Offline · loaded', 'gray');
       return;
     }
@@ -440,7 +436,7 @@ async function loadNotesFromDevice() {
   applyUiSnapshot(welcomeSeedUi());
   state.vault.blobs = [];
   state.vault.folders = [];
-  notesLoaded = true;
+  state.notesLoaded = true;
   setSaveLabel('Offline · saved', 'gray');
 }
 
@@ -461,7 +457,7 @@ async function syncNotesToServer() {
   }
   try {
     const payload = await e2eeEncryptNotes(await buildNotesEnvelope());
-    const response = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload, baseVersion: serverNotesVersion }) });
+    const response = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload, baseVersion: state.serverNotesVersion }) });
     if (response.status === 409) {
       setSaveLabel('Out of date', 'red');
       try { showToast('Notes changed on server — reloading'); } catch (error) {}
@@ -472,7 +468,7 @@ async function syncNotesToServer() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     try {
       const data = await response.json();
-      if (data && typeof data.updated_at === 'number') serverNotesVersion = data.updated_at;
+      if (data && typeof data.updated_at === 'number') state.serverNotesVersion = data.updated_at;
     } catch (error) {}
     markSynced();
   } catch (error) {
@@ -483,7 +479,7 @@ async function syncNotesToServer() {
 // Immediate (non-debounced) upload used by logout/unload so the last edits
 // are never stranded in a cancelled timer.
 async function flushNotesToServer() {
-  clearTimeout(syncTimer);
+  clearTimeout(state.syncTimer);
   await syncNotesToServer();
 }
 
@@ -503,7 +499,7 @@ async function loadNotesFromServer() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     try {
-      if (data && typeof data.updated_at === 'number') serverNotesVersion = data.updated_at;
+      if (data && typeof data.updated_at === 'number') state.serverNotesVersion = data.updated_at;
     } catch (error) {}
     if (data && data.payload) {
       // E2EE blob: only this device can read it. Envelope is either a legacy
@@ -528,11 +524,11 @@ async function loadNotesFromServer() {
       await syncNotesToServer();
       wipeLegacyLocalNotes();
     }
-    notesLoaded = true;
+    state.notesLoaded = true;
   } catch (error) {
     const legacy = readLegacyLocalNotes();
     state.notes = legacy || [];
-    notesLoaded = true;
+    state.notesLoaded = true;
     showToast('Cannot reach the Notely server — working offline');
   }
 }
@@ -557,7 +553,6 @@ const UI_VAULT_KEY = 'notely-ui-vault';
 // Locked-boot defaults: folder names stay unreadable until the vault unlocks.
 state.collapsedFolders = new Set();
 // User-created tags that may not be attached to any note yet (Settings → Tags).
-let knownTags = [];
 function cleanTagList(value) {
   if (!Array.isArray(value)) return [];
   const seen = new Set();
@@ -578,7 +573,6 @@ state.customSections = [];
 // Custom sections moved to Bin: [{ id, name, folders, deletedAt }]. Binned
 // notes keep their section tags, so restoring a note revives its section.
 state.deletedCustomSections = [];
-let uiVaultTimer = null;
 
 // Device-local cache key, namespaced per account so two logins on one device
 // can never decrypt (or overwrite) each other's sidebar.
@@ -606,8 +600,8 @@ function uiSnapshot() {
       folders: [...(entry.folders || [])], deletedAt: entry.deletedAt,
     })),
     theme,
-    avatar: profileAvatar || '',
-    tags: knownTags,
+    avatar: state.profileAvatar || '',
+    tags: state.knownTags,
   };
 }
 
@@ -677,12 +671,12 @@ function applyUiSnapshot(value) {
     adopted = true;
   }
   if (typeof clean.avatar === 'string') {
-    profileAvatar = clean.avatar;
+    state.profileAvatar = clean.avatar;
     adopted = true;
     try { applyProfile(); } catch (error) {}
   }
   if (Array.isArray(clean.tags)) {
-    knownTags = cleanTagList(clean.tags);
+    state.knownTags = cleanTagList(clean.tags);
     adopted = true;
   }
   return adopted;
@@ -701,8 +695,8 @@ async function writeUiVaultLocal() {
   const snapshot = JSON.stringify({
     collapsed: [...state.collapsedFolders],
     customSections: state.customSections, deletedCustomSections: state.deletedCustomSections, theme,
-    avatar: profileAvatar || '',
-    tags: knownTags,
+    avatar: state.profileAvatar || '',
+    tags: state.knownTags,
   });
   const iv = e2eeRandomBytes(12);
   const ct = await window.crypto.subtle.encrypt(
@@ -731,8 +725,8 @@ async function writeUiVaultLocal() {
 }
 
 function persistUiVault() {
-  clearTimeout(uiVaultTimer);
-  uiVaultTimer = setTimeout(() => {
+  clearTimeout(state.uiVaultTimer);
+  state.uiVaultTimer = setTimeout(() => {
     (async () => {
       if (!e2ee.masterKey) return; // locked: never write (and never plaintext)
       try { await writeUiVaultLocal(); } catch (error) {}
@@ -862,7 +856,7 @@ async function decryptUiVaultRaw(raw) {
 async function loadUiVault() {
   // Server envelope (v2) already won: keep it, just refresh the per-account
   // local cache. Never let a stale device copy from another account clobber it.
-  if (serverUiLoaded) {
+  if (state.serverUiLoaded) {
     try { await writeUiVaultLocal(); } catch (error) {}
     return true;
   }
@@ -960,9 +954,7 @@ purgeExpiredBin();
 state.currentId = null;
 state.activeView = 'notes';
 state.activeFilter = 'all';
-let activeCustom = null; // { section: id, folder: path | null } | null — section/folder filter
 state.searchQuery = '';
-let saveTimer;
 // Persist collapsed tree-folder state into the encrypted UI vault.
 function persistCollapsedFolders() {
   persistUiVault();
@@ -1070,7 +1062,7 @@ function renderCustomSections() {
       </div>
       <div class="collection-list">
         ${section.folders.map((name) => `
-        <a href="#" draggable="true" class="collection-item${activeCustom && activeCustom.section === section.id && activeCustom.folder === name ? ' active' : ''}" data-csection="${escapeHtml(section.id)}" data-cfolder="${escapeHtml(name)}" data-depth="${folderDepth(name)}" title="${escapeHtml(name)}">
+        <a href="#" draggable="true" class="collection-item${state.activeCustom && state.activeCustom.section === section.id && state.activeCustom.folder === name ? ' active' : ''}" data-csection="${escapeHtml(section.id)}" data-cfolder="${escapeHtml(name)}" data-depth="${folderDepth(name)}" title="${escapeHtml(name)}">
           <span class="collection-dot ${customFolderColor(section, name)}"></span>
           <span class="collection-label">${escapeHtml(folderLeaf(name))}</span>
           <span class="collection-actions">
@@ -1098,7 +1090,7 @@ function customFolderColor(section, name) {
 function updateSectionHeaders() {
   document.querySelectorAll('#custom-sections .sidebar-section').forEach((wrap) => {
     const id = wrap.dataset.customSection;
-    wrap.classList.toggle('active-section', Boolean(activeCustom && !activeCustom.folder && activeCustom.section === id));
+    wrap.classList.toggle('active-section', Boolean(state.activeCustom && !state.activeCustom.folder && state.activeCustom.section === id));
     wrap.classList.toggle('is-empty', isSectionEmpty('custom', id));
   });
 }
@@ -1141,7 +1133,7 @@ function addCustomSection() {
   persistCustomSections();
   state.activeView = 'notes';
   state.activeFilter = 'all';
-  activeCustom = null;
+  state.activeCustom = null;
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   clearSearch();
@@ -1279,8 +1271,8 @@ function deleteCustomSection(id) {
     });
     persistDeletedCustomSections();
   }
-  if (activeCustom && activeCustom.section === id) {
-    activeCustom = null;
+  if (state.activeCustom && state.activeCustom.section === id) {
+    state.activeCustom = null;
     state.activeFilter = 'all';
     document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
     document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
@@ -1337,7 +1329,7 @@ function addCustomFolder(sectionId) {
       section.folders.push(leaf);
       persistCustomSections();
       state.activeView = 'notes';
-      activeCustom = null;
+      state.activeCustom = null;
       state.activeFilter = 'all';
       document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
       document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
@@ -1353,7 +1345,7 @@ function addCustomFolder(sectionId) {
   section.folders.push(name);
   persistCustomSections();
   state.activeView = 'notes';
-  activeCustom = null;
+  state.activeCustom = null;
   state.activeFilter = 'all';
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
@@ -1466,8 +1458,8 @@ function renameCustomFolder(sectionId, oldName, rawNewName, opts) {
     state.collapsedFolders = next;
     persistCollapsedFolders();
   }
-  if (activeCustom && activeCustom.section === sectionId && activeCustom.folder && isFolderOrSub(activeCustom.folder, oldName)) {
-    activeCustom.folder = activeCustom.folder === oldName ? newName : newName + activeCustom.folder.slice(oldName.length);
+  if (state.activeCustom && state.activeCustom.section === sectionId && state.activeCustom.folder && isFolderOrSub(state.activeCustom.folder, oldName)) {
+    state.activeCustom.folder = state.activeCustom.folder === oldName ? newName : newName + state.activeCustom.folder.slice(oldName.length);
     updateListHeading();
   }
   persistCustomSections();
@@ -1486,9 +1478,9 @@ function openCustomFolderDeleteConfirm(sectionId, folder) {
     const current = customNoteFolder(note, sectionId);
     return current !== null && isFolderOrSub(current, folder);
   }).length;
-  pendingDeleteId = folder;
-  pendingDeleteMode = 'custom-folder';
-  pendingDeleteSection = sectionId;
+  state.pendingDeleteId = folder;
+  state.pendingDeleteMode = 'custom-folder';
+  state.pendingDeleteSection = sectionId;
   setDeleteDialog({
     eyebrow: 'Delete folder',
     title: 'Delete this folder?',
@@ -1523,8 +1515,8 @@ function deleteCustomFolder(sectionId, folder) {
     }
   });
   section.folders = section.folders.filter((entry) => !isFolderOrSub(entry, folder));
-  if (activeCustom && activeCustom.section === sectionId && activeCustom.folder && isFolderOrSub(activeCustom.folder, folder)) {
-    activeCustom = null;
+  if (state.activeCustom && state.activeCustom.section === sectionId && state.activeCustom.folder && isFolderOrSub(state.activeCustom.folder, folder)) {
+    state.activeCustom = null;
     state.activeFilter = 'all';
     document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
     document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
@@ -1649,9 +1641,9 @@ function openCustomSectionDeleteConfirm(id) {
   const section = state.customSections.find((entry) => entry.id === id);
   if (!section) return;
   const count = state.notes.filter((note) => !note.deleted && customNoteFolder(note, id) !== null).length;
-  pendingDeleteId = id;
-  pendingDeleteMode = 'custom-section';
-  pendingDeleteSection = null;
+  state.pendingDeleteId = id;
+  state.pendingDeleteMode = 'custom-section';
+  state.pendingDeleteSection = null;
   setDeleteDialog({
     eyebrow: 'Delete section',
     title: 'Delete this section?',
@@ -1673,19 +1665,18 @@ function openCustomSectionDeleteConfirm(id) {
 // New folder / Rename section / Delete section. Replaces the old header +
 // and × buttons. Rename/add fall back to popups while the slide menu is
 // collapsed, where the inline rows are hidden.
-let sectionMenuTarget = null; // section id
 
 function closeSectionContextMenu() {
   const menu = document.getElementById('section-context-menu');
   if (menu) menu.hidden = true;
-  sectionMenuTarget = null;
+  state.sectionMenuTarget = null;
 }
 
 function openSectionContextMenu(sectionId, x, y) {
   const menu = document.getElementById('section-context-menu');
   if (!menu || !sectionId) return;
   if (!state.customSections.some((entry) => entry.id === sectionId)) return;
-  sectionMenuTarget = sectionId;
+  state.sectionMenuTarget = sectionId;
   menu.hidden = false;
   const padding = 8;
   menu.style.left = `${x}px`;
@@ -1724,14 +1715,13 @@ function handleSectionMenuAction(action, sectionId) {
 // ---- Section icon picker -------------------------------------------------
 // Opens a grid of line icons; picking one stores it on the section (persisted
 // in the E2EE UI envelope) and repaints the sidebar.
-let sectionIconTarget = null;
 
 function openSectionIconPicker(sectionId) {
   const overlay = document.getElementById('section-icon-overlay');
   const grid = document.getElementById('section-icon-grid');
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (!overlay || !grid || !section) return;
-  sectionIconTarget = sectionId;
+  state.sectionIconTarget = sectionId;
   const current = sectionIconName(section);
   grid.innerHTML = SECTION_ICONS.map((name) =>
     `<button type="button" class="section-icon-option${name === current ? ' is-selected' : ''}" data-icon-choice="${name}" title="${name}" aria-label="${name}">${icon(name)}</button>`).join('');
@@ -1745,11 +1735,11 @@ function openSectionIconPicker(sectionId) {
 function closeSectionIconPicker() {
   const overlay = document.getElementById('section-icon-overlay');
   if (overlay) overlay.hidden = true;
-  sectionIconTarget = null;
+  state.sectionIconTarget = null;
 }
 
 function chooseSectionIcon(name) {
-  const section = state.customSections.find((entry) => entry.id === sectionIconTarget);
+  const section = state.customSections.find((entry) => entry.id === state.sectionIconTarget);
   if (!section || !SECTION_ICONS.includes(name)) { closeSectionIconPicker(); return; }
   section.icon = name;
   closeSectionIconPicker();
@@ -1764,15 +1754,15 @@ function bindSectionContextMenu() {
   if (menu) menu.addEventListener('click', (event) => {
     const item = event.target.closest('[data-section-action]');
     if (!item) return;
-    const target = sectionMenuTarget;
+    const target = state.sectionMenuTarget;
     closeSectionContextMenu();
     handleSectionMenuAction(item.dataset.sectionAction, target);
   });
   document.addEventListener('click', (event) => {
-    if (sectionMenuTarget && !event.target.closest('#section-context-menu')) closeSectionContextMenu();
+    if (state.sectionMenuTarget && !event.target.closest('#section-context-menu')) closeSectionContextMenu();
   });
   document.addEventListener('contextmenu', (event) => {
-    if (sectionMenuTarget && !event.target.closest('#section-context-menu')) closeSectionContextMenu();
+    if (state.sectionMenuTarget && !event.target.closest('#section-context-menu')) closeSectionContextMenu();
   });
   window.addEventListener('resize', closeSectionContextMenu);
 }
@@ -1780,7 +1770,6 @@ function bindSectionContextMenu() {
 // ---- Folder context menu (right-click): Open / Rename / New subfolder /
 // Delete. One shared menu for sidebar rows and All-Notes folder headers;
 // the target carries its section so folders stay separate.
-let folderMenuTarget = null; // { ns: 'custom', path, section }
 
 function getFolderContextMenu() {
   return document.getElementById('folder-context-menu');
@@ -1789,13 +1778,13 @@ function getFolderContextMenu() {
 function closeFolderContextMenu() {
   const menu = getFolderContextMenu();
   if (menu) menu.hidden = true;
-  folderMenuTarget = null;
+  state.folderMenuTarget = null;
 }
 
 function openFolderContextMenu(ns, path, x, y, sectionId) {
   const menu = getFolderContextMenu();
   if (!menu || !path || !sectionId) return;
-  folderMenuTarget = { ns: 'custom', path, section: sectionId };
+  state.folderMenuTarget = { ns: 'custom', path, section: sectionId };
   // Subfolders nest up to two levels: "New subfolder" is offered on top-level
   // folders and on first-level subfolders, but not on the deepest ones.
   const atMaxDepth = folderDepth(path) >= MAX_SUBFOLDER_PARENT_DEPTH;
@@ -1817,15 +1806,15 @@ function openFolderContextMenu(ns, path, x, y, sectionId) {
 }
 
 function handleFolderMenuAction(action, target) {
-  const resolved = target || folderMenuTarget;
+  const resolved = target || state.folderMenuTarget;
   if (!resolved || typeof action !== 'string') return;
   const { path, section: sectionId } = resolved;
   if (action === 'open') {
     selectCustomFolder(sectionId, path);
   } else if (action === 'new-note') {
     // File the new note straight into the right-clicked folder.
-    pendingSectionFolder = { ns: 'custom', section: sectionId, folder: path };
-    pendingTemplate = null;
+    state.pendingSectionFolder = { ns: 'custom', section: sectionId, folder: path };
+    state.pendingTemplate = null;
     openTemplatePicker();
   } else if (action === 'rename') {
     startCustomFolderRename(sectionId, path);
@@ -1921,8 +1910,8 @@ function bindFolderContextMenu() {
     // the enclosing list-section shell (home view shows all namespaces).
     const shell = wrap.closest('[data-list-section]');
     const shellKind = shell ? shell.dataset.listSection : null;
-    if (activeCustom) {
-      openFolderContextMenu('custom', wrap.dataset.folderWrap, event.clientX, event.clientY, activeCustom.section);
+    if (state.activeCustom) {
+      openFolderContextMenu('custom', wrap.dataset.folderWrap, event.clientX, event.clientY, state.activeCustom.section);
       return;
     }
     if (shellKind === 'custom') {
@@ -1940,15 +1929,15 @@ function bindFolderContextMenu() {
     const item = event.target.closest('[data-folder-action]');
     if (!item) return;
     const action = item.dataset.folderAction;
-    const target = folderMenuTarget;
+    const target = state.folderMenuTarget;
     closeFolderContextMenu();
     handleFolderMenuAction(action, target);
   });
   document.addEventListener('click', (event) => {
-    if (folderMenuTarget && !event.target.closest('#folder-context-menu')) closeFolderContextMenu();
+    if (state.folderMenuTarget && !event.target.closest('#folder-context-menu')) closeFolderContextMenu();
   });
   document.addEventListener('contextmenu', (event) => {
-    if (folderMenuTarget && !event.target.closest('#folder-context-menu')) closeFolderContextMenu();
+    if (state.folderMenuTarget && !event.target.closest('#folder-context-menu')) closeFolderContextMenu();
   });
   window.addEventListener('resize', closeFolderContextMenu);
 }
@@ -2153,8 +2142,6 @@ setInterval(() => {
 
 
 const IDLE_PREVIEW_MS = 10000;
-let writeMode = 'edit';
-let idleTimer;
 
 // ---- Rendering helpers: HTML escaping + allowlisted Markdown (XSS boundary) ----
 // escapeHtml() and sanitizeUrl() now live in js/core/strings.js (imported above).
@@ -2270,7 +2257,7 @@ function updateListHeading() {
   else if (state.activeView === 'shared') listHeading.textContent = 'Shared';
   else if (state.activeView === 'archive') listHeading.textContent = `Archive${suffix}`;
   else if (state.activeView === 'favorites') listHeading.textContent = 'Starred notes';
-  else if (activeCustom) listHeading.textContent = `${activeCustom.folder ? folderLeaf(activeCustom.folder) : sectionDisplayName('custom', activeCustom.section)}${suffix}`;
+  else if (state.activeCustom) listHeading.textContent = `${state.activeCustom.folder ? folderLeaf(state.activeCustom.folder) : sectionDisplayName('custom', state.activeCustom.section)}${suffix}`;
   else listHeading.textContent = state.activeFilter === 'favorites' ? 'Starred notes' : state.activeFilter === 'recent' ? 'Recent notes' : 'All Notes';
   // Collapsed-strip name mirrors the heading (dev), rendered vertically.
   try {
@@ -2318,7 +2305,7 @@ function trackTab(id, isVault, isShared) {
   }
   while (state.openTabs.length > MAX_OPEN_TABS) {
     const dropAt = state.openTabs.findIndex((tab) => !(tab.id === state.currentId && !tab.vault)
-      && !(tab.id === currentVaultId && tab.vault)
+      && !(tab.id === state.currentVaultId && tab.vault)
       && !(tab.shared && state.collab.noteId != null && String(tab.id) === String(state.collab.noteId)));
     state.openTabs.splice(dropAt === -1 ? 0 : dropAt, 1);
   }
@@ -2330,7 +2317,7 @@ function closeTab(id, isVault, isShared) {
   const wasShared = Boolean(isShared);
   const wasActive = wasShared
     ? (state.collab.noteId != null && String(state.collab.noteId) === String(id))
-    : (!wasVault && id === state.currentId) || (wasVault && id === currentVaultId);
+    : (!wasVault && id === state.currentId) || (wasVault && id === state.currentVaultId);
   const closedAt = state.openTabs.findIndex((tab) => String(tab.id) === String(id) && tab.vault === wasVault && Boolean(tab.shared) === wasShared);
   state.openTabs = state.openTabs.filter((tab) => !(String(tab.id) === String(id) && tab.vault === wasVault && Boolean(tab.shared) === wasShared));
   if (wasActive) {
@@ -2352,7 +2339,7 @@ function closeTab(id, isVault, isShared) {
     }
     if (state.collab.noteId != null) closeCollabNote();
     state.currentId = null;
-    currentVaultId = null;
+    state.currentVaultId = null;
     clearEditor();
   }
   renderTabs();
@@ -2372,9 +2359,9 @@ function renderTabs() {
     if (collapseBtn) collapseBtn.hidden = state.openTabs.length === 0;
   } catch (error) {}
   const activeAlive = (state.currentId && state.notes.some((entry) => entry.id === state.currentId))
-    || (currentVaultId && state.vault.unlocked && state.vault.notes.some((entry) => entry.id === currentVaultId))
+    || (state.currentVaultId && state.vault.unlocked && state.vault.notes.some((entry) => entry.id === state.currentVaultId))
     || (state.collab.noteId != null && state.openTabs.some((tab) => tab.shared && String(tab.id) === String(state.collab.noteId)));
-  if ((state.currentId || currentVaultId || state.collab.noteId != null) && !activeAlive) {
+  if ((state.currentId || state.currentVaultId || state.collab.noteId != null) && !activeAlive) {
     const fallback = [...state.openTabs].reverse().find((tab) => findTabbedNote(tab.id, tab.vault, tab.shared));
     if (fallback) {
       if (fallback.shared) openCollabNote(fallback.id);
@@ -2383,7 +2370,7 @@ function renderTabs() {
       return; // selecting re-renders the strip
     }
     state.currentId = null;
-    currentVaultId = null;
+    state.currentVaultId = null;
     if (state.collab.noteId != null) closeCollabNote();
     clearEditor();
     return; // clearing re-renders the strip
@@ -2394,7 +2381,7 @@ function renderTabs() {
       const title = (note && note.title) || 'Untitled note';
       const active = tab.shared
         ? (state.collab.noteId != null && String(tab.id) === String(state.collab.noteId))
-        : ((!tab.vault && tab.id === state.currentId) || (tab.vault && tab.id === currentVaultId));
+        : ((!tab.vault && tab.id === state.currentId) || (tab.vault && tab.id === state.currentVaultId));
       return `<button type="button" class="tab-item${active ? ' active' : ''}" draggable="true" data-tab-id="${escapeHtml(String(tab.id))}" data-tab-vault="${tab.vault ? '1' : ''}" data-tab-shared="${tab.shared ? '1' : ''}" title="${escapeHtml(title)}">`
         + `<span class="tab-glyph">${icon(tab.shared ? 'share' : noteGlyphFor(note))}</span>`
         + `<span class="tab-label">${escapeHtml(title)}</span>`
@@ -2405,10 +2392,8 @@ function renderTabs() {
   fitTabStrip(bar);
 }
 // Overflowed tabs (id/vault/title) from the last fit; powers the dropdown.
-let lastOverflowTabs = [];
-let tabOverflowOpen = false;
 function closeTabOverflow() {
-  tabOverflowOpen = false;
+  state.tabOverflowOpen = false;
   const menu = document.getElementById('tab-overflow-menu');
   if (menu) menu.hidden = true;
 }
@@ -2419,7 +2404,7 @@ function fitTabStrip(bar) {
   const tabs = [...bar.querySelectorAll('[data-tab-id]')];
   if (!btn || !bar.clientWidth) {
     if (btn) btn.hidden = true;
-    lastOverflowTabs = [];
+    state.lastOverflowTabs = [];
     closeTabOverflow();
     return;
   }
@@ -2431,7 +2416,7 @@ function fitTabStrip(bar) {
   if (homeW + gap + totalTabs <= bar.clientWidth) {
     btn.hidden = true;
     tabs.forEach((tab) => { tab.hidden = false; });
-    lastOverflowTabs = [];
+    state.lastOverflowTabs = [];
     closeTabOverflow();
     return;
   }
@@ -2451,17 +2436,17 @@ function fitTabStrip(bar) {
     tab.hidden = hide;
     if (hide) hidden.push({ id: tab.dataset.tabId, vault: tab.dataset.tabVault === '1', shared: tab.dataset.tabShared === '1', title: tab.title });
   });
-  lastOverflowTabs = hidden;
+  state.lastOverflowTabs = hidden;
   const countEl = btn.querySelector('[data-overflow-count]');
   if (countEl) countEl.textContent = hidden.length ? `+${hidden.length}` : '';
   btn.setAttribute('aria-label', `${hidden.length} more tabs`);
   if (!hidden.length) { closeTabOverflow(); return; }
-  if (tabOverflowOpen) { paintTabOverflow(); placeTabOverflow(); }
+  if (state.tabOverflowOpen) { paintTabOverflow(); placeTabOverflow(); }
 }
 function paintTabOverflow() {
   const menu = document.getElementById('tab-overflow-menu');
   if (!menu) return;
-  menu.innerHTML = lastOverflowTabs.map((tab) => {
+  menu.innerHTML = state.lastOverflowTabs.map((tab) => {
     const note = findTabbedNote(tab.id, tab.vault, tab.shared);
     const title = (note && note.title) || tab.title || 'Untitled note';
     return `<button type="button" class="context-item" data-otab-id="${escapeHtml(String(tab.id))}" data-otab-vault="${tab.vault ? '1' : ''}" data-otab-shared="${tab.shared ? '1' : ''}" title="${escapeHtml(title)}">`
@@ -2484,16 +2469,16 @@ function placeTabOverflow() {
 function toggleTabOverflow() {
   const menu = document.getElementById('tab-overflow-menu');
   if (!menu) return;
-  if (tabOverflowOpen) { closeTabOverflow(); return; }
-  if (!lastOverflowTabs.length) return;
-  tabOverflowOpen = true;
+  if (state.tabOverflowOpen) { closeTabOverflow(); return; }
+  if (!state.lastOverflowTabs.length) return;
+  state.tabOverflowOpen = true;
   paintTabOverflow();
   menu.hidden = false;
   placeTabOverflow();
 }
 
 if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
-  if (tabClickSuppressed) return;
+  if (state.tabClickSuppressed) return;
   const closer = event.target.closest('[data-tab-close]');
   if (closer) {
     event.stopPropagation();
@@ -2509,46 +2494,43 @@ if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
   else selectNote(tab.dataset.tabId);
 });
 // Drag-and-drop reordering of tabs (order is otherwise fixed by opening time).
-let dragTabEl = null;
-let dragTabIndex = null;
-let tabClickSuppressed = false;
 function endTabDrag() {
-  if (dragTabEl) dragTabEl.classList.remove('dragging');
+  if (state.dragTabEl) state.dragTabEl.classList.remove('dragging');
   clearTabDropMarks();
-  dragTabEl = null;
-  dragTabIndex = null;
-  tabClickSuppressed = true;
-  setTimeout(() => { tabClickSuppressed = false; }, 250);
+  state.dragTabEl = null;
+  state.dragTabIndex = null;
+  state.tabClickSuppressed = true;
+  setTimeout(() => { state.tabClickSuppressed = false; }, 250);
 }
 if (tabBarEl) tabBarEl.addEventListener('dragstart', (event) => {
   const tab = event.target.closest('[data-tab-id]');
   if (!tab) return;
-  dragTabEl = tab;
-  dragTabIndex = [...tabBarEl.querySelectorAll('[data-tab-id]')].indexOf(tab);
+  state.dragTabEl = tab;
+  state.dragTabIndex = [...tabBarEl.querySelectorAll('[data-tab-id]')].indexOf(tab);
   tab.classList.add('dragging');
   try { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', tab.dataset.tabId || ''); } catch (error) {}
 });
 if (tabBarEl) tabBarEl.addEventListener('dragover', (event) => {
-  if (dragTabIndex == null) return;
+  if (state.dragTabIndex == null) return;
   event.preventDefault();
   try { event.dataTransfer.dropEffect = 'move'; } catch (error) {}
   const over = event.target.closest('[data-tab-id]');
   clearTabDropMarks();
-  if (!over || over === dragTabEl) return;
+  if (!over || over === state.dragTabEl) return;
   const rect = over.getBoundingClientRect();
   over.classList.add(event.clientX > rect.left + rect.width / 2 ? 'tab-drop-after' : 'tab-drop-before');
 });
 if (tabBarEl) tabBarEl.addEventListener('drop', (event) => {
-  if (dragTabIndex == null) return;
+  if (state.dragTabIndex == null) return;
   event.preventDefault();
   const over = event.target.closest('[data-tab-id]');
-  if (over && over !== dragTabEl) {
+  if (over && over !== state.dragTabEl) {
     const tabs = [...tabBarEl.querySelectorAll('[data-tab-id]')];
     let to = tabs.indexOf(over);
     const rect = over.getBoundingClientRect();
     if (event.clientX > rect.left + rect.width / 2) to += 1;
-    if (dragTabIndex < to) to -= 1;
-    const [moved] = state.openTabs.splice(dragTabIndex, 1);
+    if (state.dragTabIndex < to) to -= 1;
+    const [moved] = state.openTabs.splice(state.dragTabIndex, 1);
     if (moved) {
       state.openTabs.splice(Math.max(0, Math.min(state.openTabs.length, to)), 0, moved);
       renderTabs();
@@ -2574,7 +2556,7 @@ if (tabOverflowMenuEl) tabOverflowMenuEl.addEventListener('click', (event) => {
   closeTabOverflow();
 });
 document.addEventListener('click', (event) => {
-  if (tabOverflowOpen && !event.target.closest('#tab-overflow-menu') && !event.target.closest('[data-tab-overflow]')) closeTabOverflow();
+  if (state.tabOverflowOpen && !event.target.closest('#tab-overflow-menu') && !event.target.closest('[data-tab-overflow]')) closeTabOverflow();
 });
 window.addEventListener('resize', () => {
   closeTabOverflow();
@@ -2591,8 +2573,8 @@ window.addEventListener('resize', () => {
 function renderStripItems() {
   const box = document.getElementById('workspace-strip-items');
   if (!box) return;
-  const section = activeCustom ? state.customSections.find((entry) => entry.id === activeCustom.section) : null;
-  const folder = activeCustom ? activeCustom.folder : null;
+  const section = state.activeCustom ? state.customSections.find((entry) => entry.id === state.activeCustom.section) : null;
+  const folder = state.activeCustom ? state.activeCustom.folder : null;
   // Back button sits under the collapse toggle, over the folder name —
   // visible only inside a subfolder.
   const backBtn = document.getElementById('workspace-strip-back');
@@ -2725,9 +2707,9 @@ function updateBreadcrumbs() {
   root.textContent = viewLabel(state.activeView);
   root.title = 'Back to All Notes';
   trail.appendChild(root);
-  const activeFolderPath = (activeCustom ? activeCustom.folder : null);
+  const activeFolderPath = (state.activeCustom ? state.activeCustom.folder : null);
   const activeFolder = activeFolderPath
-    || (activeCustom ? sectionDisplayName('custom', activeCustom.section) : null);
+    || (state.activeCustom ? sectionDisplayName('custom', state.activeCustom.section) : null);
   if (activeFolder) {
     const sep = document.createElement('span');
     sep.className = 'crumb-separator';
@@ -2754,7 +2736,7 @@ function goAllNotes() {
   clearSearch();
   updateListHeading();
   state.currentId = null;
-  currentVaultId = null;
+  state.currentVaultId = null;
   clearEditor();
   document.querySelector('.app-shell').classList.add('workspace-focus');
   renderCustomSections();
@@ -2767,8 +2749,8 @@ document.getElementById('breadcrumbs').addEventListener('click', (event) => {
   event.preventDefault();
   if (crumb.dataset.crumb === 'root') goAllNotes();
   else if (crumb.dataset.crumb === 'folder') {
-    if (activeCustom && activeCustom.folder) selectCustomFolder(activeCustom.section, activeCustom.folder);
-    else if (activeCustom) selectCustomSection(activeCustom.section);
+    if (state.activeCustom && state.activeCustom.folder) selectCustomFolder(state.activeCustom.section, state.activeCustom.folder);
+    else if (state.activeCustom) selectCustomSection(state.activeCustom.section);
   }
 });
 
@@ -2791,8 +2773,8 @@ function visibleNotes() {
     }
     const matchesSearch = noteMatchesSearch(note, state.searchQuery);
     const matchesFilter = state.activeFilter === 'all' || (state.activeFilter === 'favorites' && note.favorite) || (state.activeFilter === 'recent' && isRecentNote(note));
-    const matchesCustom = !activeCustom || (customNoteFolder(note, activeCustom.section) !== null
-      && (!activeCustom.folder || isFolderOrSub(customNoteFolder(note, activeCustom.section), activeCustom.folder)));
+    const matchesCustom = !state.activeCustom || (customNoteFolder(note, state.activeCustom.section) !== null
+      && (!state.activeCustom.folder || isFolderOrSub(customNoteFolder(note, state.activeCustom.section), state.activeCustom.folder)));
     return matchesSearch && matchesFilter && matchesCustom;
   });
 }
@@ -2902,10 +2884,10 @@ function scopeNotes() {
         return false;
       }
     }
-    if (activeCustom) {
-      const customFolder = customNoteFolder(note, activeCustom.section);
+    if (state.activeCustom) {
+      const customFolder = customNoteFolder(note, state.activeCustom.section);
       if (customFolder === null) return false;
-      if (activeCustom.folder && !isFolderOrSub(customFolder, activeCustom.folder)) return false;
+      if (state.activeCustom.folder && !isFolderOrSub(customFolder, state.activeCustom.folder)) return false;
     }
     return true;
   });
@@ -2978,8 +2960,8 @@ function applyBeautify() {
   renderPreview(note);
   updateMeta(note);
   setSaveLabel('Saving...', 'green');
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 200);
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 200);
   showToast(`${note.ext === 'json' ? 'JSON' : 'YAML'} beautified`);
 }
 
@@ -2993,7 +2975,7 @@ function renderPreview(note) {
   const bottomHint = document.querySelector('.editor-bottom-fixed span:first-child');
   const isMd = note.ext === 'md';
   const plainLabel = note.ext === 'txt' ? 'Plain text' : (EXT_LABELS[note.ext] || 'MD');
-  const showPreview = isMd && writeMode === 'preview';
+  const showPreview = isMd && state.writeMode === 'preview';
   if (showPreview) preview.innerHTML = renderMarkdown(note.body);
   markdownInput.hidden = showPreview;
   preview.hidden = !showPreview;
@@ -3301,9 +3283,6 @@ async function handleCollabCoverFile(file) {
 
 // Drag the banner on the note itself to reposition the cover (Notion-style).
 // Repositioning is a locked mode: Reposition unlocks, Done saves + locks.
-let coverDragging = false;
-let coverRepositioning = false;
-let coverReposStart = 50;
 
 function canEditCoverNote() {
   const note = currentNote();
@@ -3319,13 +3298,13 @@ function setCoverReposUI() {
   const doneBtn = document.getElementById('cover-done');
   const changeBtn = document.getElementById('cover-change');
   const removeBtn = document.getElementById('cover-remove');
-  if (wrap) wrap.classList.toggle('repositioning', coverRepositioning);
-  if (reposBtn) reposBtn.hidden = coverRepositioning;
-  if (doneBtn) doneBtn.hidden = !coverRepositioning;
-  if (changeBtn) changeBtn.hidden = coverRepositioning;
-  if (removeBtn) removeBtn.hidden = coverRepositioning;
+  if (wrap) wrap.classList.toggle('repositioning', state.coverRepositioning);
+  if (reposBtn) reposBtn.hidden = state.coverRepositioning;
+  if (doneBtn) doneBtn.hidden = !state.coverRepositioning;
+  if (changeBtn) changeBtn.hidden = state.coverRepositioning;
+  if (removeBtn) removeBtn.hidden = state.coverRepositioning;
   if (badge) {
-    if (coverRepositioning) {
+    if (state.coverRepositioning) {
       const note = currentNote();
       badge.hidden = false;
       badge.textContent = `${note ? coverFocalPos(note) : 50}%`;
@@ -3337,18 +3316,18 @@ function setCoverReposUI() {
 
 function enterCoverRepos() {
   const note = canEditCoverNote();
-  if (!note || coverRepositioning) return;
-  coverRepositioning = true;
-  coverReposStart = coverFocalPos(note);
+  if (!note || state.coverRepositioning) return;
+  state.coverRepositioning = true;
+  state.coverReposStart = coverFocalPos(note);
   setCoverReposUI();
   showToast('Drag the cover to reposition — Done to lock');
 }
 
 // Leave reposition mode; save persists the staged position, cancel restores it.
 function exitCoverRepos(save) {
-  if (!coverRepositioning) return;
-  coverRepositioning = false;
-  coverDragging = false;
+  if (!state.coverRepositioning) return;
+  state.coverRepositioning = false;
+  state.coverDragging = false;
   const wrap = document.getElementById('cover-wrap');
   if (wrap) wrap.classList.remove('dragging');
   const note = currentNote();
@@ -3358,14 +3337,14 @@ function exitCoverRepos(save) {
     persistNotes();
     showToast('Cover position locked');
   } else if (!save && note && note.cover) {
-    note.coverPos = coverReposStart;
+    note.coverPos = state.coverReposStart;
     if (state.currentId === note.id) renderCover(note);
   }
   setCoverReposUI();
 }
 
 function coverDragNote() {
-  if (!coverRepositioning) return null;
+  if (!state.coverRepositioning) return null;
   return canEditCoverNote();
 }
 
@@ -3386,8 +3365,8 @@ function moveCoverOnNote(clientY) {
 }
 
 function endCoverDrag() {
-  if (!coverDragging) return;
-  coverDragging = false;
+  if (!state.coverDragging) return;
+  state.coverDragging = false;
   const wrap = document.getElementById('cover-wrap');
   if (wrap) wrap.classList.remove('dragging');
 }
@@ -3407,10 +3386,10 @@ function removeCover() {
 
 // After 10s idle, auto-switch a non-empty Markdown note to preview.
 function resetIdleTimer() {
-  clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => {
+  clearTimeout(state.idleTimer);
+  state.idleTimer = setTimeout(() => {
     const note = currentNote();
-    if (note && note.ext === 'md' && writeMode === 'edit' && markdownInput.value.trim()) {
+    if (note && note.ext === 'md' && state.writeMode === 'edit' && markdownInput.value.trim()) {
       setWriteMode('preview');
     }
   }, IDLE_PREVIEW_MS);
@@ -3418,8 +3397,8 @@ function resetIdleTimer() {
 
 // Switch write/preview mode and refocus the editor when returning to edit.
 function setWriteMode(mode, { focus = false } = {}) {
-  writeMode = mode;
-  clearTimeout(idleTimer);
+  state.writeMode = mode;
+  clearTimeout(state.idleTimer);
   renderPreview(activeEditorNote());
   try { renderCollabPresence(); } catch (error) {}
   if (mode === 'edit') {
@@ -3463,7 +3442,7 @@ function startTreeRename(folder) {
     if (commit) {
       // Namespace follows the row; fall back to whichever custom section owns the folder.
       let sectionId = null;
-      if (activeCustom) sectionId = activeCustom.section;
+      if (state.activeCustom) sectionId = state.activeCustom.section;
       else {
         const shell = wrap.closest('[data-list-section]');
         const kind = shell ? shell.dataset.listSection : null;
@@ -3509,11 +3488,11 @@ function dropNoteOnNote(draggedId, targetId, after) {
   if (from === -1 || !target) return;
   const [moved] = state.notes.splice(from, 1);
   // Adopt the target's folder when inside a specific folder view (same section only).
-  if (activeCustom && activeCustom.folder) {
-    const folder = customNoteFolder(target, activeCustom.section);
+  if (state.activeCustom && state.activeCustom.folder) {
+    const folder = customNoteFolder(target, state.activeCustom.section);
     if (folder) {
       if (!moved.sections || typeof moved.sections !== 'object') moved.sections = {};
-      moved.sections[activeCustom.section] = folder;
+      moved.sections[state.activeCustom.section] = folder;
     }
   }
   let to = state.notes.findIndex((note) => note.id === targetId);
@@ -3528,7 +3507,7 @@ function dropNoteOnFolder(draggedId, folder, sectionId) {
   if (index === -1 || typeof folder !== 'string') return;
   const [moved] = state.notes.splice(index, 1);
   // Resolve target section: explicit sectionId wins, else active custom section.
-  const targetSection = sectionId || (activeCustom ? activeCustom.section : null);
+  const targetSection = sectionId || (state.activeCustom ? state.activeCustom.section : null);
   if (!moved.sections || typeof moved.sections !== 'object') moved.sections = {};
   if (targetSection) {
     moved.sections[targetSection] = folder;
@@ -3542,7 +3521,7 @@ function dropNoteOnFolder(draggedId, folder, sectionId) {
   // Append after the folder's last note in global order (empty folders: end).
   const keyOf = (note) => {
     if (targetSection) return customNoteFolder(note, targetSection);
-    if (activeCustom) return customNoteFolder(note, activeCustom.section);
+    if (state.activeCustom) return customNoteFolder(note, state.activeCustom.section);
     return firstFilingOf(note);
   };
   let to = state.notes.length;
@@ -3571,7 +3550,7 @@ function resolveListFolderTarget(header) {
   const wrap = header.closest('[data-folder-wrap]');
   const shell = header.closest('[data-list-section]');
   const shellKind = shell ? shell.dataset.listSection : null;
-  let sectionId = activeCustom ? activeCustom.section : null;
+  let sectionId = state.activeCustom ? state.activeCustom.section : null;
   if (shellKind === 'custom') {
     const secBtn = shell.querySelector('[data-section-id]');
     if (secBtn && secBtn.dataset.sectionId) sectionId = secBtn.dataset.sectionId;
@@ -3637,7 +3616,7 @@ function enableNoteDragDrop() {
       const wrap = header.closest('[data-folder-wrap]');
       const shell = header.closest('[data-list-section]');
       const shellKind = shell ? shell.dataset.listSection : null;
-      let sectionId = activeCustom ? activeCustom.section : null;
+      let sectionId = state.activeCustom ? state.activeCustom.section : null;
       if (shellKind === 'custom') {
         const secBtn = shell.querySelector('[data-section-id]');
         if (secBtn && secBtn.dataset.sectionId) sectionId = secBtn.dataset.sectionId;
@@ -3772,7 +3751,7 @@ function renderNoteList() {
   // of those is selected, otherwise each note's first filing. The
   // folder-required invariant guarantees every note has a filing.
   const groupKeyOfNote = (note) => {
-    if (activeCustom) return customNoteFolder(note, activeCustom.section);
+    if (state.activeCustom) return customNoteFolder(note, state.activeCustom.section);
     return firstFilingOf(note);
   };
   const groups = new Map();
@@ -3890,12 +3869,12 @@ function renderNoteList() {
   // Home-like views (no folder/search/chip filter) separate folders by
   // section to mirror the slide menu; everything else keeps the flat tree.
   const homeLike = state.activeView === 'notes' && state.activeFilter === 'all' && !searching
-    && !(activeCustom && activeCustom.folder);
+    && !(state.activeCustom && state.activeCustom.folder);
   if (homeLike) {
     const parts = [];
-    const customTargets = activeCustom && !activeCustom.folder
-      ? state.customSections.filter((section) => section.id === activeCustom.section)
-      : ((!activeCustom) ? state.customSections : []);
+    const customTargets = state.activeCustom && !state.activeCustom.folder
+      ? state.customSections.filter((section) => section.id === state.activeCustom.section)
+      : ((!state.activeCustom) ? state.customSections : []);
     customTargets.forEach((section) => {
       const sectionGroups = new Map();
       // Seed every folder so newly added (still empty) folders show in the
@@ -3929,7 +3908,7 @@ function renderNoteList() {
   if (allCount) allCount.textContent = scope.length;
   if (recentCountEl) recentCountEl.textContent = scope.filter((note) => isRecentNote(note)).length;
   if (starredCountEl) starredCountEl.textContent = scope.filter((note) => note.favorite).length;
-  const activeContextName = (activeCustom ? (activeCustom.folder || sectionDisplayName('custom', activeCustom.section)) : null);
+  const activeContextName = (state.activeCustom ? (state.activeCustom.folder || sectionDisplayName('custom', state.activeCustom.section)) : null);
   if (totalCount) totalCount.textContent = inBin ? `${visible.length} in bin` : (activeContextName ? `${visible.length} note${visible.length === 1 ? '' : 's'} in ${activeContextName}` : `${visible.length} note${visible.length === 1 ? '' : 's'}`);
   const navAllCount = document.getElementById('nav-all-count');
   if (navAllCount) navAllCount.textContent = liveNotes.length;
@@ -4037,10 +4016,10 @@ function selectNote(id) {
   if (!note) return;
   trackTab(id, false);
   state.currentId = id;
-  currentVaultId = null;
+  state.currentVaultId = null;
   document.querySelector('.app-shell').classList.remove('workspace-focus');
-  writeMode = 'preview';
-  clearTimeout(idleTimer);
+  state.writeMode = 'preview';
+  clearTimeout(state.idleTimer);
   titleInput.value = typeof note.title === 'string' ? note.title : 'Untitled note';
   markdownInput.value = typeof note.body === 'string' ? note.body : '';
   breadcrumbTitle.textContent = note.title;
@@ -4058,15 +4037,14 @@ function persistNotes() {
     // the user deletes notes; the server would reject oversized payloads.
     setSaveLabel('Sync failed', 'red');
     showToast('Too many notes to sync (2000 max) — delete some to keep saving');
-    clearTimeout(saveTimer);
+    clearTimeout(state.saveTimer);
     return;
   }
   setSaveLabel('Saving...', 'green');
-  clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => { syncNotesToServer(); }, 450);
+  clearTimeout(state.syncTimer);
+  state.syncTimer = setTimeout(() => { syncNotesToServer(); }, 450);
 }
 
-let contextMenuNoteId = null;
 const IMPORTANT_TAG = 'important';
 
 // True when a note carries the important tag (case-insensitive).
@@ -4102,7 +4080,7 @@ function getNoteContextMenu() {
 function closeNoteContextMenu() {
   const menu = getNoteContextMenu();
   if (menu) menu.hidden = true;
-  contextMenuNoteId = null;
+  state.contextMenuNoteId = null;
 }
 
 // Show the right-click menu at the cursor: per-state item visibility (deleted/archived/live) with viewport clamping.
@@ -4110,7 +4088,7 @@ function openNoteContextMenu(noteId, x, y) {
   const menu = getNoteContextMenu();
   const note = state.notes.find((item) => item.id === noteId);
   if (!menu || !note) return;
-  contextMenuNoteId = noteId;
+  state.contextMenuNoteId = noteId;
   const favoriteLabel = document.getElementById('context-favorite-label');
   if (favoriteLabel) favoriteLabel.textContent = note.favorite ? 'Unfavorite' : 'Favorite';
   const importantLabel = document.getElementById('context-important-label');
@@ -4199,7 +4177,7 @@ function toggleFavoriteById(id) {
 function clearEditor() {
   exitCoverRepos(true);
   state.currentId = null;
-  currentVaultId = null;
+  state.currentVaultId = null;
   titleInput.value = '';
   titleInput.disabled = false;
   markdownInput.value = '';
@@ -4386,7 +4364,7 @@ function allTagCounts() {
       else map.set(key, { label: String(tag), count: 1 });
     });
   });
-  knownTags.forEach((tag) => {
+  state.knownTags.forEach((tag) => {
     const key = String(tag).toLowerCase();
     if (key && !map.has(key)) map.set(key, { label: String(tag), count: 0 });
   });
@@ -4423,8 +4401,8 @@ function renameTagEverywhere(oldName, rawNew) {
     });
   });
   if (changed) refreshTagsAcrossUi();
-  const hadKnown = knownTags.some((tag) => String(tag).toLowerCase() === from);
-  knownTags = cleanTagList(knownTags.map((tag) => (String(tag).toLowerCase() === from ? to : tag)));
+  const hadKnown = state.knownTags.some((tag) => String(tag).toLowerCase() === from);
+  state.knownTags = cleanTagList(state.knownTags.map((tag) => (String(tag).toLowerCase() === from ? to : tag)));
   if (changed || hadKnown) persistUiVault();
   return changed > 0 || hadKnown;
 }
@@ -4438,9 +4416,9 @@ function deleteTagEverywhere(name) {
     note.tags = note.tags.filter((tag) => String(tag).toLowerCase() !== key);
     if (note.tags.length !== before) changed += 1;
   });
-  const hadKnown = knownTags.some((tag) => String(tag).toLowerCase() === key);
+  const hadKnown = state.knownTags.some((tag) => String(tag).toLowerCase() === key);
   if (hadKnown) {
-    knownTags = knownTags.filter((tag) => String(tag).toLowerCase() !== key);
+    state.knownTags = state.knownTags.filter((tag) => String(tag).toLowerCase() !== key);
     persistUiVault();
   }
   if (changed) refreshTagsAcrossUi();
@@ -4450,9 +4428,9 @@ function deleteTagEverywhere(name) {
 function addKnownTag(raw) {
   const tag = normalizeTagName(raw);
   if (!tag) { showToast('Enter a tag name'); return false; }
-  if (knownTags.some((entry) => entry.toLowerCase() === tag.toLowerCase())) { showToast(`Tag “${tag}” already exists`); return false; }
-  if (knownTags.length >= 500) { showToast('Tag limit reached (500)'); return false; }
-  knownTags.push(tag);
+  if (state.knownTags.some((entry) => entry.toLowerCase() === tag.toLowerCase())) { showToast(`Tag “${tag}” already exists`); return false; }
+  if (state.knownTags.length >= 500) { showToast('Tag limit reached (500)'); return false; }
+  state.knownTags.push(tag);
   persistUiVault();
   try { renderSettingsTags(); } catch (error) {}
   try { renderTagEditor(); } catch (error) {}
@@ -4461,8 +4439,6 @@ function addKnownTag(raw) {
 }
 
 // ---- Note tag editor (opened from the note right-click menu) --------------
-let tagEditorNoteId = null;
-let tagEditorShared = false;
 
 // Shared-note tags live in the Yjs doc (a Y.Array) so they sync live to every
 // member; the encrypted note meta mirrors them for the Shared list.
@@ -4479,8 +4455,8 @@ function renderSharedTags() {
 function openSharedTagEditor() {
   const overlay = document.getElementById('tag-editor-overlay');
   if (!overlay || !state.collab.noteId) return;
-  tagEditorShared = true;
-  tagEditorNoteId = null;
+  state.tagEditorShared = true;
+  state.tagEditorNoteId = null;
   const desc = document.getElementById('tag-editor-desc');
   const title = state.collab.title ? state.collab.title.toString() : 'this shared note';
   if (desc) desc.textContent = `Add or remove tags for “${title}”.`;
@@ -4494,8 +4470,8 @@ function openTagEditor(id) {
   const note = state.notes.find((item) => item.id === id);
   const overlay = document.getElementById('tag-editor-overlay');
   if (!note || !overlay) return;
-  tagEditorShared = false;
-  tagEditorNoteId = id;
+  state.tagEditorShared = false;
+  state.tagEditorNoteId = id;
   const desc = document.getElementById('tag-editor-desc');
   if (desc) desc.textContent = `Add or remove tags for “${note.title || 'Untitled note'}”.`;
   renderTagEditor();
@@ -4506,15 +4482,15 @@ function openTagEditor(id) {
 function closeTagEditor() {
   const overlay = document.getElementById('tag-editor-overlay');
   if (overlay) overlay.hidden = true;
-  tagEditorNoteId = null;
-  tagEditorShared = false;
+  state.tagEditorNoteId = null;
+  state.tagEditorShared = false;
 }
 function renderTagEditor() {
   let tags;
-  if (tagEditorShared) {
+  if (state.tagEditorShared) {
     tags = sharedTagList();
   } else {
-    const note = state.notes.find((item) => item.id === tagEditorNoteId);
+    const note = state.notes.find((item) => item.id === state.tagEditorNoteId);
     if (!note) return;
     tags = Array.isArray(note.tags) ? note.tags : [];
   }
@@ -4528,7 +4504,7 @@ function renderTagEditor() {
   if (suggest) {
     const have = new Set(tags.map((tag) => String(tag).toLowerCase()));
     // Shared notes also suggest the section's owner-curated tags.
-    const pool = tagEditorShared
+    const pool = state.tagEditorShared
       ? [...sharedGroupTagList(state.collab.groupId).map((label) => ({ label })), ...allTagCounts()]
       : allTagCounts();
     const seen = new Set();
@@ -4547,7 +4523,7 @@ function renderTagEditor() {
 function tagEditorAdd(raw) {
   const tag = normalizeTagName(raw);
   if (!tag) return;
-  if (tagEditorShared) {
+  if (state.tagEditorShared) {
     if (!state.collab.noteId || !state.collab.tags) return;
     const list = sharedTagList();
     if (list.some((t) => String(t).toLowerCase() === tag.toLowerCase())) return;
@@ -4556,7 +4532,7 @@ function tagEditorAdd(raw) {
     renderTagEditor();
     return;
   }
-  const note = state.notes.find((item) => item.id === tagEditorNoteId);
+  const note = state.notes.find((item) => item.id === state.tagEditorNoteId);
   if (!note) return;
   if (addNoteTag(note, raw)) {
     refreshTagsAcrossUi();
@@ -4565,7 +4541,7 @@ function tagEditorAdd(raw) {
   }
 }
 function tagEditorRemove(name) {
-  if (tagEditorShared) {
+  if (state.tagEditorShared) {
     if (!state.collab.noteId || !state.collab.tags) return;
     const list = sharedTagList();
     const at = list.findIndex((t) => String(t).toLowerCase() === String(name).toLowerCase());
@@ -4574,7 +4550,7 @@ function tagEditorRemove(name) {
     renderTagEditor();
     return;
   }
-  const note = state.notes.find((item) => item.id === tagEditorNoteId);
+  const note = state.notes.find((item) => item.id === state.tagEditorNoteId);
   if (!note) return;
   if (removeNoteTag(note, name)) {
     refreshTagsAcrossUi();
@@ -4608,14 +4584,13 @@ function renderSettingsTags() {
 // (ECIES). The server relays only ciphertext and can never read a note.
 state.sharing = { privateKey: null, signingKey: null, ready: false };
 
-let sharingKeyPromise = null;
 function sharingEnsureKeys() {
   // Single-flight: concurrent callers must never generate two different
   // keypairs (the published public key could stop matching the in-memory key).
   if (state.sharing.ready && state.sharing.privateKey && state.sharing.signingKey) return Promise.resolve(true);
-  if (sharingKeyPromise) return sharingKeyPromise;
-  sharingKeyPromise = sharingEnsureKeysOnce().finally(() => { sharingKeyPromise = null; });
-  return sharingKeyPromise;
+  if (state.sharingKeyPromise) return state.sharingKeyPromise;
+  state.sharingKeyPromise = sharingEnsureKeysOnce().finally(() => { state.sharingKeyPromise = null; });
+  return state.sharingKeyPromise;
 }
 async function sharingGenerateKeys() {
   try {
@@ -4741,7 +4716,7 @@ function collabSyncDom() {
     const start = markdownInput.selectionStart;
     markdownInput.value = bodyStr;
     try { markdownInput.setSelectionRange(Math.min(start, bodyStr.length), Math.min(start, bodyStr.length)); } catch (error) {}
-    if (writeMode === 'preview') { try { preview.innerHTML = renderMarkdown(bodyStr); } catch (error) {} }
+    if (state.writeMode === 'preview') { try { preview.innerHTML = renderMarkdown(bodyStr); } catch (error) {} }
   }
   const descEl = document.getElementById('recipe-desc');
   if (descEl && state.collab.desc) {
@@ -4809,9 +4784,6 @@ async function cancelCollabInvite(name) {
 }
 
 // ---- Presence: who is here, where their cursor is (ephemeral, encrypted) ----
-let collabCaretMirror = null;
-let collabTypingTimer = null;
-let collabPresenceLocalTimer = null;
 const COLLAB_PRESENCE_TTL_MS = 15000;
 
 function collabPresenceColor(username) {
@@ -4824,12 +4796,12 @@ function collabPresenceColor(username) {
 function collabCaretCoords(index) {
   const ta = markdownInput;
   if (!ta) return null;
-  if (!collabCaretMirror) {
-    collabCaretMirror = document.createElement('div');
-    collabCaretMirror.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(collabCaretMirror);
+  if (!state.collabCaretMirror) {
+    state.collabCaretMirror = document.createElement('div');
+    state.collabCaretMirror.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(state.collabCaretMirror);
   }
-  const mirror = collabCaretMirror;
+  const mirror = state.collabCaretMirror;
   const cs = window.getComputedStyle(ta);
   const st = mirror.style;
   st.position = 'absolute';
@@ -4880,7 +4852,7 @@ function renderCollabPresence() {
     box.innerHTML = self + entries.map((p) => `<span class="collab-presence-chip${p.typing ? ' is-typing' : ''}"><span class="collab-presence-dot" style="background:${p.color}"></span>${escapeHtml(p.user || 'Someone')}${p.typing ? ' · typing…' : ''}</span>`).join('');
   }
   if (layer) {
-    if (writeMode !== 'edit') { layer.innerHTML = ''; }
+    if (state.writeMode !== 'edit') { layer.innerHTML = ''; }
     else {
       layer.innerHTML = entries.map((p) => {
         const c = collabCaretCoords(p.s);
@@ -4894,11 +4866,11 @@ function collabPresenceLocal(typing) {
   if (!state.collab.noteId) return;
   if (typing) {
     state.collab.typing = true;
-    clearTimeout(collabTypingTimer);
-    collabTypingTimer = setTimeout(() => { state.collab.typing = false; }, 1500);
+    clearTimeout(state.collabTypingTimer);
+    state.collabTypingTimer = setTimeout(() => { state.collab.typing = false; }, 1500);
   }
-  if (collabPresenceLocalTimer) return;
-  collabPresenceLocalTimer = setTimeout(() => { collabPresenceLocalTimer = null; collabSendPresence(false); }, 120);
+  if (state.collabPresenceLocalTimer) return;
+  state.collabPresenceLocalTimer = setTimeout(() => { state.collabPresenceLocalTimer = null; collabSendPresence(false); }, 120);
 }
 async function collabSendPresence(leave) {
   if (!state.collab.noteId || !state.collab.key || !state.collab.clientId) return;
@@ -5097,7 +5069,7 @@ async function openCollabNote(noteId) {
   const delBtn = document.getElementById('collab-delete');
   if (delBtn) delBtn.hidden = !(state.collab.owner === (state.cachedProfile && state.cachedProfile.username));
   // Bind the standard editor to the shared doc (title + Markdown body).
-  writeMode = 'edit';
+  state.writeMode = 'edit';
   if (titleInput) titleInput.value = state.collab.title.toString();
   if (markdownInput) markdownInput.value = state.collab.body.toString();
   try { refreshEditorLock(); } catch (error) {}
@@ -5195,9 +5167,8 @@ async function collabCreateSection(members) {
   return data.id;
 }
 // New-note entry in the Shared tree: ask which template to start from first.
-let pendingSharedTemplate = null; // { groupId, folder } | null
 function openSharedNewNote(groupId, folder) {
-  pendingSharedTemplate = { groupId, folder: folder || '' };
+  state.pendingSharedTemplate = { groupId, folder: folder || '' };
   openTemplatePicker();
 }
 function sharedUniqueTitle(base, groupId) {
@@ -5481,9 +5452,9 @@ async function collabDeleteGroup(groupId) {
   else showToast('Could not delete the section');
 }
 function confirmDeleteGroup(groupId) {
-  pendingDeleteId = String(groupId);
-  pendingDeleteMode = 'collab-group';
-  pendingDeleteTag = null;
+  state.pendingDeleteId = String(groupId);
+  state.pendingDeleteMode = 'collab-group';
+  state.pendingDeleteTag = null;
   setDeleteDialog({ eyebrow: 'Delete section', title: 'Delete this shared section?', name: 'This section', message: '” and all its notes will be deleted for everyone. This cannot be undone.' });
   const overlay = document.getElementById('delete-overlay');
   if (overlay) {
@@ -5824,11 +5795,10 @@ async function saveGroupFolders(groupId, key, folders) {
 }
 
 // ---- Owner-only section settings: a section-level tag list -----------------
-let sectionSettingsGroupId = null;
 function renderSectionSettingsTags() {
   const box = document.getElementById('section-tags-current');
   if (!box) return;
-  const tags = sharedGroupTagList(sectionSettingsGroupId);
+  const tags = sharedGroupTagList(state.sectionSettingsGroupId);
   box.innerHTML = tags.length
     ? tags.map((tag) => `<button type="button" class="tag-chip" data-section-tag-remove="${escapeHtml(tag)}" title="Remove ${escapeHtml(tag)}">${escapeHtml(tag)}<span aria-hidden="true">×</span></button>`).join('')
     : '<span class="tag-editor-empty">No section tags yet — add one below.</span>';
@@ -5849,7 +5819,7 @@ function openSectionSettings(groupId) {
   if (!me || sharedGroupOwnerOf(groupId) !== me) { showToast('Only the owner can change section settings'); return; }
   const overlay = document.getElementById('section-settings-overlay');
   if (!overlay) return;
-  sectionSettingsGroupId = Number(groupId) || groupId;
+  state.sectionSettingsGroupId = Number(groupId) || groupId;
   renderSectionSettingsTags();
   overlay.hidden = false;
   const input = document.getElementById('section-tags-input');
@@ -5858,28 +5828,28 @@ function openSectionSettings(groupId) {
 function closeSectionSettings() {
   const overlay = document.getElementById('section-settings-overlay');
   if (overlay) overlay.hidden = true;
-  sectionSettingsGroupId = null;
+  state.sectionSettingsGroupId = null;
 }
 function sectionTagAdd(raw) {
-  if (sectionSettingsGroupId == null) return;
+  if (state.sectionSettingsGroupId == null) return;
   const tag = normalizeTagName(raw);
   if (!tag) return;
-  const tags = sharedGroupTagList(sectionSettingsGroupId);
+  const tags = sharedGroupTagList(state.sectionSettingsGroupId);
   if (tags.some((t) => String(t).toLowerCase() === tag.toLowerCase())) return;
   if (tags.length >= 100) { showToast('Section tag limit reached (100)'); return; }
   const next = [...tags, tag];
-  sharedGroupTags.set(sectionSettingsGroupId, next);
+  sharedGroupTags.set(state.sectionSettingsGroupId, next);
   renderSectionSettingsTags();
-  saveSectionTags(sectionSettingsGroupId, next).then((ok) => { if (!ok) showToast('Could not save section tags'); });
+  saveSectionTags(state.sectionSettingsGroupId, next).then((ok) => { if (!ok) showToast('Could not save section tags'); });
 }
 function sectionTagRemove(name) {
-  if (sectionSettingsGroupId == null) return;
-  const tags = sharedGroupTagList(sectionSettingsGroupId);
+  if (state.sectionSettingsGroupId == null) return;
+  const tags = sharedGroupTagList(state.sectionSettingsGroupId);
   const next = tags.filter((t) => String(t).toLowerCase() !== String(name).toLowerCase());
   if (next.length === tags.length) return;
-  sharedGroupTags.set(sectionSettingsGroupId, next);
+  sharedGroupTags.set(state.sectionSettingsGroupId, next);
   renderSectionSettingsTags();
-  saveSectionTags(sectionSettingsGroupId, next).then((ok) => { if (!ok) showToast('Could not save section tags'); });
+  saveSectionTags(state.sectionSettingsGroupId, next).then((ok) => { if (!ok) showToast('Could not save section tags'); });
 }
 async function updateSharedNoteMeta(key, noteId, meta) {
   try {
@@ -5919,9 +5889,9 @@ async function renameSharedFolder(groupId, folder) {
   renderSharedView();
 }
 function confirmDeleteSharedFolder(groupId, folder) {
-  pendingDeleteId = String(groupId);
-  pendingDeleteMode = 'shared-folder';
-  pendingDeleteSection = folder;
+  state.pendingDeleteId = String(groupId);
+  state.pendingDeleteMode = 'shared-folder';
+  state.pendingDeleteSection = folder;
   setDeleteDialog({ eyebrow: 'Delete folder', title: 'Delete this folder?', name: folderLeaf(folder), message: '” will be removed from the shared section; its notes move to the section root.' });
   const overlay = document.getElementById('delete-overlay');
   if (overlay) { overlay.hidden = false; const b = document.getElementById('confirm-delete'); if (b) b.focus(); }
@@ -5942,16 +5912,15 @@ async function deleteSharedFolderNow(groupId, folder) {
 }
 
 // Right-click menu for shared notes and folders.
-let sharedMenuTarget = null;
 function closeSharedContextMenu() {
   const menu = document.getElementById('shared-context-menu');
   if (menu) menu.hidden = true;
-  sharedMenuTarget = null;
+  state.sharedMenuTarget = null;
 }
 function showSharedContextMenu(kind, payload, x, y) {
   const menu = document.getElementById('shared-context-menu');
   if (!menu) return;
-  sharedMenuTarget = { kind, ...payload };
+  state.sharedMenuTarget = { kind, ...payload };
   const items = kind === 'note'
     ? [['open', 'file-text', 'Open'], ['move', 'folder-plus', 'Move to folder'], ['delete', 'trash', 'Delete note']]
     : [['folder-note', 'file-text', 'New note here'], ['folder-sub', 'folder-plus', 'New subfolder'],
@@ -5992,10 +5961,6 @@ function requestDeleteNoteById(id) {
   else deleteNoteById(id);
 }
 
-let pendingDeleteId = null;
-let pendingDeleteMode = 'soft';
-let pendingDeleteSection = null; // custom section id for folder/section deletes
-let pendingDeleteTag = null; // tag name for tag deletes
 
 // Fill the shared in-app confirm popup (eyebrow/title/name/message). Name is set via textContent — never HTML.
 function setDeleteDialog({ eyebrow, title, name, message }) {
@@ -6020,8 +5985,8 @@ function setDeleteDialog({ eyebrow, title, name, message }) {
 function openDeleteConfirm(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note) return;
-  pendingDeleteId = id;
-  pendingDeleteMode = 'soft';
+  state.pendingDeleteId = id;
+  state.pendingDeleteMode = 'soft';
   setDeleteDialog({
     eyebrow: 'Delete note',
     title: 'Delete this note?',
@@ -6040,8 +6005,8 @@ function openDeleteConfirm(id) {
 function openPermanentDeleteConfirm(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note) return;
-  pendingDeleteId = id;
-  pendingDeleteMode = 'permanent';
+  state.pendingDeleteId = id;
+  state.pendingDeleteMode = 'permanent';
   setDeleteDialog({
     eyebrow: 'Permanently delete',
     title: 'Delete forever?',
@@ -6060,8 +6025,8 @@ function openPermanentDeleteConfirm(id) {
 function openEmptyBinConfirm() {
   const count = state.notes.filter((item) => item.deleted).length;
   if (!count) { showToast('Bin is already empty'); return; }
-  pendingDeleteId = '__ALL__';
-  pendingDeleteMode = 'empty';
+  state.pendingDeleteId = '__ALL__';
+  state.pendingDeleteMode = 'empty';
   setDeleteDialog({
     eyebrow: 'Empty Bin',
     title: 'Empty Bin?',
@@ -6080,17 +6045,17 @@ function openEmptyBinConfirm() {
 function closeDeleteConfirm() {
   const overlay = document.getElementById('delete-overlay');
   if (overlay) overlay.hidden = true;
-  pendingDeleteId = null;
-  pendingDeleteMode = 'soft';
-  pendingDeleteSection = null;
+  state.pendingDeleteId = null;
+  state.pendingDeleteMode = 'soft';
+  state.pendingDeleteSection = null;
 }
 
 // Run the pending popup action: soft/permanent/empty/folder/folder-permanent.
 function confirmPendingDelete() {
-  if (!pendingDeleteId) return;
-  const id = pendingDeleteId;
-  const mode = pendingDeleteMode;
-  const sectionId = pendingDeleteSection;
+  if (!state.pendingDeleteId) return;
+  const id = state.pendingDeleteId;
+  const mode = state.pendingDeleteMode;
+  const sectionId = state.pendingDeleteSection;
   closeDeleteConfirm();
   if (mode === 'empty') emptyBin();
   else if (mode === 'permanent') permanentlyDeleteNoteById(id);
@@ -6098,7 +6063,7 @@ function confirmPendingDelete() {
   else if (mode === 'vault-folder') deleteVaultFolder(id);
   else if (mode === 'custom-section') deleteCustomSection(id);
   else if (mode === 'custom-folder') deleteCustomFolder(sectionId, id);
-  else if (mode === 'tag') { if (pendingDeleteTag) { deleteTagEverywhere(pendingDeleteTag); renderSettingsTags(); } }
+  else if (mode === 'tag') { if (state.pendingDeleteTag) { deleteTagEverywhere(state.pendingDeleteTag); renderSettingsTags(); } }
   else if (mode === 'collab-note') { collabDeleteNote(id); }
   else if (mode === 'collab-group') { collabDeleteGroup(id); }
   else if (mode === 'shared-folder') { deleteSharedFolderNow(Number(id), sectionId); }
@@ -6120,15 +6085,15 @@ function bindNoteContextMenu() {
     const item = event.target.closest('[data-menu-action]');
     if (!item) return;
     const action = item.dataset.menuAction;
-    const id = contextMenuNoteId;
+    const id = state.contextMenuNoteId;
     closeNoteContextMenu();
     handleNoteMenuAction(action, id);
   });
   document.addEventListener('click', (event) => {
-    if (contextMenuNoteId && !event.target.closest('#note-context-menu')) closeNoteContextMenu();
+    if (state.contextMenuNoteId && !event.target.closest('#note-context-menu')) closeNoteContextMenu();
   });
   document.addEventListener('contextmenu', (event) => {
-    if (contextMenuNoteId && !event.target.closest('#note-context-menu')) closeNoteContextMenu();
+    if (state.contextMenuNoteId && !event.target.closest('#note-context-menu')) closeNoteContextMenu();
   });
   window.addEventListener('resize', closeNoteContextMenu);
   noteList.addEventListener('scroll', closeNoteContextMenu);
@@ -6143,7 +6108,6 @@ function bindNoteContextMenu() {
 // a background sync can never wipe secrets; plaintext exists in memory only
 // while unlocked (wiped on lock/logout/reload).
 state.vault = { unlocked: false, dek: null, notes: [], blobs: [], meta: null, folders: [] };
-let currentVaultId = null;
 
 
 // Vault folder names: flat, trimmed, no slashes, capped. Shared by envelope
@@ -6163,11 +6127,11 @@ function selectVaultNote(id) {
   const note = state.vault.unlocked ? state.vault.notes.find((item) => item.id === id) : null;
   if (!note) return;
   trackTab(id, true);
-  currentVaultId = id;
+  state.currentVaultId = id;
   state.currentId = null;
   document.querySelector('.app-shell').classList.remove('workspace-focus');
-  writeMode = 'preview';
-  clearTimeout(idleTimer);
+  state.writeMode = 'preview';
+  clearTimeout(state.idleTimer);
   titleInput.value = note.title;
   markdownInput.value = note.body;
   breadcrumbTitle.textContent = note.title;
@@ -6180,8 +6144,8 @@ function selectVaultNote(id) {
 
 // Save the open vault note into memory; the debounced envelope sync persists it.
 function saveVaultNote() {
-  if (!state.vault.unlocked || !currentVaultId) return;
-  const note = state.vault.notes.find((item) => item.id === currentVaultId);
+  if (!state.vault.unlocked || !state.currentVaultId) return;
+  const note = state.vault.notes.find((item) => item.id === state.currentVaultId);
   if (!note) return;
   note.title = (typeof titleInput.value === 'string' ? titleInput.value : '').trim().slice(0, 200) || 'Untitled note';
   note.body = typeof markdownInput.value === 'string' ? markdownInput.value.slice(0, 500000) : '';
@@ -6192,20 +6156,18 @@ function saveVaultNote() {
   updateMeta(note);
   renderTabs();
   setSaveLabel('Saving...', 'green');
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
 }
 
 // + New secret note entry: like + New Note outside the Vault — asks for the
 // folder first (only when folders exist), then the template.
-let pendingVaultFolder = null; // folder name | null (null = Vault root)
-let vaultTemplatePending = false;
 function onNewVaultNoteClick() {
   if (!state.vault.unlocked) { showToast('Unlock the Vault first'); return; }
-  pendingVaultFolder = null;
-  vaultTemplatePending = false;
+  state.pendingVaultFolder = null;
+  state.vaultTemplatePending = false;
   if (state.vault.folders.length && openVaultFolderPicker()) return;
-  vaultTemplatePending = true;
+  state.vaultTemplatePending = true;
   openTemplatePicker();
 }
 
@@ -6224,9 +6186,9 @@ function openVaultFolderPicker() {
       <span class="theme-option-text"><strong>${escapeHtml(entry.label)}</strong><span>${escapeHtml(entry.sub)}</span></span>
     </button>`).join('');
   box.querySelectorAll('[data-vault-pick]').forEach((btn) => btn.addEventListener('click', () => {
-    pendingVaultFolder = btn.dataset.vaultPick || null;
+    state.pendingVaultFolder = btn.dataset.vaultPick || null;
     closeFolderPicker();
-    vaultTemplatePending = true;
+    state.vaultTemplatePending = true;
     openTemplatePicker();
   }));
   overlay.hidden = false;
@@ -6239,8 +6201,8 @@ function openVaultFolderPicker() {
 function createVaultNoteFromTemplate(templateKey) {
   if (!state.vault.unlocked) { showToast('Unlock the Vault first'); return null; }
   const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
-  const folder = (pendingVaultFolder && state.vault.folders.includes(pendingVaultFolder)) ? pendingVaultFolder : null;
-  pendingVaultFolder = null;
+  const folder = (state.pendingVaultFolder && state.vault.folders.includes(state.pendingVaultFolder)) ? state.pendingVaultFolder : null;
+  state.pendingVaultFolder = null;
   const title = uniqueVaultTitle(template.titleBase);
   const note = {
     id: newNoteId(), title, body: template.body(title),
@@ -6248,7 +6210,7 @@ function createVaultNoteFromTemplate(templateKey) {
     date: 'Now', favorite: false, folder,
   };
   state.vault.notes.unshift(note);
-  currentVaultId = note.id;
+  state.currentVaultId = note.id;
   selectVaultNote(note.id);
   persistNotes();
   showToast(folder ? `${template.label} created in ${folder}` : `${template.label} created`);
@@ -6260,9 +6222,9 @@ function deleteVaultNote(id) {
   if (index === -1) return;
   state.vault.notes.splice(index, 1);
   state.vault.blobs = state.vault.blobs.filter((item) => item.id !== id);
-  if (currentVaultId === id) {
+  if (state.currentVaultId === id) {
     if (state.vault.notes.length) selectVaultNote(state.vault.notes[Math.min(index, state.vault.notes.length - 1)].id);
-    else { currentVaultId = null; clearEditor(); }
+    else { state.currentVaultId = null; clearEditor(); }
   }
   persistNotes();
   renderNoteList();
@@ -6272,8 +6234,8 @@ function deleteVaultNote(id) {
 function openVaultNoteDeleteConfirm(id) {
   const note = state.vault.notes.find((item) => item.id === id);
   if (!note) return;
-  pendingDeleteId = id;
-  pendingDeleteMode = 'vault-note';
+  state.pendingDeleteId = id;
+  state.pendingDeleteMode = 'vault-note';
   setDeleteDialog({
     eyebrow: 'Delete secret note',
     title: 'Delete this note?',
@@ -6321,8 +6283,8 @@ function renameVaultFolder(folder) {
 
 function openVaultFolderDeleteConfirm(folder) {
   const count = state.vault.notes.filter((note) => note.folder === folder).length;
-  pendingDeleteId = folder;
-  pendingDeleteMode = 'vault-folder';
+  state.pendingDeleteId = folder;
+  state.pendingDeleteMode = 'vault-folder';
   setDeleteDialog({
     eyebrow: 'Delete vault folder',
     title: 'Delete this folder?',
@@ -6392,7 +6354,7 @@ function renderVaultList() {
     const knownVaultFolders = new Set(state.vault.folders);
     const rootNotes = state.vault.notes.filter((note) => !note.folder || !knownVaultFolders.has(note.folder));
     const renderVaultNoteRow = (note) => `
-        <button class="tree-file${note.id === currentVaultId ? ' selected' : ''}" data-vault-id="${escapeHtml(note.id)}" title="${escapeHtml(note.title || 'Untitled note')}" draggable="true">
+        <button class="tree-file${note.id === state.currentVaultId ? ' selected' : ''}" data-vault-id="${escapeHtml(note.id)}" title="${escapeHtml(note.title || 'Untitled note')}" draggable="true">
           <span class="tree-file-icon tree-file-icon-md">${icon('file')}</span>
           <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
           <span class="tree-action danger" data-vault-delete="${escapeHtml(note.id)}" title="Delete secret note" role="button" aria-label="Delete ${escapeHtml(note.title || 'Untitled note')}">${icon('trash')}</span>
@@ -6507,7 +6469,7 @@ function renderVaultList() {
 function enterVaultView() {
   if (!state.vault.unlocked) { openVaultModal(); return; }
   state.activeView = 'vault';
-  activeCustom = null;
+  state.activeCustom = null;
   state.activeFilter = 'all';
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'vault'));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
@@ -6521,14 +6483,14 @@ function enterVaultView() {
 // leave the view. Folders stay so a background sync while locked can never
 // strand or erase them from the envelope.
 async function lockVault() {
-  if (state.activeView === 'vault' && currentVaultId) saveVaultNote();
+  if (state.activeView === 'vault' && state.currentVaultId) saveVaultNote();
   try { await currentVaultBlobs(); } catch (error) {}
   persistNotes();
   state.vault.unlocked = false;
   state.vault.dek = null;
   state.vault.notes = [];
   state.vault.meta = null;
-  currentVaultId = null;
+  state.currentVaultId = null;
   goAllNotes();
   renderNoteList();
   showToast('Vault locked');
@@ -6653,7 +6615,7 @@ async function resetVault() {
   state.vault.blobs = [];
   state.vault.folders = [];
   state.vault.meta = null;
-  currentVaultId = null;
+  state.currentVaultId = null;
   persistNotes();
   closeVaultModal();
   goAllNotes();
@@ -6714,8 +6676,8 @@ function saveCurrentNote() {
   updateMeta(note);
   renderTabs();
   setSaveLabel('Saving...', 'green');
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
   resetIdleTimer();
 }
 
@@ -6797,10 +6759,10 @@ function createNoteFromTemplate(templateKey) {
   const title = uniqueTitle(template.titleBase);
   const tags = [...template.tags];
   // Filing follows the workspace: a picked folder files the note there; a bare
-  // section view asks first (pendingSectionFolder), falling back to the
+  // section view asks first (state.pendingSectionFolder), falling back to the
   // section's first folder only when the picker had nothing to offer.
-  const picked = pendingSectionFolder;
-  pendingSectionFolder = null;
+  const picked = state.pendingSectionFolder;
+  state.pendingSectionFolder = null;
   // A picked folder always wins when it still exists (covers both the
   // bare-section flow and the folder-required gate resume, where the active
   // view may be a different section or none at all). Stale picks (folder
@@ -6809,12 +6771,12 @@ function createNoteFromTemplate(templateKey) {
     ? state.customSections.find((entry) => entry.id === picked.section) : null;
   const pickedFolder = pickedSection && typeof picked.folder === 'string'
     && pickedSection.folders.includes(picked.folder) ? picked.folder : null;
-  const customSection = activeCustom ? state.customSections.find((entry) => entry.id === activeCustom.section) : null;
+  const customSection = state.activeCustom ? state.customSections.find((entry) => entry.id === state.activeCustom.section) : null;
   // No active folder context (e.g. All notes): inherit filing from the open
   // note so the new note lands next to it instead of staying unfiled.
   // Only live locations count — binned/deleted/removed folders are skipped.
   const inheritSections = {};
-  if (!activeCustom && state.currentId) {
+  if (!state.activeCustom && state.currentId) {
     const openNote = state.notes.find((entry) => entry.id === state.currentId);
     if (openNote) {
       if (openNote.sections && typeof openNote.sections === 'object') {
@@ -6828,19 +6790,19 @@ function createNoteFromTemplate(templateKey) {
     }
   }
   const customFolder = pickedFolder
-    || (activeCustom && activeCustom.folder)
+    || (state.activeCustom && state.activeCustom.folder)
     || (customSection && customSection.folders.length ? customSection.folders[0] : null);
   const filedSections = (pickedFolder && pickedSection) ? { [pickedSection.id]: pickedFolder }
-    : (activeCustom && customFolder) ? { [activeCustom.section]: customFolder } : inheritSections;
+    : (state.activeCustom && customFolder) ? { [state.activeCustom.section]: customFolder } : inheritSections;
   // Folder-required rule: a note must land in a folder or subfolder. If no
   // filing resolved above, park the template choice and ask for a
   // destination first — creation resumes after the pick. A workspace with no
   // folders at all cannot file anything: say so instead of silently
   // creating an unfiled note.
   if (!customFolder && !Object.values(filedSections).some((value) => typeof value === 'string' && value)) {
-    pendingTemplate = templateKey;
+    state.pendingTemplate = templateKey;
     if (!openFolderPicker()) {
-      pendingTemplate = null;
+      state.pendingTemplate = null;
       showToast('Create a folder first, then add your note there');
       return null;
     }
@@ -6891,31 +6853,29 @@ function openTemplatePicker() {
 
 // Hide the template chooser popup.
 function closeTemplatePicker() {
-  vaultTemplatePending = false;
-  pendingSharedTemplate = null;
+  state.vaultTemplatePending = false;
+  state.pendingSharedTemplate = null;
   const overlay = document.getElementById('template-overlay');
   if (overlay) overlay.hidden = true;
 }
 
 // Folder picked in a bare section view, awaiting template choice.
-let pendingSectionFolder = null; // { ns: 'custom', section: id, folder } | null
 // Template picked while unfiled, awaiting a folder choice (folder-required rule).
-let pendingTemplate = null; // template key | null
 
 // + New note entry: a bare section view (no folder picked) asks for the
 // destination folder first, so the note lands where the user wants. A section
 // with no folders yet cannot file anything — say so instead of silently
 // creating an invisible note.
 function onNewNoteClick() {
-  pendingSectionFolder = null;
-  pendingTemplate = null;
-  if (activeCustom && !activeCustom.folder) {
-    const section = state.customSections.find((entry) => entry.id === activeCustom.section);
+  state.pendingSectionFolder = null;
+  state.pendingTemplate = null;
+  if (state.activeCustom && !state.activeCustom.folder) {
+    const section = state.customSections.find((entry) => entry.id === state.activeCustom.section);
     if (section && !section.folders.length) {
       showToast(`Create a folder in ${section.name} first`);
       return;
     }
-    if (openFolderPicker('custom', activeCustom.section)) return;
+    if (openFolderPicker('custom', state.activeCustom.section)) return;
   }
   openTemplatePicker();
 }
@@ -6985,13 +6945,13 @@ function openFolderPicker(ns, sectionId) {
     </button>`;
   }).join('');
   box.querySelectorAll('[data-pick-folder]').forEach((btn) => btn.addEventListener('click', () => {
-    pendingSectionFolder = { ns: btn.dataset.pickNs, section: btn.dataset.pickSection || null, folder: btn.dataset.pickFolder };
+    state.pendingSectionFolder = { ns: btn.dataset.pickNs, section: btn.dataset.pickSection || null, folder: btn.dataset.pickFolder };
     closeFolderPicker();
     // Folder-required gate resumes here: a parked template choice goes
     // straight to creation; the bare-section flow picks a template next.
-    if (pendingTemplate) {
-      const templateKey = pendingTemplate;
-      pendingTemplate = null;
+    if (state.pendingTemplate) {
+      const templateKey = state.pendingTemplate;
+      state.pendingTemplate = null;
       createNoteFromTemplate(templateKey);
     } else {
       openTemplatePicker();
@@ -7154,14 +7114,14 @@ noteList.addEventListener('contextmenu', (event) => {
   const menu = document.getElementById('shared-context-menu');
   if (menu) menu.addEventListener('click', (event) => {
     const btn = event.target.closest('[data-shared-action]');
-    if (!btn || !sharedMenuTarget) return;
+    if (!btn || !state.sharedMenuTarget) return;
     const action = btn.dataset.sharedAction;
-    const t = sharedMenuTarget;
+    const t = state.sharedMenuTarget;
     closeSharedContextMenu();
     if (action === 'open') openCollabNote(t.noteId);
     else if (action === 'move') moveSharedNote(t.noteId, t.groupId);
     else if (action === 'delete') {
-      pendingDeleteId = String(t.noteId); pendingDeleteMode = 'collab-note'; pendingDeleteTag = null;
+      state.pendingDeleteId = String(t.noteId); state.pendingDeleteMode = 'collab-note'; state.pendingDeleteTag = null;
       setDeleteDialog({ eyebrow: 'Delete note', title: 'Delete this shared note?', name: `Note #${t.noteId}`, message: '\u201d will be deleted for everyone. This cannot be undone.' });
       const overlay = document.getElementById('delete-overlay');
       if (overlay) { overlay.hidden = false; const b = document.getElementById('confirm-delete'); if (b) b.focus(); }
@@ -7171,8 +7131,8 @@ noteList.addEventListener('contextmenu', (event) => {
     else if (action === 'folder-rename') renameSharedFolder(t.groupId, t.folder);
     else if (action === 'folder-delete') confirmDeleteSharedFolder(t.groupId, t.folder);
   });
-  document.addEventListener('click', (event) => { if (sharedMenuTarget && !event.target.closest('#shared-context-menu')) closeSharedContextMenu(); });
-  document.addEventListener('contextmenu', (event) => { if (sharedMenuTarget && !event.target.closest('#shared-context-menu')) closeSharedContextMenu(); }, true);
+  document.addEventListener('click', (event) => { if (state.sharedMenuTarget && !event.target.closest('#shared-context-menu')) closeSharedContextMenu(); });
+  document.addEventListener('contextmenu', (event) => { if (state.sharedMenuTarget && !event.target.closest('#shared-context-menu')) closeSharedContextMenu(); }, true);
   window.addEventListener('resize', closeSharedContextMenu);
   noteList.addEventListener('scroll', closeSharedContextMenu, true);
 }
@@ -7285,9 +7245,9 @@ document.getElementById('collab-invite').addEventListener('click', collabInvite)
 document.getElementById('collab-delete').addEventListener('click', () => {
   if (!state.collab.noteId) return;
   const id = state.collab.noteId;
-  pendingDeleteId = String(id);
-  pendingDeleteMode = 'collab-note';
-  pendingDeleteTag = null;
+  state.pendingDeleteId = String(id);
+  state.pendingDeleteMode = 'collab-note';
+  state.pendingDeleteTag = null;
   setDeleteDialog({ eyebrow: 'Delete note', title: 'Delete this shared note?', name: `Note #${id}`, message: '” will be deleted for everyone in this section. This cannot be undone.' });
   const overlay = document.getElementById('delete-overlay');
   if (overlay) {
@@ -7311,9 +7271,9 @@ document.getElementById('settings-tag-list').addEventListener('click', (event) =
   const del = event.target.closest('[data-tag-delete]');
   if (del) {
     const name = del.dataset.tagDelete;
-    pendingDeleteId = '__TAG__';
-    pendingDeleteMode = 'tag';
-    pendingDeleteTag = name;
+    state.pendingDeleteId = '__TAG__';
+    state.pendingDeleteMode = 'tag';
+    state.pendingDeleteTag = name;
     setDeleteDialog({ eyebrow: 'Delete tag', title: 'Delete this tag?', name, message: '” will be removed from every note. This cannot be undone.' });
     const overlay = document.getElementById('delete-overlay');
     if (overlay) {
@@ -7326,10 +7286,10 @@ document.getElementById('settings-tag-list').addEventListener('click', (event) =
 document.getElementById('template-overlay').addEventListener('click', (event) => {
   const option = event.target.closest('#template-options .template-option[data-template]');
   if (!option) return;
-  const shared = pendingSharedTemplate;
-  pendingSharedTemplate = null;
-  const forVault = vaultTemplatePending;
-  vaultTemplatePending = false;
+  const shared = state.pendingSharedTemplate;
+  state.pendingSharedTemplate = null;
+  const forVault = state.vaultTemplatePending;
+  state.vaultTemplatePending = false;
   closeTemplatePicker();
   if (shared) { createSharedNoteWithTemplate(shared.groupId, shared.folder, option.dataset.template); return; }
   if (forVault) { createVaultNoteFromTemplate(option.dataset.template); return; }
@@ -7530,7 +7490,7 @@ function selectCustomSection(sectionId) {
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   state.activeView = 'notes';
   state.activeFilter = 'all';
-  activeCustom = { section: sectionId, folder: null };
+  state.activeCustom = { section: sectionId, folder: null };
   clearSearch();
   updateListHeading();
   renderCustomSections();
@@ -7554,7 +7514,7 @@ function selectCustomFolder(sectionId, folder) {
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   state.activeView = 'notes';
   state.activeFilter = 'all';
-  activeCustom = { section: sectionId, folder };
+  state.activeCustom = { section: sectionId, folder };
   clearSearch();
   updateListHeading();
   renderCustomSections();
@@ -7563,7 +7523,7 @@ function selectCustomFolder(sectionId, folder) {
 
 // Clear section/folder filters and sidebar highlights (unified custom implementation).
 function clearSectionSelection() {
-  activeCustom = null;
+  state.activeCustom = null;
   document.querySelectorAll('#custom-sections .collection-item').forEach((item) => item.classList.remove('active'));
 }
 
@@ -7594,21 +7554,21 @@ document.getElementById('empty-bin').addEventListener('click', (event) => {
 });
 
 preview.addEventListener('click', () => {
-  if (writeMode === 'preview') setWriteMode('edit', { focus: true });
+  if (state.writeMode === 'preview') setWriteMode('edit', { focus: true });
 });
 preview.addEventListener('focus', () => {
-  if (writeMode === 'preview') setWriteMode('edit', { focus: true });
+  if (state.writeMode === 'preview') setWriteMode('edit', { focus: true });
 });
 if (modeToggle) modeToggle.addEventListener('click', () => {
   const note = activeEditorNote();
   if (!note || note.ext !== 'md') return;
-  if (writeMode === 'preview') setWriteMode('edit', { focus: true });
+  if (state.writeMode === 'preview') setWriteMode('edit', { focus: true });
   else if (markdownInput.value.trim()) setWriteMode('preview');
   else showToast('Nothing to preview yet');
 });
 
 document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => {
-  if (writeMode === 'preview') setWriteMode('edit');
+  if (state.writeMode === 'preview') setWriteMode('edit');
   const action = button.dataset.action;
   if (action === 'bold') wrapSelection('**');
   if (action === 'italic') wrapSelection('*');
@@ -7656,8 +7616,8 @@ if (typeBadge) typeBadge.addEventListener('click', () => {
     }
   }
   note.ext = next;
-  writeMode = 'edit';
-  clearTimeout(idleTimer);
+  state.writeMode = 'edit';
+  clearTimeout(state.idleTimer);
   renderPreview(note);
   resetIdleTimer();
   persistNotes();
@@ -7684,7 +7644,7 @@ document.getElementById('cover-input').addEventListener('change', (event) => {
 function coverDragStart(event, clientY) {
   if (event.target && event.target.closest && event.target.closest('button')) return;
   if (!coverDragNote()) return;
-  coverDragging = true;
+  state.coverDragging = true;
   const wrap = document.getElementById('cover-wrap');
   if (wrap) wrap.classList.add('dragging');
   moveCoverOnNote(clientY);
@@ -7695,7 +7655,7 @@ document.getElementById('cover-wrap').addEventListener('pointerdown', (event) =>
   coverDragStart(event, event.clientY);
 });
 document.getElementById('cover-wrap').addEventListener('pointermove', (event) => {
-  if (coverDragging) moveCoverOnNote(event.clientY);
+  if (state.coverDragging) moveCoverOnNote(event.clientY);
 });
 document.getElementById('cover-wrap').addEventListener('pointerup', () => endCoverDrag());
 document.getElementById('cover-wrap').addEventListener('pointercancel', () => endCoverDrag());
@@ -7704,7 +7664,7 @@ document.getElementById('cover-wrap').addEventListener('mousedown', (event) => {
   coverDragStart(event, event.clientY);
 });
 document.addEventListener('mousemove', (event) => {
-  if (coverDragging) moveCoverOnNote(event.clientY);
+  if (state.coverDragging) moveCoverOnNote(event.clientY);
 });
 document.addEventListener('mouseup', () => endCoverDrag());
 const MAX_IMPORT_FILES = 20;
@@ -7738,7 +7698,7 @@ importInput.addEventListener('change', async (event) => {
         archived: false,
         deleted: false,
         ext,
-        sections: (activeCustom && activeCustom.folder) ? { [activeCustom.section]: activeCustom.folder } : {},
+        sections: (state.activeCustom && state.activeCustom.folder) ? { [state.activeCustom.section]: state.activeCustom.folder } : {},
         body: (text || (ext === 'md' ? `# ${base}\n` : '')).slice(0, 500000)
       };
       ensureNoteFiled(note);
@@ -7932,12 +7892,12 @@ async function restoreSessionUnlock() {
 // Load the decrypted workspace after an unlock (login or session restore).
 async function enterWorkspace() {
   // Fresh account context: never leak the previous login's sidebar into this one.
-  serverUiLoaded = false;
+  state.serverUiLoaded = false;
   state.collapsedFolders = new Set();
   state.customSections = [];
   state.deletedCustomSections = [];
-  activeCustom = null;
-  knownTags = [];
+  state.activeCustom = null;
+  state.knownTags = [];
   await loadNotesFromServer();
   if (purgeExpiredBin()) persistNotes();
   await loadUiVault();
@@ -7946,7 +7906,7 @@ async function enterWorkspace() {
   syncCustomSections();
   // First login on a v1 row (or a device that knew more than the server):
   // push the merged sidebar up so the next relog/device sees it.
-  if (!serverUiLoaded) {
+  if (!state.serverUiLoaded) {
     try { await writeUiVaultLocal(); } catch (error) {}
     persistNotes();
   }
@@ -7976,12 +7936,11 @@ function getSessionUser() {
 // --- Profile avatar --------------------------------------------------------
 // Optional user picture. Stored inside the E2EE UI vault (never plaintext on
 // disk/server), rendered as an image in place of the initials.
-let profileAvatar = '';
 // Paint a round avatar element with the picture when set, else its initials.
 function paintAvatar(el, fallbackInitials) {
   if (!el) return;
   el.textContent = '';
-  const src = cleanAvatarSrc(profileAvatar);
+  const src = cleanAvatarSrc(state.profileAvatar);
   if (src) {
     const img = document.createElement('img');
     img.alt = '';
@@ -8023,28 +7982,28 @@ async function logout() {
   // Flush while still unlocked: local UI cache + server envelope (notes + UI).
   clearSessionUnlock();
   try {
-    clearTimeout(uiVaultTimer);
+    clearTimeout(state.uiVaultTimer);
     if (state.cachedProfile && e2ee.masterKey) {
       try { await writeUiVaultLocal(); } catch (error) {}
       try { await flushNotesToServer(); } catch (error) {}
     } else {
-      clearTimeout(syncTimer);
+      clearTimeout(state.syncTimer);
     }
   } catch (error) {}
   try { await apiFetch('/api/logout', { method: 'POST' }); } catch (error) {}
   state.cachedProfile = null;
-  profileAvatar = '';
-  knownTags = [];
+  state.profileAvatar = '';
+  state.knownTags = [];
   setSharedNavCount(0);
   e2eeLock();
   // Wipe decrypted workspace: memory, editor DOM and any legacy local copy.
   state.notes = [];
   state.openTabs = [];
-  notesLoaded = false;
-  serverNotesVersion = 0;
-  serverUiLoaded = false;
+  state.notesLoaded = false;
+  state.serverNotesVersion = 0;
+  state.serverUiLoaded = false;
   state.currentId = null;
-  currentVaultId = null;
+  state.currentVaultId = null;
   state.vault.unlocked = false;
   state.vault.dek = null;
   state.vault.notes = [];
@@ -8053,10 +8012,10 @@ async function logout() {
   state.vault.meta = null;
   state.activeView = 'notes';
   state.activeFilter = 'all';
-  activeCustom = null;
+  state.activeCustom = null;
   state.searchQuery = '';
-  clearTimeout(syncTimer);
-  try { clearTimeout(saveTimer); } catch (error) {}
+  clearTimeout(state.syncTimer);
+  try { clearTimeout(state.saveTimer); } catch (error) {}
   const searchInput = document.getElementById('search-input');
   if (searchInput) searchInput.value = '';
   wipeLegacyLocalNotes();
@@ -8072,7 +8031,7 @@ async function logout() {
   state.collapsedFolders = new Set();
   state.customSections = [];
   state.deletedCustomSections = [];
-  activeCustom = null;
+  state.activeCustom = null;
   titleInput.value = '';
   markdownInput.value = '';
   breadcrumbTitle.textContent = 'No notes';
@@ -8102,7 +8061,6 @@ if (tabRegister) tabRegister.addEventListener('click', () => {
   setAuthTab(onRegister ? 'login' : 'register');
 });
 
-let authBusy = false;
 // Derive the KEK and unwrap the account master key into memory (extractable
 // within this page so it can be re-wrapped on rotation/upgrade). Throws on
 // wrong password (vault stays locked). Bundle shape: {kdf, saltAuth,
@@ -8130,16 +8088,16 @@ document.addEventListener('click', (event) => {
 
 document.getElementById('login-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (authBusy) return;
+  if (state.authBusy) return;
   const usernameEl = document.getElementById('login-username');
   const passwordEl = document.getElementById('login-password');
   const submitBtn = event.target.querySelector('button[type="submit"]');
   const username = String(usernameEl.value || '').trim().slice(0, 32);
   const password = String(passwordEl.value || '');
   if (!/^[A-Za-z0-9_-]{3,32}$/.test(username) || !password) { loginFail(); return; }
-  authBusy = true;
+  state.authBusy = true;
   if (submitBtn) submitBtn.disabled = true;
-  const done = () => { authBusy = false; if (submitBtn) submitBtn.disabled = false; };
+  const done = () => { state.authBusy = false; if (submitBtn) submitBtn.disabled = false; };
   try {
     // Step 1: fetch KDF parameters (identical shape for unknown names, so
     // this reveals nothing beyond what login itself would).
@@ -8211,7 +8169,7 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
           // Email-reset rewrap: verifier is new but the wrapped key still
           // answers to the OLD password. Unlock with it once, then re-wrap
           // under the new password via the normal rotation endpoint.
-          if (!pendingRewrap || !pendingRewrap.password) throw error;
+          if (!state.pendingRewrap || !state.pendingRewrap.password) throw error;
           const oldPw = await askInput({
             eyebrow: 'Recover account', title: 'One last step',
             desc: 'Enter your OLD password once to re-encrypt notes under the new one. It stays on this device.',
@@ -8226,10 +8184,10 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
           });
           const freshSaltAuth = e2eeRandomBytes(16);
           const freshSaltEnc = e2eeRandomBytes(16);
-          const freshAuth = await argon2id32(pendingRewrap.password, freshSaltAuth);
+          const freshAuth = await argon2id32(state.pendingRewrap.password, freshSaltAuth);
           const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
-          const freshWrap = await e2eeWrapMasterKeyArgon2id(pendingRewrap.password, freshSaltEnc, masterRaw);
-          const curBits = await argon2id32(pendingRewrap.password, pendingRewrap.saltAuth);
+          const freshWrap = await e2eeWrapMasterKeyArgon2id(state.pendingRewrap.password, freshSaltEnc, masterRaw);
+          const curBits = await argon2id32(state.pendingRewrap.password, state.pendingRewrap.saltAuth);
           await apiFetch('/api/change-password', {
             method: 'POST',
             body: JSON.stringify({
@@ -8246,7 +8204,7 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
           e2ee.saltAuth = freshSaltAuth;
           e2ee.saltEnc = freshSaltEnc;
           e2ee.iterations = 0;
-          pendingRewrap = null;
+          state.pendingRewrap = null;
         }
       }
       if (e2ee.kdf !== 'argon2id') {
@@ -8294,7 +8252,7 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
 
 if (registerForm) registerForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  if (authBusy) return;
+  if (state.authBusy) return;
   const username = String(document.getElementById('register-username').value || '').trim();
   const email = String(document.getElementById('register-email').value || '').trim().slice(0, 254);
   const first = String(document.getElementById('register-first').value || '').trim().slice(0, 40);
@@ -8309,7 +8267,7 @@ if (registerForm) registerForm.addEventListener('submit', async (event) => {
   if (password !== confirm) { fail('Passwords do not match.'); return; }
   const missing = passwordPolicyCheck(password);
   if (missing.length) { fail(`Password needs ${missing.join(', ')}.`); return; }
-  authBusy = true;
+  state.authBusy = true;
   let response;
   try {
     // E2EE+Argon2id registration: brand-new random master key, wrapped
@@ -8322,7 +8280,7 @@ if (registerForm) registerForm.addEventListener('submit', async (event) => {
     const wrapped = await e2eeWrapMasterKeyArgon2id(password, saltEncBytes, masterRaw);
     if (!await e2eeTrialUnwrapArgon2id(password, saltEncBytes, wrapped)) {
       fail('Key setup failed locally — not uploaded. Retry.');
-      authBusy = false;
+      state.authBusy = false;
       return;
     }
     response = await apiFetch('/api/register', {
@@ -8342,10 +8300,10 @@ if (registerForm) registerForm.addEventListener('submit', async (event) => {
     });
   } catch (error) {
     fail('Cannot reach the Notely server. Is it running?');
-    authBusy = false;
+    state.authBusy = false;
     return;
   }
-  authBusy = false;
+  state.authBusy = false;
   if (response.status === 202) {
     // Uniform response: the server answers identically whether the name was
     // free or taken, so this message must not distinguish the two cases.
@@ -8383,8 +8341,8 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
   // account, so an empty field gets guidance — never a ceremony attempt.
   if (!username) { loginFail('Enter your username first.'); return; }
   if (!/^[A-Za-z0-9_-]{3,32}$/.test(username)) { loginFail(); return; }
-  if (authBusy) return;
-  authBusy = true;
+  if (state.authBusy) return;
+  state.authBusy = true;
   try {
     if (!window.PublicKeyCredential) throw new Error('passkeys unsupported');
     const begin = await apiFetch('/api/passkey/login-begin', {
@@ -8394,7 +8352,7 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
     // Deliberately vague: unknown names and accounts without any passkey
     // all read as a plain login failure (no enrolment oracle).
     if (!begin.ok) {
-      authBusy = false;
+      state.authBusy = false;
       if (begin.status === 429) {
         loginFail(opts.error || 'Too many attempts — try again in a few minutes.');
       } else {
@@ -8497,7 +8455,7 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
       // Same email-reset rewrap as password login: the verifier is new but
       // the wrapped key still answers to the OLD password. Unlock once with
       // it, then re-wrap under the new password (see password-login path).
-      if (!pendingRewrap || !pendingRewrap.password) throw error;
+      if (!state.pendingRewrap || !state.pendingRewrap.password) throw error;
       const oldPw = await askInput({
         eyebrow: 'Recover account', title: 'One last step',
         desc: 'Enter your OLD password once to re-encrypt notes under the new one. It stays on this device.',
@@ -8507,10 +8465,10 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
       await e2eeUnlockWithPassword(username, oldPw, unlockBundle);
       const freshSaltAuth = e2eeRandomBytes(16);
       const freshSaltEnc = e2eeRandomBytes(16);
-      const freshAuth = await argon2id32(pendingRewrap.password, freshSaltAuth);
+      const freshAuth = await argon2id32(state.pendingRewrap.password, freshSaltAuth);
       const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
-      const freshWrap = await e2eeWrapMasterKeyArgon2id(pendingRewrap.password, freshSaltEnc, masterRaw);
-      const curBits = await argon2id32(pendingRewrap.password, pendingRewrap.saltAuth);
+      const freshWrap = await e2eeWrapMasterKeyArgon2id(state.pendingRewrap.password, freshSaltEnc, masterRaw);
+      const curBits = await argon2id32(state.pendingRewrap.password, state.pendingRewrap.saltAuth);
       await apiFetch('/api/change-password', {
         method: 'POST',
         body: JSON.stringify({
@@ -8527,7 +8485,7 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
       e2ee.saltAuth = freshSaltAuth;
       e2ee.saltEnc = freshSaltEnc;
       e2ee.iterations = 0;
-      pendingRewrap = null;
+      state.pendingRewrap = null;
     }
     } // end password fallback (skipped entirely after PRF unlock)
     // Auto-enable passwordless: this login's assertion already produced the
@@ -8559,7 +8517,7 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
     else if (name === 'TypeError' || (msg && /failed to fetch|network|load failed/i.test(msg))) loginFail('Cannot reach the Notely server. Is it running?');
     else loginFail(msg || 'Passkey sign-in failed.');
   }
-  authBusy = false;
+  state.authBusy = false;
 });
 
 
@@ -9033,7 +8991,7 @@ function refreshProfilePopup() {
   if (emailEl) emailEl.textContent = state.cachedProfile && state.cachedProfile.email ? state.cachedProfile.email : 'No recovery email set';
   paintAvatar(document.getElementById('profile-avatar-large'), initialsFor(name));
   const removeBtn = document.getElementById('profile-photo-remove');
-  if (removeBtn) removeBtn.hidden = !cleanAvatarSrc(profileAvatar);
+  if (removeBtn) removeBtn.hidden = !cleanAvatarSrc(state.profileAvatar);
 }
 // Center-crop to a square 256px JPEG for a compact avatar.
 function downscaleAvatar(dataUrl) {
@@ -9074,7 +9032,7 @@ async function handleAvatarFile(file) {
     const scaled = await downscaleAvatar(raw).catch(() => raw);
     const clean = cleanAvatarSrc(scaled) || cleanAvatarSrc(raw);
     if (!clean) { showToast('Could not use that image — try a smaller one'); return; }
-    profileAvatar = clean;
+    state.profileAvatar = clean;
     paintAvatar(document.querySelector('.profile-card .avatar'), initialsFor(state.cachedProfile ? fullNameOf(state.cachedProfile) : ''));
     refreshProfilePopup();
     persistUiVault();
@@ -9104,7 +9062,7 @@ if (profilePhotoBtn) profilePhotoBtn.addEventListener('click', () => {
 });
 
 if (profilePhotoRemove) profilePhotoRemove.addEventListener('click', () => {
-  profileAvatar = '';
+  state.profileAvatar = '';
   paintAvatar(document.querySelector('.profile-card .avatar'), initialsFor(state.cachedProfile ? fullNameOf(state.cachedProfile) : ''));
   refreshProfilePopup();
   persistUiVault();
@@ -9126,7 +9084,6 @@ function newRecoveryCode() {
   return `${s.slice(0, 5)}-${s.slice(5, 10)}-${s.slice(10, 15)}-${s.slice(15, 20)}`;
 }
 
-let acctRecShownCodes = [];
 // Plaintext codes live ONLY here (memory) and in one encrypted on-device
 // cache below. The server keeps hashes + wraps, so a second device can never
 // re-display them — it must replace the set (invalidating the old codes).
@@ -9174,7 +9131,7 @@ function renderAcctRecCodes() {
   const list = document.getElementById('acct-rec-codes');
   if (!list) return;
   list.innerHTML = '';
-  acctRecShownCodes.forEach((code) => {
+  state.acctRecShownCodes.forEach((code) => {
     const item = document.createElement('li');
     item.textContent = code;
     list.appendChild(item);
@@ -9189,7 +9146,7 @@ function openAcctRecModal() {
 }
 function closeAcctRecModal() {
   // One-shot display: wipe plaintext codes from memory and DOM on close.
-  acctRecShownCodes = [];
+  state.acctRecShownCodes = [];
   renderAcctRecCodes();
   const modal = document.getElementById('acct-rec-modal');
   if (modal) modal.hidden = true;
@@ -9199,7 +9156,7 @@ if (acctRecDownloadBtn) acctRecDownloadBtn.addEventListener('click', () => {
   try {
     const body = ['Notely password recovery codes', `Account: ${(state.cachedProfile && state.cachedProfile.username) || ''}`,
       `Generated: ${new Date().toISOString()}`, '',
-      ...acctRecShownCodes, '',
+      ...state.acctRecShownCodes, '',
       'Each code works once. Store them offline.'].join('\n');
     const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
     const link = document.createElement('a');
@@ -9258,7 +9215,7 @@ if (acctRecViewBtn) acctRecViewBtn.addEventListener('click', async () => {
     await refreshAcctRecStatus();
     return;
   }
-  acctRecShownCodes = codes;
+  state.acctRecShownCodes = codes;
   renderAcctRecCodes();
   const modal = document.getElementById('acct-rec-modal');
   if (modal) modal.hidden = false;
@@ -9319,7 +9276,7 @@ if (acctRecBtn) acctRecBtn.addEventListener('click', async () => {
       const d = await r.json().catch(() => ({}));
       throw new Error(d.error || 'Could not store codes.');
     }
-    acctRecShownCodes = plain;
+    state.acctRecShownCodes = plain;
     try { await saveRecoveryCodesLocal(plain); } catch (error) {}
     if (errEl) errEl.hidden = true;
     openAcctRecModal();
@@ -9377,7 +9334,7 @@ function openRecoverModal(kind) {
 function closeRecoverModal() {
   const modal = document.getElementById('recover-modal');
   if (modal) modal.hidden = true;
-  verifiedRecovery = null;
+  state.verifiedRecovery = null;
   const block = document.getElementById('recover-newpw-block');
   if (block) block.hidden = true;
 }
@@ -9410,7 +9367,6 @@ if (recoverEmailBtn) recoverEmailBtn.addEventListener('click', async () => {
     fail(error.message || 'Could not send email.');
   }
 });
-let verifiedRecovery = null;
 
 if (recoverVerifyBtn) recoverVerifyBtn.addEventListener('click', async () => {
   const errEl = document.getElementById('recover-error');
@@ -9440,7 +9396,7 @@ if (recoverVerifyBtn) recoverVerifyBtn.addEventListener('click', async () => {
         { name: 'AES-GCM', iv: e2eeB64ToBytes(wrap.wrappedKey.iv) },
         kek, e2eeB64ToBytes(wrap.wrappedKey.data));
     } catch (error) { throw new Error('Username and recovery code do not match an account.'); }
-    verifiedRecovery = { username, code, codeHash, masterRaw };
+    state.verifiedRecovery = { username, code, codeHash, masterRaw };
     if (errEl) errEl.hidden = true;
     // Swap the popup: verify view out, new-password view in.
     document.getElementById('recover-verify-view').hidden = true;
@@ -9448,7 +9404,7 @@ if (recoverVerifyBtn) recoverVerifyBtn.addEventListener('click', async () => {
     document.getElementById('recover-modal-title').textContent = 'Set a new password';
     showToast('Code verified — set a new password.');
   } catch (error) {
-    verifiedRecovery = null;
+    state.verifiedRecovery = null;
     document.getElementById('recover-newpw-block').hidden = true;
     fail(error.message || 'Verification failed.');
   }
@@ -9458,13 +9414,13 @@ if (recoverBtn) recoverBtn.addEventListener('click', async () => {
   const errEl = document.getElementById('recover-error');
   const fail = (m) => { if (errEl) { errEl.textContent = m; errEl.hidden = false; } };
   try {
-    if (!verifiedRecovery) throw new Error('Verify your username and code first.');
+    if (!state.verifiedRecovery) throw new Error('Verify your username and code first.');
     const next = String(document.getElementById('recover-new').value || '');
     const confirm = String(document.getElementById('recover-confirm').value || '');
     const missing = passwordPolicyCheck(next);
     if (missing.length) throw new Error(`New password needs ${missing.join(', ')}.`);
     if (next !== confirm) throw new Error('New passwords do not match.');
-    const { username, codeHash, masterRaw } = verifiedRecovery;
+    const { username, codeHash, masterRaw } = state.verifiedRecovery;
     const newSaltAuth = e2eeRandomBytes(16);
     const newSaltEnc = e2eeRandomBytes(16);
     const newAuthBits = await argon2id32(next, newSaltAuth);
@@ -9488,7 +9444,7 @@ if (recoverBtn) recoverBtn.addEventListener('click', async () => {
     if (errEl) errEl.hidden = true;
     const loginName = document.getElementById('login-username');
     if (loginName) loginName.value = username;
-    verifiedRecovery = null;
+    state.verifiedRecovery = null;
     document.getElementById('recover-code-username').value = '';
     document.getElementById('recover-code').value = '';
     document.getElementById('recover-new').value = '';
@@ -9572,7 +9528,7 @@ document.getElementById('start-collapsed').addEventListener('change', (event) =>
 // Export every plainWorkspace note (and unlocked Vault notes) as one JSON
 // backup file in the browser's download folder — the "desktop copy".
 function exportAllNotes() {
-  if (!state.cachedProfile || !notesLoaded) { showToast('Log in first'); return; }
+  if (!state.cachedProfile || !state.notesLoaded) { showToast('Log in first'); return; }
   const payload = {
     app: 'Notely',
     version: 2,
@@ -9605,7 +9561,7 @@ deviceOnlyBox.addEventListener('change', (event) => {
   }
   if (on) {
     setDeviceOnlyPref(true);
-    clearTimeout(syncTimer);
+    clearTimeout(state.syncTimer);
     syncNotesToServer();
     showToast('This device only — notes no longer sync to the cloud');
     return;
@@ -9632,7 +9588,7 @@ document.getElementById('resync-overlay').addEventListener('click', (event) => {
     document.getElementById('resync-overlay').hidden = true;
   }
 });
-// Upload local copy: refresh serverNotesVersion from the server's current
+// Upload local copy: refresh state.serverNotesVersion from the server's current
 // blob (empty for fresh accounts), push so the device copy wins, and clear
 // the local slot so a later device-only session starts fresh.
 document.getElementById('resync-upload').addEventListener('click', async () => {
@@ -9643,7 +9599,7 @@ document.getElementById('resync-upload').addEventListener('click', async () => {
     const response = await apiFetch('/api/notes');
     if (response.ok) {
       const data = await response.json();
-      if (data && typeof data.updated_at === 'number') serverNotesVersion = data.updated_at;
+      if (data && typeof data.updated_at === 'number') state.serverNotesVersion = data.updated_at;
     }
   } catch (error) {}
   await syncNotesToServer();
@@ -9670,9 +9626,8 @@ function closeSettings() {
   if (!settingsOverlay) return;
   settingsOverlay.hidden = true;
 }
-let savedTheme = 'light';
-try { savedTheme = localStorage.getItem('notely-theme') || 'light'; } catch (error) {}
-applyTheme(savedTheme);
+try { state.savedTheme = localStorage.getItem('notely-theme') || 'light'; } catch (error) {}
+applyTheme(state.savedTheme);
 document.getElementById('open-settings').addEventListener('click', (event) => {
   event.preventDefault();
   openSettings();
@@ -9693,9 +9648,8 @@ function applyFont(font, announce = false) {
   if (fontSelectEl) fontSelectEl.value = normalized;
   if (announce) showToast(`${normalized.charAt(0).toUpperCase() + normalized.slice(1)} font on`);
 }
-let savedFont = 'default';
-try { savedFont = localStorage.getItem('notely-font') || 'default'; } catch (error) {}
-applyFont(savedFont);
+try { state.savedFont = localStorage.getItem('notely-font') || 'default'; } catch (error) {}
+applyFont(state.savedFont);
 
 if (fontSelect) fontSelect.addEventListener('change', () => applyFont(fontSelect.value, true));
 // Compact picker on the login card. No toast: it would render behind the overlay.
@@ -9721,11 +9675,11 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
-    if (coverRepositioning) { exitCoverRepos(false); return; }
+    if (state.coverRepositioning) { exitCoverRepos(false); return; }
     if (typeof loginThemeMenu !== 'undefined' && loginThemeMenu && !loginThemeMenu.hidden) { setLoginThemeMenu(false); return; }
-    if (folderMenuTarget) { closeFolderContextMenu(); return; }
-    if (typeof sharedMenuTarget !== 'undefined' && sharedMenuTarget) { closeSharedContextMenu(); return; }
-    if (contextMenuNoteId) { closeNoteContextMenu(); return; }
+    if (state.folderMenuTarget) { closeFolderContextMenu(); return; }
+    if (typeof state.sharedMenuTarget !== 'undefined' && state.sharedMenuTarget) { closeSharedContextMenu(); return; }
+    if (state.contextMenuNoteId) { closeNoteContextMenu(); return; }
     const vaultOverlay = document.getElementById('vault-overlay');
     if (vaultOverlay && !vaultOverlay.hidden) { closeVaultModal(); return; }
     const deleteOverlay = document.getElementById('delete-overlay');
@@ -9788,19 +9742,17 @@ boot();
 // The link proves email ownership; the new verifier is derived locally and
 // the wrapped master key is untouched server-side. After reset the user logs
 // in with the new password, then enters the OLD password once to re-wrap.
-let emailRecoveryToken = null;
-let pendingRewrap = null;
 try {
   const params = new URLSearchParams(window.location.search || '');
   const tok = params.get('emailToken');
-  if (tok && tok.length <= 256) emailRecoveryToken = tok;
+  if (tok && tok.length <= 256) state.emailRecoveryToken = tok;
 } catch (error) {}
 
 if (recoverTokenBtn) recoverTokenBtn.addEventListener('click', async () => {
   const errEl = document.getElementById('recover-token-error');
   const fail = (m) => { if (errEl) { errEl.textContent = m; errEl.hidden = false; } };
   try {
-    if (!emailRecoveryToken) throw new Error('This link is invalid. Request a new email.');
+    if (!state.emailRecoveryToken) throw new Error('This link is invalid. Request a new email.');
     const next = String(document.getElementById('recover-token-new').value || '');
     const confirm = String(document.getElementById('recover-token-confirm').value || '');
     const missing = passwordPolicyCheck(next);
@@ -9811,7 +9763,7 @@ if (recoverTokenBtn) recoverTokenBtn.addEventListener('click', async () => {
     const r = await apiFetch('/api/recovery/email/complete', {
       method: 'POST',
       body: JSON.stringify({
-        token: emailRecoveryToken,
+        token: state.emailRecoveryToken,
         authHash: e2eeBytesToB64(newAuthBits),
         saltAuth: e2eeBytesToB64(newSaltAuth),
       }),
@@ -9820,13 +9772,13 @@ if (recoverTokenBtn) recoverTokenBtn.addEventListener('click', async () => {
       const d = await r.json().catch(() => ({}));
       throw new Error(d.error || 'Link invalid or expired.');
     }
-    pendingRewrap = { password: next, saltAuth: newSaltAuth };
+    state.pendingRewrap = { password: next, saltAuth: newSaltAuth };
     try {
       const url = new URL(window.location.href);
       url.searchParams.delete('emailToken');
       window.history.replaceState({}, '', url.toString());
     } catch (error) {}
-    emailRecoveryToken = null;
+    state.emailRecoveryToken = null;
     if (errEl) errEl.hidden = true;
     closeRecoverModal();
     setAuthTab('login');
@@ -9859,7 +9811,7 @@ async function boot() {
   }
   // Email-reset landing: open recovery with only the token popup visible.
   try {
-    if (emailRecoveryToken) {
+    if (state.emailRecoveryToken) {
       setAuthTab('recover');
       openRecoverModal('token');
     }
