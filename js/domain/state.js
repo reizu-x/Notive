@@ -9,4 +9,8 @@
 // activeFilter, searchQuery.
 export const state = {
   notes: [],
+  collabCaretMirror: null,
+  collabPresenceLocalTimer: null,
+  collabTypingTimer: null,
+  pendingSharedTemplate: null,
 };
