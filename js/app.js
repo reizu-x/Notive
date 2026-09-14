@@ -24,7 +24,8 @@ import { E2EE_KDF_ARGON2ID, e2ee, e2eeBytesToB64, e2eeB64ToBytes, e2eeRandomByte
 import { icon, iconPaths } from './core/icons.js';
 import { renderMarkdown, inlineMarkdown, splitTableRow, tableAligns, renderTable, splitRecipeColumns, stripMarkdown } from './core/markdown.js';
 import { highlightJson, yamlCommentAt, highlightYamlValue, highlightYaml, beautifyJsonText, beautifyYamlText } from './core/syntax.js';
-import { NOTE_EXTS, COVER_ACCEPT, COVER_MAX_CHARS, MIGRATED_COLLECTIONS_SECTION_ID, normalizeExt, isImageFile, parseRecipeBody, migrateNote, sanitizeIngredients, sanitizeSteps, cleanCoverSrc } from './core/schema.js';
+import { NOTE_EXTS, COVER_ACCEPT, COVER_MAX_CHARS, MIGRATED_COLLECTIONS_SECTION_ID, normalizeExt, isImageFile, parseRecipeBody, migrateNote, sanitizeIngredients, sanitizeSteps, cleanCoverSrc, sanitizeFilename, parseTitleExtension, EXT_LABELS, EXT_MIME, COVER_MAX_DIM } from './core/schema.js';
+import { THEMES, THEME_META_COLORS, THEME_LABELS, FONTS } from './ui/theme.js';
 import { state } from './domain/state.js';
 import { noteList, listEmpty, listHeading, titleInput, markdownInput, preview, breadcrumbTitle, wordCount, tagList, saveLabel, typeBadge, editorToolbar, allCount, recentCountEl, starredCountEl, totalCount, importInput, modeLabel, modeToggle, beautifyBtn, tabBarEl, tabOverflowMenuEl, stripBoxEl, stripBackEl, syntaxLayer, recipeBodyEl, foldToggle, importNotesBtn, panelResizer, notesPanel, sidebar, sidebarToggle, workspaceToggle, settingsOverlay, tabLogin, tabRegister, registerForm, passkeyLoginBtn, changeBtn, mfaSetupBtn, closeMfaQrBtn, mfaQrOverlay, mfaConfirmBtn, mfaDisableBtn, passkeyAddBtn, accountSaveBtn, accountDeleteBtn, accountSaveNameBtn, profileOverlay, profileCardEl, closeProfileBtn, profileEditBtn, profilePhotoBtn, profilePhotoRemove, avatarInputEl, acctRecBtn, acctRecDownloadBtn, acctRecDoneBtn, acctRecViewBtn, recoverLink, recoverBack, closeRecoverModalBtn, recoverModalOverlay, recoverOptEmail, recoverOptCode, recoverEmailBtn, recoverVerifyBtn, recoverBtn, settingsNewTagBtn, deviceOnlyBox, themeSelect, fontSelect, loginThemeToggle, loginThemeMenu, recoverTokenBtn } from './core/elements.js';
 import { newNoteId, isValidNoteId } from './core/ids.js';
@@ -77,24 +78,6 @@ document.querySelectorAll('[data-icon]').forEach((element) => {
 // Allowlist for note ids (letters, digits, _ and -, max 80 chars) so ids stay safe in DOM lookups and downloads.
 
 
-// Build a safe download filename from a note title: strips path separators, control chars and dot-runs (no hidden double extensions).
-function sanitizeFilename(name, ext) {
-  const base = String(name == null ? 'note' : name).trim() || 'note';
-  const clean = base.replace(/[^a-zA-Z0-9-_. ]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || 'note';
-  const safeExt = normalizeExt(ext);
-  // Strip any extension confusion: never allow double extensions to hide type.
-  const withoutDots = clean.replace(/\.+/g, '_');
-  return `${withoutDots}.${safeExt}`;
-}
-
-// Note file types: Markdown renders + previews; txt/json/yaml are edited as
-// plain source (no preview, no Markdown toolbar).
-
-const EXT_LABELS = { md: 'MD', txt: 'TXT', json: 'JSON', yaml: 'YAML' };
-const EXT_MIME = {
-  md: 'text/markdown', txt: 'text/plain',
-  json: 'application/json', yaml: 'application/x-yaml',
-};
 // Canonicalize a stored/typed extension (accepts yml/markdown/text aliases).
 
 
@@ -103,7 +86,6 @@ const EXT_MIME = {
 // every read: image MIME only, base64 payload only, hard length cap.
 
 
-const COVER_MAX_DIM = 1200;
 // Accept by MIME, falling back to the file extension (some systems report
 // generic or missing MIME types for camera/gallery files).
 
@@ -7091,16 +7073,6 @@ document.getElementById('new-vault-note').addEventListener('click', onNewVaultNo
 document.getElementById('lock-vault').addEventListener('click', lockVault);
 
 // Detect a trailing file extension typed in the title and switch the note type instead.
-function parseTitleExtension(rawTitle, note) {
-  const input = typeof rawTitle === 'string' ? rawTitle : 'Untitled note';
-  const match = input.match(/\.((md|markdown|txt|text|json|yaml|yml))$/i);
-  if (match) {
-    note.ext = normalizeExt(match[1]);
-    return input.slice(0, -(match[0].length)).trim().slice(0, 200) || 'Untitled note';
-  }
-  return input.slice(0, 200);
-}
-
 // Persist title/body from the editor (debounced server sync); refuses deleted/archived notes.
 function saveCurrentNote() {
   // Shared (collaborative) note: edits go to the Yjs doc, not to a local note.
@@ -8351,10 +8323,6 @@ function restoreWorkspaceCollapsed() {
 }
 
 // ---- Auth & E2EE session, themes, settings, boot ----
-
-const THEMES = ['light', 'dark', 'dracula', 'nord', 'tokyo', 'gruvbox'];
-const THEME_META_COLORS = { light: '#f4f0e9', dark: '#1f1d1b', dracula: '#282a36', nord: '#2e3440', tokyo: '#1a1b26', gruvbox: '#282828' };
-const THEME_LABELS = { light: 'Light', dark: 'Dark', dracula: 'Dracula', nord: 'Nord', tokyo: 'Tokyo Night', gruvbox: 'Gruvbox' };
 
 
 // Auth is handled by the Notely server (server.py) backed by the encrypted
@@ -10331,7 +10299,6 @@ if (settingsOverlay) settingsOverlay.addEventListener('click', (event) => {
 if (themeSelect) themeSelect.addEventListener('change', () => applyTheme(themeSelect.value, true));
 // Reading font (Settings → Appearance). Device-local like the sidebar prefs
 // (not part of the per-account envelope): one line, no sync conflicts.
-const FONTS = ['default', 'serif', 'palatino', 'sans', 'verdana', 'mono'];
 function applyFont(font, announce = false) {
   const normalized = FONTS.includes(font) ? font : 'default';
   document.documentElement.dataset.font = normalized;

@@ -196,3 +196,38 @@ export function cleanCoverSrc(raw) {
   if (s.length > COVER_MAX_CHARS) return null;
   return s;
 }
+
+// Build a safe download filename from a note title: strips path separators,
+// control chars and dot-runs (no hidden double extensions).
+export function sanitizeFilename(name, ext) {
+  const base = String(name == null ? 'note' : name).trim() || 'note';
+  const clean = base.replace(/[^a-zA-Z0-9-_. ]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || 'note';
+  const safeExt = normalizeExt(ext);
+  // Strip any extension confusion: never allow double extensions to hide type.
+  const withoutDots = clean.replace(/\.+/g, '_');
+  return `${withoutDots}.${safeExt}`;
+}
+
+// Note file types: Markdown renders + previews; txt/json/yaml are edited as
+// plain source (no preview, no Markdown toolbar).
+export const EXT_LABELS = { md: 'MD', txt: 'TXT', json: 'JSON', yaml: 'YAML' };
+export const EXT_MIME = {
+  md: 'text/markdown', txt: 'text/plain',
+  json: 'application/json', yaml: 'application/x-yaml',
+};
+
+// Cover images are downscaled on import so a photo-sized upload cannot blow
+// past the envelope/base64 budget.
+export const COVER_MAX_DIM = 1200;
+
+// Parse a typed title like "groceries.txt" into a bare title plus a canonical
+// stored extension on the note object; unknown/trailing no-ext stays Markdown.
+export function parseTitleExtension(rawTitle, note) {
+  const input = typeof rawTitle === 'string' ? rawTitle : 'Untitled note';
+  const match = input.match(/\.((md|markdown|txt|text|json|yaml|yml))$/i);
+  if (match) {
+    note.ext = normalizeExt(match[1]);
+    return input.slice(0, -(match[0].length)).trim().slice(0, 200) || 'Untitled note';
+  }
+  return input.slice(0, 200);
+}
