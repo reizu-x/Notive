@@ -1578,6 +1578,9 @@ html[data-font="verdana"] body :not(pre):not(code):not(kbd) { font-family: Verda
 .app-shell.workspace-collapsed:not(.workspace-focus) .notes-title-row { flex: 1 1 auto; min-height: 0; margin: 0; justify-content: center; align-items: stretch; }
 .app-shell.workspace-collapsed:not(.workspace-focus) .notes-actions { flex: 1 1 auto; min-height: 0; padding: 0; flex-direction: column; align-items: center; }
 .workspace-view-icon { display: none; }
+/* Divider between the collapsed-strip section name and its folder list. */
+.strip-separator { display: none; }
+.app-shell.workspace-collapsed:not(.workspace-focus) .strip-separator { display: block; flex: 0 0 auto; width: 26px; height: 1px; margin: 12px auto 6px; background: var(--line); }
 .app-shell.workspace-collapsed:not(.workspace-focus) .workspace-view-icon { display: block; flex: 0 0 auto; margin-top: 14px; color: var(--ink-muted); font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; white-space: nowrap; writing-mode: vertical-rl; }
 .app-shell.workspace-collapsed:not(.workspace-focus) .notes-header > :not(.notes-title-row),
 .app-shell.workspace-collapsed:not(.workspace-focus) .notes-title-row > :not(.notes-actions),

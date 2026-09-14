@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notely-build" content="dev80" />
+    <meta name="notely-build" content="dev81" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev80" />
+    <link rel="stylesheet" href="styles.css?v=dev81" />
   </head>
   <body>
     <div class="app-shell">
@@ -91,6 +91,7 @@
               <button class="new-note-button" id="shared-new" hidden><span>+</span> New connection</button>
               <button class="icon-button strip-back" id="workspace-strip-back" aria-label="Back to parent folder" title="Back to parent folder" data-icon="chevron-right" hidden></button>
               <span class="workspace-view-icon" id="workspace-view-icon" title="All Notes" aria-hidden="true">All Notes</span>
+              <div class="strip-separator" id="strip-separator" aria-hidden="true"></div>
               <div class="workspace-strip-items" id="workspace-strip-items" aria-label="Folder contents"></div>
               <button class="new-note-button" id="new-note"><span>+</span> New note</button>
               <button class="new-note-button danger" id="empty-bin" hidden>Empty Bin</button>
@@ -285,7 +286,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
           <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
         </div>
-        <p class="login-hint" id="build-tag">dev build dev80</p>
+        <p class="login-hint" id="build-tag">dev build dev81</p>
       </div>
       <div class="login-theme-float">
         <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
@@ -742,6 +743,6 @@
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
-    <script src="app.js?v=dev80"></script>
+    <script src="app.js?v=dev81"></script>
   </body>
 </html>
