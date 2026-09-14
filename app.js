@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev77') {
+  if (build !== 'dev78') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -9322,8 +9322,21 @@ async function enablePasswordlessPasskey(credIdB64, prfSaltB64, btn) {
     if (!e2ee.masterKey) throw new Error('Unlock your notes first (log in with your password), then retry.');
     if (!prfSaltB64) throw new Error('Passwordless is not available for this account.');
     if (btn) btn.disabled = true;
+    // Best-effort browser check (Chromium exposes this). Helps tell "browser
+    // can't do it" apart from "this authenticator didn't return a PRF".
+    let caps = null;
+    try {
+      if (window.PublicKeyCredential && PublicKeyCredential.getClientCapabilities) {
+        caps = await PublicKeyCredential.getClientCapabilities();
+      }
+    } catch (error) { caps = null; }
+    if (caps && caps['extension:prf'] === false) {
+      throw new Error('This browser doesn’t support the passkey PRF extension needed for passwordless — use Chrome or Edge.');
+    }
     const prfSecret = await prfSecretViaAssertion(b64urlToBuf(credIdB64), undefined, prfSaltB64);
-    if (!prfSecret) throw new Error('This passkey or browser does not support passwordless (PRF).');
+    if (!prfSecret) {
+      throw new Error('This authenticator returned no PRF, so passwordless can’t be enabled. Chrome/Edge usually support it; Firefox currently does not.');
+    }
     const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
     const prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
     const r = await apiFetch('/api/passkey/prf-wrap', { method: 'POST', body: JSON.stringify({ id: credIdB64, prfWrap }) });
