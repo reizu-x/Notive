@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev73') {
+  if (build !== 'dev74') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -9071,9 +9071,15 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
     showToast(`Welcome back, ${fullNameOf(cachedProfile)}`);
   } catch (error) {
     e2eeLock();
-    loginFail(error && error.message === 'mfa required' ? 'MFA code required.'
-      : error && error.message === 'e2ee-unwrap' ? 'Could not unlock notes with this password.'
-      : 'Cannot reach the Notely server. Is it running?');
+    const name = error && error.name;
+    const msg = error && error.message;
+    if (msg === 'mfa required') loginFail('MFA code required.');
+    else if (msg === 'e2ee-unwrap') loginFail('Could not unlock notes with this password.');
+    else if (msg === 'password required') loginFail('Enter your password to unlock notes.');
+    else if (name === 'NotAllowedError' || name === 'AbortError') loginFail('Passkey sign-in was cancelled or timed out.');
+    else if (name === 'SecurityError' || (msg && /rp\.?id|origin|relying party/i.test(msg))) loginFail('This passkey can’t be used on this address — open Notely at the exact address you registered it (e.g. https://localhost:5001).');
+    else if (name === 'TypeError' || (msg && /failed to fetch|network|load failed/i.test(msg))) loginFail('Cannot reach the Notely server. Is it running?');
+    else loginFail(msg || 'Passkey sign-in failed.');
   }
   authBusy = false;
 });
