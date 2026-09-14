@@ -2734,10 +2734,44 @@ def api_passkey_list():
     conn = get_db()
     rows = conn.execute('SELECT cred_id, created_at, transports, prf_wrap FROM passkey_creds WHERE username = ?'
                         ' ORDER BY created_at', (user['username'],)).fetchall()
+    prf_row = conn.execute('SELECT salt FROM passkey_prf WHERE username = ?', (user['username'],)).fetchone()
     conn.close()
-    return jsonify({'keys': [{'id': r['cred_id'], 'created_at': r['created_at'],
-                              'transports': r['transports'],
-                              'passwordless': bool(r['prf_wrap'])} for r in rows]})
+    return jsonify({
+        'keys': [{'id': r['cred_id'], 'created_at': r['created_at'],
+                  'transports': r['transports'],
+                  'passwordless': bool(r['prf_wrap'])} for r in rows],
+        'prfSalt': b64url_encode(bytes(prf_row['salt'])) if prf_row else None,
+    })
+
+
+@app.route('/api/passkey/prf-wrap', methods=['POST'])
+def api_passkey_prf_wrap():
+    """Attach a PRF wrap to an EXISTING credential so it can unlock notes with
+    no password. The caller runs a PRF assertion for that credential and sends
+    the master key wrapped under SHA-256(PRF); the secret never leaves the
+    device. Enables passwordless without removing and re-adding the passkey."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    cred_id = str(data.get('id', ''))
+    if not cred_id or len(cred_id) > 256:
+        return jsonify({'error': 'Invalid credential.'}), 400
+    prf_in = data.get('prfWrap')
+    try:
+        prf_iv = b64decode_strict((prf_in or {}).get('iv'), 12)
+        prf_ct = b64decode_strict((prf_in or {}).get('data'), 48)
+    except (ValueError, AttributeError):
+        return jsonify({'error': 'Invalid wrap.'}), 400
+    conn = get_db()
+    cur = conn.execute('UPDATE passkey_creds SET prf_wrap = ? WHERE cred_id = ? AND username = ?',
+                       (bytes(prf_iv) + bytes(prf_ct), cred_id, user['username']))
+    if cur.rowcount == 0:
+        conn.close()
+        return jsonify({'error': 'Unknown credential.'}), 404
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route('/api/passkey/remove', methods=['POST'])

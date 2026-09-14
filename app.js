@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev75') {
+  if (build !== 'dev76') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -4788,7 +4788,11 @@ function updateMeta(note) {
   const editedEl = document.getElementById('edited-label');
   if (editedEl) editedEl.textContent = relativeEditedLabel(note);
   const tags = Array.isArray(note.tags) ? note.tags.filter((tag) => typeof tag === 'string').slice(0, 20) : [];
-  tagList.innerHTML = tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('');
+  // "+" affordance sits inline after the tags and opens the tag editor for the
+  // open note. Hidden for vault notes (the tag editor works on regular notes).
+  const addTagButton = activeView === 'vault' ? ''
+    : '<button type="button" class="tag-add" title="Add tag" aria-label="Add tag">+</button>';
+  tagList.innerHTML = tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('') + addTagButton;
   document.getElementById('favorite-button').classList.toggle('is-favorite', Boolean(note.favorite));
   document.getElementById('favorite-button').style.color = note.favorite ? '#b79b54' : '';
 }
@@ -7136,7 +7140,7 @@ function createNoteFromTemplate(templateKey) {
   if (activeView === 'bin') {
     activeView = 'notes';
     document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
-    listHeading.textContent = 'All Notes';
+    updateListHeading();
   }
   const id = newNoteId();
   const title = uniqueTitle(template.titleBase);
@@ -7483,6 +7487,13 @@ document.getElementById('tag-editor-input').addEventListener('keydown', (event) 
     tagEditorAdd(event.target.value);
     event.target.value = '';
   }
+});
+// Note view: the inline "+" next to a note's tags opens the tag editor for the
+// open note (same modal as the note menu's "Tags…").
+tagList.addEventListener('click', (event) => {
+  if (!event.target.closest('.tag-add')) return;
+  const open = activeEditorNote();
+  if (open) openTagEditor(open.id);
 });
 // Shared view wiring: sections create notes; rows open the live editor.
 noteList.addEventListener('click', (event) => {
@@ -7940,22 +7951,12 @@ document.querySelectorAll('.nav-item').forEach((item) => item.addEventListener('
   activeView = view;
   searchQuery = '';
   document.getElementById('search-input').value = '';
-  if (view === 'favorites') {
-    activeFilter = 'favorites';
-    listHeading.textContent = 'Starred notes';
-  } else if (view === 'bin') {
-    activeFilter = 'all';
-    listHeading.textContent = 'Bin';
-  } else if (view === 'vault') {
-    activeFilter = 'all';
-    updateListHeading();
-  } else if (view === 'shared') {
-    activeFilter = 'all';
-    updateListHeading();
-  } else {
-    activeFilter = 'all';
-    listHeading.textContent = view === 'archive' ? 'Archive' : 'All Notes';
-  }
+  // Pick the chip filter, then let updateListHeading() own the heading text so
+  // the collapsed workspace-strip name (#workspace-view-icon) always stays in
+  // sync (previously favorites/bin/archive set the heading directly, leaving
+  // the strip showing the last view that called updateListHeading, e.g. Shared).
+  activeFilter = view === 'favorites' ? 'favorites' : 'all';
+  updateListHeading();
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === activeFilter));
   renderNoteList();
 }));
@@ -9302,6 +9303,37 @@ async function prfSecretViaAssertion(credentialId, rpId, prfSaltB64) {
     return null;
   }
 }
+// Attach a PRF wrap to an existing passkey (no remove/re-add needed), so it can
+// unlock notes without the password. Requires an unlocked session (master key
+// is in memory) and a PRF-capable authenticator.
+async function enablePasswordlessPasskey(credIdB64, prfSaltB64, btn) {
+  const errEl = document.getElementById('passkey-error');
+  try {
+    if (!e2ee.masterKey) throw new Error('Unlock your notes first (log in with your password), then retry.');
+    if (!prfSaltB64) throw new Error('Passwordless is not available for this account.');
+    if (btn) btn.disabled = true;
+    const prfSecret = await prfSecretViaAssertion(b64urlToBuf(credIdB64), undefined, prfSaltB64);
+    if (!prfSecret) throw new Error('This passkey or browser does not support passwordless (PRF).');
+    const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
+    const prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
+    const r = await apiFetch('/api/passkey/prf-wrap', { method: 'POST', body: JSON.stringify({ id: credIdB64, prfWrap }) });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'Could not enable passwordless.');
+    }
+    if (errEl) errEl.hidden = true;
+    showToast('Passwordless unlock enabled for this passkey');
+    await refreshPasskeys();
+  } catch (error) {
+    if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
+      if (errEl) errEl.hidden = true;
+    } else if (errEl) {
+      errEl.textContent = error.message || 'Could not enable passwordless.';
+      errEl.hidden = false;
+    }
+    if (btn) btn.disabled = false;
+  }
+}
 async function refreshPasskeys() {
   const listEl = document.getElementById('passkey-list');
   const errEl = document.getElementById('passkey-error');
@@ -9310,6 +9342,7 @@ async function refreshPasskeys() {
     if (!r.ok) throw new Error();
     const data = await r.json();
     const keys = (data && data.keys) || [];
+    const prfSalt = (data && data.prfSalt) || null;
     if (listEl) {
       listEl.innerHTML = '';
       if (!keys.length) listEl.textContent = 'No passkeys yet.';
@@ -9317,7 +9350,15 @@ async function refreshPasskeys() {
         const row = document.createElement('div');
         // passwordless flag tells whether THIS key unlocks notes alone or
         // still needs the password afterwards.
-        row.textContent = `${String(k.id).slice(0, 16)}… (added ${new Date((k.created_at || 0) * 1000).toLocaleDateString()} · ${k.passwordless ? 'no password needed' : 'password still needed — remove and re-add to enable passwordless'}) `;
+        row.textContent = `${String(k.id).slice(0, 16)}… (added ${new Date((k.created_at || 0) * 1000).toLocaleDateString()} · ${k.passwordless ? 'no password needed' : 'password still needed'}) `;
+        if (!k.passwordless) {
+          const enable = document.createElement('button');
+          enable.textContent = 'Enable passwordless';
+          enable.className = 'btn btn-secondary';
+          enable.addEventListener('click', () => enablePasswordlessPasskey(k.id, prfSalt, enable));
+          row.appendChild(enable);
+          row.appendChild(document.createTextNode(' '));
+        }
         const del = document.createElement('button');
         del.textContent = 'Remove';
         del.className = 'btn btn-secondary';
