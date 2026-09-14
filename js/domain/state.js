@@ -25,6 +25,8 @@ export const state = {
   collabPresenceLocalTimer: null,
   collabTypingTimer: null,
   pendingSharedTemplate: null,
+  // Lazy import of Yjs from the local vendor bundle (collab sync).
+  yjsPromise: null,
   // Resolve fn of the open prompt modal (js/ui/modal.js); null when closed.
   askInputPending: null,
 };

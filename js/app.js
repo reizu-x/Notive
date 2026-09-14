@@ -27,6 +27,7 @@ import { highlightJson, yamlCommentAt, highlightYamlValue, highlightYaml, beauti
 import { NOTE_EXTS, COVER_ACCEPT, COVER_MAX_CHARS, MIGRATED_COLLECTIONS_SECTION_ID, normalizeExt, isImageFile, parseRecipeBody, migrateNote, sanitizeIngredients, sanitizeSteps, cleanCoverSrc, sanitizeFilename, parseTitleExtension, EXT_LABELS, EXT_MIME, COVER_MAX_DIM } from './core/schema.js';
 import { THEMES, THEME_META_COLORS, THEME_LABELS, FONTS } from './ui/theme.js';
 import { showToast, askInput } from './ui/modal.js';
+import { sharingFingerprint, sharingPinsLoad, sharingPinsSave, wrapSigMessage, signWrap, verifyWrap, sharingSignerPublicKey, sharingUnwrapAccountKey, sharingWrapAccountKey, sharingRecipientPublicKey, wrapRawKeyFor, unwrapRawKey, unwrapMyKey, collabGroupKey, collabKeyFor, collabEncrypt, collabDecrypt, collabEncryptMeta, collabDecryptMeta, collabEncryptGroupMeta, collabDecryptGroupMeta, commonPrefixLen, commonSuffixLen, applyTextDiff, bufToB64url, b64urlToBuf, sha256Hex } from './data/collab-crypto.js';
 import { validVaultBlob, cleanVaultFolders, timingSafeEqualStr, vaultEncryptNote, vaultDecryptItem, decryptAllVaultBlobs, currentVaultBlobs, uniqueVaultTitle, cleanVaultFolderInput } from './data/vault.js';
 import { state } from './domain/state.js';
 import { noteList, listEmpty, listHeading, titleInput, markdownInput, preview, breadcrumbTitle, wordCount, tagList, saveLabel, typeBadge, editorToolbar, allCount, recentCountEl, starredCountEl, totalCount, importInput, modeLabel, modeToggle, beautifyBtn, tabBarEl, tabOverflowMenuEl, stripBoxEl, stripBackEl, syntaxLayer, recipeBodyEl, foldToggle, importNotesBtn, panelResizer, notesPanel, sidebar, sidebarToggle, workspaceToggle, settingsOverlay, tabLogin, tabRegister, registerForm, passkeyLoginBtn, changeBtn, mfaSetupBtn, closeMfaQrBtn, mfaQrOverlay, mfaConfirmBtn, mfaDisableBtn, passkeyAddBtn, accountSaveBtn, accountDeleteBtn, accountSaveNameBtn, profileOverlay, profileCardEl, closeProfileBtn, profileEditBtn, profilePhotoBtn, profilePhotoRemove, avatarInputEl, acctRecBtn, acctRecDownloadBtn, acctRecDoneBtn, acctRecViewBtn, recoverLink, recoverBack, closeRecoverModalBtn, recoverModalOverlay, recoverOptEmail, recoverOptCode, recoverEmailBtn, recoverVerifyBtn, recoverBtn, settingsNewTagBtn, deviceOnlyBox, themeSelect, fontSelect, loginThemeToggle, loginThemeMenu, recoverTokenBtn } from './core/elements.js';
@@ -4699,22 +4700,6 @@ function sharingEnsureKeys() {
   sharingKeyPromise = sharingEnsureKeysOnce().finally(() => { sharingKeyPromise = null; });
   return sharingKeyPromise;
 }
-async function sharingUnwrapAccountKey(encPrivB64, kind) {
-  const wrapped = e2eeB64ToBytes(encPrivB64);
-  const priv = await window.crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: wrapped.slice(0, 12) }, e2ee.masterKey, wrapped.slice(12));
-  if (kind === 'ECDSA') {
-    return window.crypto.subtle.importKey('pkcs8', priv, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
-  }
-  return window.crypto.subtle.importKey('pkcs8', priv, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
-}
-async function sharingWrapAccountKey(pkcs8) {
-  const iv = e2eeRandomBytes(12);
-  const ct = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, e2ee.masterKey, pkcs8));
-  const out = new Uint8Array(iv.length + ct.length);
-  out.set(iv); out.set(ct, iv.length);
-  return e2eeBytesToB64(out);
-}
 async function sharingGenerateKeys() {
   try {
     const ecdh = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
@@ -4779,158 +4764,23 @@ async function sharingEnsureKeysOnce() {
 // can detect a server that substitutes a wrap it controls. ------------------------------------------------------------------
 let sharingPinsLoaded = false;
 const sharingPins = new Map(); // signer username -> signing-key fingerprint
-function sharingPinsLoad() {
-  if (sharingPinsLoaded) return;
-  sharingPinsLoaded = true;
-  try {
-    const obj = JSON.parse(localStorage.getItem('notely-keypins') || '{}');
-    Object.keys(obj).forEach((k) => sharingPins.set(k, String(obj[k])));
-  } catch (error) {}
-}
-function sharingPinsSave() {
-  try { localStorage.setItem('notely-keypins', JSON.stringify(Object.fromEntries(sharingPins))); } catch (error) {}
-}
-async function sharingFingerprint(pubRawBytes) {
-  const digest = new Uint8Array(await window.crypto.subtle.digest('SHA-256', pubRawBytes));
-  return [...digest.slice(0, 16)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-function wrapSigMessage(groupId, recipient, keyVersion, w) {
-  return `notely-wrap-v1|${groupId || ''}|${recipient}|${Number(keyVersion) || 1}|${w.wrappedKey}|${w.ephPub}|${w.wrapIv}`;
-}
-async function signWrap(groupId, recipient, keyVersion, w) {
-  if (!state.sharing.signingKey) return '';
-  const data = new TextEncoder().encode(wrapSigMessage(groupId, recipient, keyVersion, w));
-  const sig = new Uint8Array(await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, state.sharing.signingKey, data));
-  return e2eeBytesToB64(sig);
-}
-async function sharingSignerPublicKey(signer) {
-  const res = await apiFetch(`/api/keys/lookup?username=${encodeURIComponent(signer)}`);
-  if (!res.ok) throw new Error('Could not load the sender\'s signing key.');
-  const data = await res.json();
-  if (!data.sigPubkey) throw new Error(`${signer} has no signing key published.`);
-  const raw = e2eeB64ToBytes(data.sigPubkey);
-  const fp = await sharingFingerprint(raw);
-  sharingPinsLoad();
-  const pinned = sharingPins.get(signer);
-  if (pinned && pinned !== fp) {
-    throw new Error(`Signing key for ${signer} changed (${pinned} → ${fp}). Refusing to trust it.`);
-  }
-  if (!pinned) { sharingPins.set(signer, fp); sharingPinsSave(); }
-  return window.crypto.subtle.importKey('raw', raw, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
-}
 // Throws if a wrap we did not make fails verification (legacy unsigned wraps are
 // allowed through so existing sections keep working).
-async function verifyWrap(groupId, recipient, keyVersion, w) {
-  if (!w || !w.sig || !w.signer) return;
-  if (w.signer === recipient) return; // our own wrap
-  const pub = await sharingSignerPublicKey(w.signer);
-  const data = new TextEncoder().encode(wrapSigMessage(groupId, recipient, keyVersion, w));
-  const ok = await window.crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pub, e2eeB64ToBytes(w.sig), data);
-  if (!ok) throw new Error(`The section key from ${w.signer} failed verification.`);
-}
-async function unwrapMyKey(myKey, groupId, recipient, keyVersion) {
-  await verifyWrap(groupId, recipient, keyVersion, myKey);
-  return unwrapRawKey(myKey.wrappedKey, myKey.ephPub, myKey.wrapIv);
-}
 
-async function sharingRecipientPublicKey(username) {
-  const res = await apiFetch(`/api/keys/lookup?username=${encodeURIComponent(username)}`);
-  if (!res.ok) {
-    let message = 'Could not find a sharing key for that account.';
-    try { const data = await res.json(); if (data && data.error) message = data.error; } catch (error) {}
-    throw new Error(message);
-  }
-  const data = await res.json();
-  return window.crypto.subtle.importKey('raw', e2eeB64ToBytes(data.pubkey),
-    { name: 'ECDH', namedCurve: 'P-256' }, false, []);
-}
 
 // ---- Live collaborative notes (E2EE via Yjs) ------------------------------
 // Shared sections: a group has a random key wrapped to each member. Notes live
 // under the group; any note added there is automatically shared with everyone
 // in the group. Edits are Yjs CRDT updates encrypted with the group key and
 // relayed over a WebSocket. The server only relays ciphertext.
-let yjsPromise = null;
 function loadYjs() {
-  if (!yjsPromise) yjsPromise = import('/vendor/yjs/yjs.mjs');
+  if (!state.yjsPromise) state.yjsPromise = import('/vendor/yjs/yjs.mjs');
   return yjsPromise;
 }
 
-async function wrapRawKeyFor(recipientPub, rawKey) {
-  const eph = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
-  const shared = await window.crypto.subtle.deriveKey(
-    { name: 'ECDH', public: recipientPub }, eph.privateKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
-  const wrapIv = e2eeRandomBytes(12);
-  const wrapped = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv: wrapIv }, shared, rawKey));
-  const ephPub = new Uint8Array(await window.crypto.subtle.exportKey('raw', eph.publicKey));
-  return { wrappedKey: e2eeBytesToB64(wrapped), ephPub: e2eeBytesToB64(ephPub), wrapIv: e2eeBytesToB64(wrapIv) };
-}
-async function unwrapRawKey(wrappedB64, ephPubB64, wrapIvB64) {
-  if (!state.sharing.privateKey) throw new Error('locked');
-  const ephPub = await window.crypto.subtle.importKey('raw', e2eeB64ToBytes(ephPubB64),
-    { name: 'ECDH', namedCurve: 'P-256' }, false, []);
-  const shared = await window.crypto.subtle.deriveKey(
-    { name: 'ECDH', public: ephPub }, state.sharing.privateKey, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-  return new Uint8Array(await window.crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: e2eeB64ToBytes(wrapIvB64) }, shared, e2eeB64ToBytes(wrappedB64)));
-}
-async function collabEncrypt(keyRaw, bytes) {
-  const key = await window.crypto.subtle.importKey('raw', keyRaw, { name: 'AES-GCM' }, false, ['encrypt']);
-  const iv = e2eeRandomBytes(12);
-  const ct = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes));
-  const packed = new Uint8Array(iv.length + ct.length);
-  packed.set(iv); packed.set(ct, iv.length);
-  return e2eeBytesToB64(packed);
-}
-async function collabDecrypt(keyRaw, packedB64) {
-  const key = await window.crypto.subtle.importKey('raw', keyRaw, { name: 'AES-GCM' }, false, ['decrypt']);
-  const packed = e2eeB64ToBytes(packedB64);
-  return new Uint8Array(await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: packed.slice(0, 12) }, key, packed.slice(12)));
-}
 // Note "meta" (title + folder) is encrypted under the group key so the server
 // still sees nothing. It powers the Shared inbox list without loading the doc.
-async function collabEncryptMeta(keyRaw, meta) {
-  return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({
-    t: meta.title || '', f: meta.folder || '', tp: meta.template || '',
-    tg: Array.isArray(meta.tags) ? meta.tags.filter((x) => typeof x === 'string').slice(0, 20) : [],
-  })));
-}
-async function collabDecryptMeta(keyRaw, encB64) {
-  if (!encB64) return { title: '', folder: '', template: '', tags: [] };
-  try {
-    const obj = JSON.parse(new TextDecoder().decode(await collabDecrypt(keyRaw, encB64)));
-    return {
-      title: typeof obj.t === 'string' ? obj.t : '',
-      folder: typeof obj.f === 'string' ? obj.f : '',
-      template: typeof obj.tp === 'string' ? obj.tp : '',
-      tags: Array.isArray(obj.tg) ? obj.tg.filter((x) => typeof x === 'string').slice(0, 20) : []
-    };
-  } catch (error) { return { title: '', folder: '', template: '', tags: [] }; }
-}
-async function collabEncryptGroupMeta(keyRaw, folders, tags) {
-  return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({
-    folders: Array.isArray(folders) ? folders : [],
-    tags: Array.isArray(tags) ? tags.filter((x) => typeof x === 'string').slice(0, 100) : [],
-  })));
-}
-async function collabDecryptGroupMeta(keyRaw, encB64) {
-  if (!encB64) return { folders: [], tags: [] };
-  try {
-    const obj = JSON.parse(new TextDecoder().decode(await collabDecrypt(keyRaw, encB64)));
-    return {
-      folders: Array.isArray(obj.folders) ? obj.folders.filter((f) => typeof f === 'string') : [],
-      tags: Array.isArray(obj.tags) ? obj.tags.filter((t) => typeof t === 'string') : [],
-    };
-  } catch (error) { return { folders: [], tags: [] }; }
-}
 // Unwrap a group's key from my membership (used by the inbox + note creation).
-async function collabGroupKey(groupId) {
-  const res = await apiFetch(`/api/collab/groups/${groupId}`);
-  if (!res.ok) throw new Error('No access');
-  const g = await res.json();
-  const key = await unwrapMyKey(g.myKey, groupId, state.cachedProfile && state.cachedProfile.username, g.myKeyVersion);
-  return { key, group: g };
-}
 // Push the current title/folder (debounced) so the inbox list stays current.
 function scheduleCollabMeta() {
   if (!state.collab.noteId || !state.collab.key) return;
@@ -4958,11 +4808,6 @@ state.collab = { noteId: null, groupId: null, doc: null, title: null, body: null
 // Raw group key for a given epoch (falls back to the current key). After a
 // rotation the section's content is always fully under the current epoch, but a
 // frame posted just before the switch may still carry the previous version.
-function collabKeyFor(version) {
-  const v = Number(version);
-  if (Number.isFinite(v) && state.collab.keys.has(v)) return state.collab.keys.get(v);
-  return state.collab.key;
-}
 
 function setCollabStatus(text, offline) {
   const el = document.getElementById('collab-status');
@@ -4971,17 +4816,6 @@ function setCollabStatus(text, offline) {
   if (textEl) textEl.textContent = text;
   if (el) { el.hidden = false; el.style.color = offline ? '#c0453e' : ''; }
   if (sep) sep.hidden = false;
-}
-function commonPrefixLen(a, b) { const n = Math.min(a.length, b.length); let i = 0; while (i < n && a[i] === b[i]) i += 1; return i; }
-function commonSuffixLen(a, b, max) { let i = 0; while (i < max && a[a.length - 1 - i] === b[b.length - 1 - i]) i += 1; return i; }
-function applyTextDiff(ytext, oldStr, newStr) {
-  if (oldStr === newStr) return;
-  const p = commonPrefixLen(oldStr, newStr);
-  const suffix = commonSuffixLen(oldStr, newStr, Math.min(oldStr.length - p, newStr.length - p));
-  const delCount = oldStr.length - p - suffix;
-  const insert = newStr.slice(p, newStr.length - suffix);
-  if (delCount > 0) ytext.delete(p, delCount);
-  if (insert) ytext.insert(p, insert);
 }
 function collabSyncDom() {
   if (!state.collab.doc) return;
@@ -9165,20 +8999,6 @@ if (mfaDisableBtn) mfaDisableBtn.addEventListener('click', async () => {
   await refreshMfaStatus();
 });
 // --- Passkeys (option-1 login factor; password still unlocks E2EE notes) ---
-function bufToB64url(buf) {
-  const bytes = new Uint8Array(buf);
-  let s = '';
-  for (let i = 0; i < bytes.length; i += 1) s += String.fromCharCode(bytes[i]);
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-function b64urlToBuf(b64url) {
-  let s = String(b64url || '').replace(/-/g, '+').replace(/_/g, '/');
-  while (s.length % 4) s += '=';
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
-  return out;
-}
 // PRF passwordless unlock: KEK = SHA-256(authenticator PRF output), used to
 // wrap/unwrap the account master key. MUST match on register (wrap) and login
 // (unwrap) — both sides call this one function.
@@ -9597,10 +9417,6 @@ if (avatarInputEl) avatarInputEl.addEventListener('change', (event) => {
 });
 
 // --- Password-loss recovery codes (E2EE-safe wraps, server stores hashes only) ---
-async function sha256Hex(text) {
-  const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text)));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
 const REC_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 function newRecoveryCode() {
   const bytes = e2eeRandomBytes(20);
