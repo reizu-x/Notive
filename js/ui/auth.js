@@ -115,11 +115,6 @@ export function setAuthTab(mode) {
   if (block) block.hidden = !isRecover;
   const tabs = document.querySelector('.auth-tabs');
   if (tabs) tabs.hidden = isRecover;
-  const tabLoginEl = document.getElementById('tab-login');
-  if (tabLoginEl) {
-    tabLoginEl.classList.toggle('active', !isRegister);
-    tabLoginEl.setAttribute('aria-selected', String(!isRegister));
-  }
   const tabRegisterEl = document.getElementById('tab-register');
   if (tabRegisterEl) {
     tabRegisterEl.classList.toggle('active', isRegister);

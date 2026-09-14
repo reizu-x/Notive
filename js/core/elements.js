@@ -36,7 +36,6 @@ export const sidebar = document.getElementById('sidebar');
 export const sidebarToggle = document.getElementById('toggle-sidebar');
 export const workspaceToggle = document.getElementById('toggle-workspace');
 export const settingsOverlay = document.getElementById('settings-overlay');
-export const tabLogin = document.getElementById('tab-login');
 export const tabRegister = document.getElementById('tab-register');
 export const registerForm = document.getElementById('register-form');
 export const passkeyLoginBtn = document.getElementById('passkey-login-btn');

@@ -33,7 +33,7 @@ import { setSaveLabel, syncAgoText, viewLabel, binRemainingText, noteGlyphFor, m
 import { e2eeUnlockWithPassword, e2eeUpgradeKdf, refreshMfaStatus, passwordPolicyCheck, setAuthTab, loginFail, showLogin, hideLogin, refreshSession, fullNameOf, initialsFor, cleanAvatarSrc, AVATAR_MAX_CHARS } from './ui/auth.js';
 import { validVaultBlob, cleanVaultFolders, timingSafeEqualStr, vaultEncryptNote, vaultDecryptItem, decryptAllVaultBlobs, currentVaultBlobs, uniqueVaultTitle, cleanVaultFolderInput } from './data/vault.js';
 import { state } from './domain/state.js';
-import { noteList, listEmpty, listHeading, titleInput, markdownInput, preview, breadcrumbTitle, wordCount, tagList, saveLabel, typeBadge, editorToolbar, allCount, recentCountEl, starredCountEl, totalCount, importInput, modeLabel, modeToggle, beautifyBtn, tabBarEl, tabOverflowMenuEl, stripBoxEl, stripBackEl, syntaxLayer, recipeBodyEl, foldToggle, importNotesBtn, panelResizer, notesPanel, sidebar, sidebarToggle, workspaceToggle, settingsOverlay, tabLogin, tabRegister, registerForm, passkeyLoginBtn, changeBtn, mfaSetupBtn, closeMfaQrBtn, mfaQrOverlay, mfaConfirmBtn, mfaDisableBtn, passkeyAddBtn, accountSaveBtn, accountDeleteBtn, accountSaveNameBtn, profileOverlay, profileCardEl, closeProfileBtn, profileEditBtn, profilePhotoBtn, profilePhotoRemove, avatarInputEl, acctRecBtn, acctRecDownloadBtn, acctRecDoneBtn, acctRecViewBtn, recoverLink, recoverBack, closeRecoverModalBtn, recoverModalOverlay, recoverOptEmail, recoverOptCode, recoverEmailBtn, recoverVerifyBtn, recoverBtn, settingsNewTagBtn, deviceOnlyBox, themeSelect, fontSelect, loginThemeToggle, loginThemeMenu, recoverTokenBtn } from './core/elements.js';
+import { noteList, listEmpty, listHeading, titleInput, markdownInput, preview, breadcrumbTitle, wordCount, tagList, saveLabel, typeBadge, editorToolbar, allCount, recentCountEl, starredCountEl, totalCount, importInput, modeLabel, modeToggle, beautifyBtn, tabBarEl, tabOverflowMenuEl, stripBoxEl, stripBackEl, syntaxLayer, recipeBodyEl, foldToggle, importNotesBtn, panelResizer, notesPanel, sidebar, sidebarToggle, workspaceToggle, settingsOverlay, tabRegister, registerForm, passkeyLoginBtn, changeBtn, mfaSetupBtn, closeMfaQrBtn, mfaQrOverlay, mfaConfirmBtn, mfaDisableBtn, passkeyAddBtn, accountSaveBtn, accountDeleteBtn, accountSaveNameBtn, profileOverlay, profileCardEl, closeProfileBtn, profileEditBtn, profilePhotoBtn, profilePhotoRemove, avatarInputEl, acctRecBtn, acctRecDownloadBtn, acctRecDoneBtn, acctRecViewBtn, recoverLink, recoverBack, closeRecoverModalBtn, recoverModalOverlay, recoverOptEmail, recoverOptCode, recoverEmailBtn, recoverVerifyBtn, recoverBtn, settingsNewTagBtn, deviceOnlyBox, themeSelect, fontSelect, loginThemeToggle, loginThemeMenu, recoverTokenBtn } from './core/elements.js';
 import { newNoteId, isValidNoteId } from './core/ids.js';
 import { FOLDER_SEP, MAX_SUBFOLDER_PARENT_DEPTH, CONTROL_CHARS, splitFolderPath, folderParent, folderLeaf,
   folderDepth, folderIconForDepth, isFolderOrSub, cleanFolderPath, joinLeafRename } from './core/paths.js';
@@ -75,7 +75,7 @@ const BUILD_NOTE_OK = (() => {
   try {
     const tag = document.querySelector('meta[name="notely-build"]');
     const build = tag ? tag.getAttribute('content') : null;
-    if (build !== 'dev88') {
+    if (build !== 'dev89') {
       if (!sessionStorage.getItem('notely-build-reloaded')) {
         sessionStorage.setItem('notely-build-reloaded', '1');
         window.location.reload();
@@ -2176,7 +2176,6 @@ if (BUILD_NOTE_OK) {
 
 
 
-  if (tabLogin) tabLogin.addEventListener('click', () => setAuthTab('login'));
   if (tabRegister) tabRegister.addEventListener('click', () => {
     const onRegister = !document.getElementById('register-form').hidden;
     setAuthTab(onRegister ? 'login' : 'register');
