@@ -9,6 +9,18 @@
 // activeFilter, searchQuery.
 export const state = {
   notes: [],
+  collab: {},
+  vault: {},
+  sharing: {},
+  cachedProfile: null,
+  customSections: [],
+  deletedCustomSections: [],
+  collapsedFolders: new Set(),
+  openTabs: [],
+  currentId: null,
+  activeView: "notes",
+  activeFilter: "all",
+  searchQuery: "",
   collabCaretMirror: null,
   collabPresenceLocalTimer: null,
   collabTypingTimer: null,

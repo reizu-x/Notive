@@ -33,7 +33,6 @@ import { FOLDER_SEP, MAX_SUBFOLDER_PARENT_DEPTH, CONTROL_CHARS, splitFolderPath,
 import { isRecentNote, relativeEditedLabel } from './core/dates.js';
 
 'use strict';
-(() => {
 // Build guard: index.html carries <meta name="notely-build">. If this script
 // is older/newer than the page (stale cache mix), reload once for a matching
 // pair instead of running half-bound handlers that silently do nothing.
@@ -45,7 +44,7 @@ try {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
-      return;
+// (return removed: was IIFE-internal)
     }
   } else {
     sessionStorage.removeItem('notely-build-reloaded');
@@ -78,7 +77,7 @@ document.querySelectorAll('[data-icon]').forEach((element) => {
 
 
 // Build a safe download filename from a note title: strips path separators, control chars and dot-runs (no hidden double extensions).
-function sanitizeFilename(name, ext) {
+export function  sanitizeFilename(name, ext) {
   const base = String(name == null ? 'note' : name).trim() || 'note';
   const clean = base.replace(/[^a-zA-Z0-9-_. ]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || 'note';
   const safeExt = normalizeExt(ext);
@@ -90,8 +89,8 @@ function sanitizeFilename(name, ext) {
 // Note file types: Markdown renders + previews; txt/json/yaml are edited as
 // plain source (no preview, no Markdown toolbar).
 
-const EXT_LABELS = { md: 'MD', txt: 'TXT', json: 'JSON', yaml: 'YAML' };
-const EXT_MIME = {
+export const EXT_LABELS = { md: 'MD', txt: 'TXT', json: 'JSON', yaml: 'YAML' };
+export const EXT_MIME = {
   md: 'text/markdown', txt: 'text/plain',
   json: 'application/json', yaml: 'application/x-yaml',
 };
@@ -103,7 +102,7 @@ const EXT_MIME = {
 // every read: image MIME only, base64 payload only, hard length cap.
 
 
-const COVER_MAX_DIM = 1200;
+export const COVER_MAX_DIM = 1200;
 // Accept by MIME, falling back to the file extension (some systems report
 // generic or missing MIME types for camera/gallery files).
 
@@ -119,18 +118,18 @@ const COVER_MAX_DIM = 1200;
 // AES-GCM encrypted at rest). Nothing note-shaped is written to localStorage:
 // legacy plaintext keys are migrated once, then wiped (CWE-312 fix).
 // notes now lives on the shared state object (js/domain/state.js).
-let notesLoaded = false;
+export let notesLoaded = false;
 // Last server updated_at seen (optimistic concurrency: sent as baseVersion on
 // PUT; server rejects 409 on stale overwrites so hijacked/racing writes fail
 // instead of silently destroying newer data).
-let serverNotesVersion = 0;
+export let serverNotesVersion = 0;
 // True when the server E2EE envelope already supplied per-account UI state
 // (v2 `ui`). loadUiVault() respects it and never overwrites it with a stale
 // device-local copy from another account.
-let serverUiLoaded = false;
+export let serverUiLoaded = false;
 
 // One-time read of pre-server localStorage note keys. Returns null when absent or invalid.
-function readLegacyLocalNotes() {
+export function  readLegacyLocalNotes() {
   try {
     const raw = JSON.parse(localStorage.getItem('notely-notes') || localStorage.getItem('quietly-notes') || 'null');
     if (!Array.isArray(raw) || !raw.length) return null;
@@ -141,7 +140,7 @@ function readLegacyLocalNotes() {
 }
 
 // Delete legacy plaintext note keys after server migration (CWE-312: no plaintext notes lingering on disk).
-function wipeLegacyLocalNotes() {
+export function  wipeLegacyLocalNotes() {
   try {
     localStorage.removeItem('notely-notes');
     localStorage.removeItem('quietly-notes');
@@ -152,10 +151,10 @@ function wipeLegacyLocalNotes() {
 // General/Personal folders plus welcome notes that explain the app. Ids are
 // stable (`welcome-*`) so this runs at most once per account — any saved
 // envelope (even an empty one) means the server row exists and this never fires.
-const WELCOME_SECTION_ID = 'section-notes';
-const WELCOME_FOLDERS = ['General', 'Personal'];
+export const WELCOME_SECTION_ID = 'section-notes';
+export const WELCOME_FOLDERS = ['General', 'Personal'];
 
-function welcomeSeedNotes() {
+export function  welcomeSeedNotes() {
   const generalWelcome = `# Welcome to Notely
 
 This is your private, end-to-end encrypted notebook. Everything you write is
@@ -234,7 +233,7 @@ drafts, anything that is yours.
 
 // The sidebar section that ships with new accounts. Only applied when the
 // account has no sidebar state of its own (server or device cache).
-function welcomeSeedUi() {
+export function  welcomeSeedUi() {
   return {
     collapsed: [],
     customSections: [{ id: WELCOME_SECTION_ID, name: 'Notes', folders: [...WELCOME_FOLDERS], icon: 'book' }],
@@ -242,7 +241,7 @@ function welcomeSeedUi() {
   };
 }
 
-let syncTimer;
+export let syncTimer;
 
 // --- End-to-end encryption -------------------------------------------------
 // Note bodies/titles/tags/sections are encrypted on this device with the
@@ -294,7 +293,7 @@ let syncTimer;
 // encrypted blobs until the vault password unlocks them). Throws otherwise.
 
 // Wipe all key material from memory (logout, failed unlock). Display/session state is cleared separately.
-function e2eeLock() {
+export function  e2eeLock() {
   e2ee.masterKey = null;
   e2ee.kdf = null;
   e2ee.saltAuth = null;
@@ -302,13 +301,13 @@ function e2eeLock() {
   e2ee.iterations = 0;
 }
 // True when a session exists AND the master key is in memory (vault unlocked, notes readable).
-function isUnlocked() {
+export function  isUnlocked() {
   return Boolean(state.cachedProfile && e2ee.masterKey);
 }
 // The note the editor is bound to, whether it lives in the workspace or the
 // unlocked Vault. Editor chrome (favorite/share/type/download/preview) goes
 // through this so vault notes behave like normal ones.
-function activeEditorNote() {
+export function  activeEditorNote() {
   if (state.activeView === 'vault') {
     if (!state.vault.unlocked || !currentVaultId) return null;
     return state.vault.notes.find((item) => item.id === currentVaultId) || null;
@@ -316,12 +315,12 @@ function activeEditorNote() {
   return currentNote();
 }
 // Central lock switch: disables editor inputs and hides New/Import while logged out or locked; otherwise defers to the note deleted/archived state. Runs after every list/selection render.
-function refreshEditorLock() {
+export function  refreshEditorLock() {
   // A shared note is always editable while it is open in the standard editor.
   if (state.collab.noteId) {
     titleInput.disabled = false;
     markdownInput.disabled = false;
-    return;
+// (return removed: was IIFE-internal)
   }
   let note = null;
   let locked = !isUnlocked();
@@ -358,18 +357,18 @@ function refreshEditorLock() {
 // "This device only" mode: server sync is off and the E2EE envelope is saved
 // to a per-account encrypted localStorage slot instead. Same key-zeroing
 // rules as the UI vault — never plaintext, never shared between accounts.
-function accountScopeKey(base) {
+export function  accountScopeKey(base) {
   try {
     const name = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
     return `${base}:${name}`;
   } catch (error) { return base; }
 }
-function deviceOnlyKey() { return accountScopeKey('notely-device-only'); }
-function localNotesKey() { return accountScopeKey('notely-local-notes'); }
-function deviceOnlyPref() {
+export function  deviceOnlyKey() { return accountScopeKey('notely-device-only'); }
+export function  localNotesKey() { return accountScopeKey('notely-local-notes'); }
+export function  deviceOnlyPref() {
   try { return localStorage.getItem(deviceOnlyKey()) === '1'; } catch (error) { return false; }
 }
-function setDeviceOnlyPref(on) {
+export function  setDeviceOnlyPref(on) {
   try {
     if (on) localStorage.setItem(deviceOnlyKey(), '1');
     else localStorage.removeItem(deviceOnlyKey());
@@ -378,7 +377,7 @@ function setDeviceOnlyPref(on) {
 
 // Build the outgoing workspace envelope (notes + vault ciphertext + UI state)
 // shared by server sync and device-only saves.
-async function buildNotesEnvelope() {
+export async function  buildNotesEnvelope() {
   const envelope = { v: 2, notes: state.notes, vault: await currentVaultBlobs(), vaultFolders: [...state.vault.folders] };
   try {
     if (typeof uiSnapshot === 'function') envelope.ui = uiSnapshot();
@@ -388,16 +387,16 @@ async function buildNotesEnvelope() {
 
 // Encrypted local save in device-only mode: same E2EE payload the server
 // would get, parked in this browser's per-account slot.
-async function saveNotesToDevice() {
+export async function  saveNotesToDevice() {
   if (!e2ee.masterKey) {
     setSaveLabel('Locked', 'gray');
-    return;
+// (return removed: was IIFE-internal)
   }
   try {
     const payload = await e2eeEncryptNotes(await buildNotesEnvelope());
     try { localStorage.setItem(localNotesKey(), JSON.stringify(payload)); } catch (error) {
       setSaveLabel('Save failed', 'red');
-      return;
+// (return removed: was IIFE-internal)
     }
     setSaveLabel('Offline · saved', 'gray');
   } catch (error) {
@@ -407,7 +406,7 @@ async function saveNotesToDevice() {
 
 // Apply a decrypted {v,notes,vault,vaultFolders,ui} envelope (or legacy array)
 // to live state. Shared by the server blob path and the device-only local path.
-async function adoptNotesEnvelope(envelope) {
+export async function  adoptNotesEnvelope(envelope) {
   const list = Array.isArray(envelope) ? envelope
     : (envelope && Array.isArray(envelope.notes) ? envelope.notes : null);
   if (!list) throw new Error('bad payload');
@@ -437,7 +436,7 @@ async function adoptNotesEnvelope(envelope) {
 
 // Device-only boot: load from the encrypted local slot (onboarding workspace
 // when the device copy is missing) without touching the server either way.
-async function loadNotesFromDevice() {
+export async function  loadNotesFromDevice() {
   try {
     const raw = localStorage.getItem(localNotesKey());
     if (raw) {
@@ -445,7 +444,7 @@ async function loadNotesFromDevice() {
       await adoptNotesEnvelope(await e2eeDecryptPayload(payload));
       notesLoaded = true;
       setSaveLabel('Offline · loaded', 'gray');
-      return;
+// (return removed: was IIFE-internal)
     }
   } catch (error) {}
   state.notes = welcomeSeedNotes();
@@ -461,15 +460,15 @@ async function loadNotesFromDevice() {
 // vault is locked. The server stores the blob opaquely — UI folders/sections
 // ride along so every account keeps its own sidebar across relogs/devices.
 // Device-only mode redirects the same save into local storage instead.
-async function syncNotesToServer() {
+export async function  syncNotesToServer() {
   if (!state.cachedProfile) return;
   if (deviceOnlyPref()) {
     await saveNotesToDevice();
-    return;
+// (return removed: was IIFE-internal)
   }
   if (!e2ee.masterKey) {
     setSaveLabel('Locked', 'gray');
-    return;
+// (return removed: was IIFE-internal)
   }
   try {
     const payload = await e2eeEncryptNotes(await buildNotesEnvelope());
@@ -479,7 +478,7 @@ async function syncNotesToServer() {
       try { showToast('Notes changed on server — reloading'); } catch (error) {}
       try { await loadNotesFromServer(); } catch (error) {}
       try { renderNoteList(); } catch (error) {}
-      return;
+// (return removed: was IIFE-internal)
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     try {
@@ -494,7 +493,7 @@ async function syncNotesToServer() {
 
 // Immediate (non-debounced) upload used by logout/unload so the last edits
 // are never stranded in a cancelled timer.
-async function flushNotesToServer() {
+export async function  flushNotesToServer() {
   clearTimeout(syncTimer);
   await syncNotesToServer();
 }
@@ -503,12 +502,12 @@ async function flushNotesToServer() {
 // The envelope is a bare array (very old), {v:1, notes, vault} (E2EE notes
 // only) or {v:2, notes, vault, ui} (notes + per-account sidebar state). When
 // the server carries UI state it wins over any device-local copy.
-async function loadNotesFromServer() {
+export async function  loadNotesFromServer() {
   // Cloud opt-out: decrypt-and-go from the local slot; the server is never
   // contacted in this mode (no GET, no background PUT).
   if (deviceOnlyPref()) {
     await loadNotesFromDevice();
-    return;
+// (return removed: was IIFE-internal)
   }
   try {
     const response = await apiFetch('/api/notes');
@@ -549,14 +548,14 @@ async function loadNotesFromServer() {
   }
 }
 
-const BIN_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
+export const BIN_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 // Default folders carried over from the removed built-in Collections section.
 // New custom sections share the same folder palette/behavior (same value).
-const DEFAULT_CUSTOM_FOLDERS = ['Work', 'Personal', 'Reading list'];
-const FOLDER_COLORS = ['coral', 'yellow', 'blue', 'mint', 'violet', 'rose'];
-const COLLECTION_COLORS = FOLDER_COLORS;
-const COLLAPSED_FOLDERS_KEY = 'notely-tree-collapsed';
-const SECTION_DATA_KEY = 'notely-section-data';
+export const DEFAULT_CUSTOM_FOLDERS = ['Work', 'Personal', 'Reading list'];
+export const FOLDER_COLORS = ['coral', 'yellow', 'blue', 'mint', 'violet', 'rose'];
+export const COLLECTION_COLORS = FOLDER_COLORS;
+export const COLLAPSED_FOLDERS_KEY = 'notely-tree-collapsed';
+export const SECTION_DATA_KEY = 'notely-section-data';
 // Built-in Collections section removed: all sections are custom sections.
 // The former Collections folders/notes migrate into MIGRATED_COLLECTIONS_SECTION_ID.
 
@@ -565,13 +564,13 @@ const SECTION_DATA_KEY = 'notely-section-data';
 // envelope (`ui` field, v2) so every account keeps its own sidebar across
 // relogs and devices. A per-account encrypted localStorage copy is only a
 // fast offline cache — never plaintext, never shared between accounts.
-const UI_VAULT_KEY = 'notely-ui-vault';
+export const UI_VAULT_KEY = 'notely-ui-vault';
 
 // Locked-boot defaults: folder names stay unreadable until the vault unlocks.
 state.collapsedFolders = new Set();
 // User-created tags that may not be attached to any note yet (Settings → Tags).
-let knownTags = [];
-function cleanTagList(value) {
+export let knownTags = [];
+export function  cleanTagList(value) {
   if (!Array.isArray(value)) return [];
   const seen = new Set();
   const out = [];
@@ -591,11 +590,11 @@ state.customSections = [];
 // Custom sections moved to Bin: [{ id, name, folders, deletedAt }]. Binned
 // notes keep their section tags, so restoring a note revives its section.
 state.deletedCustomSections = [];
-let uiVaultTimer = null;
+export let uiVaultTimer = null;
 
 // Device-local cache key, namespaced per account so two logins on one device
 // can never decrypt (or overwrite) each other's sidebar.
-function uiVaultKey() {
+export function  uiVaultKey() {
   try {
     const name = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
     if (name) return `${UI_VAULT_KEY}:${name}`;
@@ -604,7 +603,7 @@ function uiVaultKey() {
 }
 
 // Plain-object snapshot of the whole sidebar state for the server envelope.
-function uiSnapshot() {
+export function  uiSnapshot() {
   let theme = 'light';
   try {
     const current = document.documentElement.dataset.theme
@@ -626,7 +625,7 @@ function uiSnapshot() {
 
 // Validate + normalize a UI snapshot from the server (never throws). Returns
 // the cleaned object or null when unusable.
-function cleanUiSnapshot(value) {
+export function  cleanUiSnapshot(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const out = {};
   out.collapsed = Array.isArray(value.collapsed)
@@ -673,7 +672,7 @@ function cleanUiSnapshot(value) {
 }
 
 // Apply a server/UI-vault snapshot to memory. Returns true when anything was adopted.
-function applyUiSnapshot(value) {
+export function  applyUiSnapshot(value) {
   const clean = cleanUiSnapshot(value);
   if (!clean) return false;
   let adopted = false;
@@ -703,7 +702,7 @@ function applyUiSnapshot(value) {
 
 // Immediate encrypted write of the per-account local cache. Used by the
 // debounced persistUiVault() and by the logout/pagehide flush path.
-async function writeUiVaultLocal() {
+export async function  writeUiVaultLocal() {
   if (!e2ee.masterKey) return; // locked: never write (and never plaintext)
   let theme = 'light';
   try {
@@ -743,7 +742,7 @@ async function writeUiVaultLocal() {
   } catch (error) {}
 }
 
-function persistUiVault() {
+export function  persistUiVault() {
   clearTimeout(uiVaultTimer);
   uiVaultTimer = setTimeout(() => {
     (async () => {
@@ -758,17 +757,17 @@ function persistUiVault() {
 
 // Section icon picker set (order shown in the picker). First entry is the
 // default for sections without a chosen icon.
-const SECTION_ICONS = ['layers', 'folder', 'book', 'briefcase', 'tag', 'bookmark',
+export const SECTION_ICONS = ['layers', 'folder', 'book', 'briefcase', 'tag', 'bookmark',
   'star', 'flag', 'bulb', 'flask', 'leaf', 'code', 'globe', 'calendar', 'palette',
   'rocket', 'home', 'heart', 'hash', 'archive'];
 
 // Resolve a section's icon, falling back to the default when unset/invalid.
-function sectionIconName(section) {
+export function  sectionIconName(section) {
   const name = section && typeof section.icon === 'string' ? section.icon : '';
   return SECTION_ICONS.includes(name) ? name : SECTION_ICONS[0];
 }
 
-function cleanCustomSections(value) {
+export function  cleanCustomSections(value) {
   if (!Array.isArray(value)) return null;
   const out = [];
   value.slice(0, 20).forEach((entry) => {
@@ -786,7 +785,7 @@ function cleanCustomSections(value) {
 
 // Ensure the migrated former-Collections custom section exists and carries
 // the same folders/value. All new sections share this implementation.
-function ensureMigratedCollectionsSection(legacyFolders, legacyName) {
+export function  ensureMigratedCollectionsSection(legacyFolders, legacyName) {
   const folders = Array.isArray(legacyFolders)
     ? legacyFolders.filter((name) => typeof name === 'string' && name.trim()).map((name) => name.trim().slice(0, 180)).slice(0, 200)
     : [];
@@ -834,7 +833,7 @@ function ensureMigratedCollectionsSection(legacyFolders, legacyName) {
   return section;
 }
 
-function readLegacyUiKeys() {
+export function  readLegacyUiKeys() {
   const out = { cols: null, colsName: null, collapsed: null, sections: null };
   try {
     const storedSections = JSON.parse(localStorage.getItem(SECTION_DATA_KEY) || 'null');
@@ -865,14 +864,14 @@ function readLegacyUiKeys() {
   return out;
 }
 
-async function decryptUiVaultRaw(raw) {
+export async function  decryptUiVaultRaw(raw) {
   const obj = JSON.parse(raw);
   const plain = await window.crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: e2eeB64ToBytes(obj.iv) }, e2ee.masterKey, e2eeB64ToBytes(obj.data));
   return JSON.parse(new TextDecoder().decode(plain));
 }
 
-async function loadUiVault() {
+export async function  loadUiVault() {
   // Server envelope (v2) already won: keep it, just refresh the per-account
   // local cache. Never let a stale device copy from another account clobber it.
   if (serverUiLoaded) {
@@ -927,11 +926,11 @@ async function loadUiVault() {
   return adopted;
 }
 // Persist binned custom-section records {id, name, folders, deletedAt}.
-function persistDeletedCustomSections() {
+export function  persistDeletedCustomSections() {
   persistUiVault();
 }
 // Drop section Bin records with no binned notes left (or past retention).
-function pruneDeletedCustomSections() {
+export function  pruneDeletedCustomSections() {
   const now = Date.now();
   const before = (state.deletedCustomSections || []).length;
   state.deletedCustomSections = (state.deletedCustomSections || []).filter((entry) => (
@@ -942,7 +941,7 @@ function pruneDeletedCustomSections() {
   if (state.deletedCustomSections.length !== before) persistDeletedCustomSections();
 }
 // Permanently drop notes/sections past the 3-day retention; repairs tampered timestamps; drops section entries with no binned notes left.
-function purgeExpiredBin() {
+export function  purgeExpiredBin() {
   const now = Date.now();
   let changed = false;
   state.notes.forEach((note) => {
@@ -973,17 +972,17 @@ purgeExpiredBin();
 state.currentId = null;
 state.activeView = 'notes';
 state.activeFilter = 'all';
-let activeCustom = null; // { section: id, folder: path | null } | null — section/folder filter
+export let activeCustom = null; // { section: id, folder: path | null } | null — section/folder filter
 state.searchQuery = '';
-let saveTimer;
+export let saveTimer;
 // Persist collapsed tree-folder state into the encrypted UI vault.
-function persistCollapsedFolders() {
+export function  persistCollapsedFolders() {
   persistUiVault();
 }
 // ---- Sidebar sections & Bin: folder CRUD, sidebar render, sync with note data ----
 
 // Rewrite exact + descendant paths in a folder list (sidebar, collapsed keys).
-function repathList(list, oldPath, newPath) {
+export function  repathList(list, oldPath, newPath) {
   const prefix = `${oldPath}${FOLDER_SEP}`;
   return list.map((entry) => {
     if (entry === oldPath) return newPath;
@@ -995,7 +994,7 @@ function repathList(list, oldPath, newPath) {
 // Revive binned custom sections a (newly live) note belongs to, so it has
 // a home. Custom folders inside live sections are re-adopted by the
 // sidebar sync that callers run afterwards.
-function reviveSectionsForNote(note) {
+export function  reviveSectionsForNote(note) {
   if (!note || !note.sections || typeof note.sections !== 'object') return false;
   let revived = false;
   Object.keys(note.sections).forEach((sectionId) => {
@@ -1022,7 +1021,7 @@ function reviveSectionsForNote(note) {
 // Erase a binned folder and all its binned notes at once; repairs the current selection.
 // Find a sidebar row by exact dataset value (avoids CSS-escaping pitfalls of quoted selectors).
 // Find an All-Notes folder group by exact dataset value (avoids CSS-escaping pitfalls).
-function findTreeWrap(folder) {
+export function  findTreeWrap(folder) {
   return [...noteList.querySelectorAll('[data-folder-wrap]')].find((wrap) => wrap.dataset.folderWrap === folder) || null;
 }
 
@@ -1034,7 +1033,7 @@ function findTreeWrap(folder) {
 // Delete every folder in a built-in section and hide the section header;
 // notes keep everything else. Restore via Settings → Side Menu.
 // (Custom sections have deleteCustomSection; single folders use their own confirms.)
-function bindSectionHeaderEvents() {
+export function  bindSectionHeaderEvents() {
   const sidebar = document.getElementById('sidebar');
   if (!sidebar) return;
   sidebar.addEventListener('click', (event) => {
@@ -1071,7 +1070,7 @@ function bindSectionHeaderEvents() {
 }
 
 // Render user-built sections: header (editable name, add/delete) + folders.
-function renderCustomSections() {
+export function  renderCustomSections() {
   const container = document.getElementById('custom-sections');
   if (!container) return;
   container.innerHTML = state.customSections.map((section) => `
@@ -1096,7 +1095,7 @@ function renderCustomSections() {
   updateSectionHeaders();
 }
 
-function customFolderColor(section, name) {
+export function  customFolderColor(section, name) {
   // Same value as removed Collections had: fixed brand colors for defaults.
   const known = { Work: 'coral', Personal: 'yellow', 'Reading list': 'blue' };
   if (known[name]) return known[name];
@@ -1108,7 +1107,7 @@ function customFolderColor(section, name) {
 }
 
 // Paint section headers (all sections share the same custom implementation).
-function updateSectionHeaders() {
+export function  updateSectionHeaders() {
   document.querySelectorAll('#custom-sections .sidebar-section').forEach((wrap) => {
     const id = wrap.dataset.customSection;
     wrap.classList.toggle('active-section', Boolean(activeCustom && !activeCustom.folder && activeCustom.section === id));
@@ -1118,7 +1117,7 @@ function updateSectionHeaders() {
 
 // A sidebar section header filters the list — pointless when the section
 // holds nothing, so empty sections are unclickable (rename still works).
-function isSectionEmpty(kind, id) {
+export function  isSectionEmpty(kind, id) {
   const sectionId = kind === 'custom' ? id : kind;
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (section) return !section.folders.length;
@@ -1126,7 +1125,7 @@ function isSectionEmpty(kind, id) {
 }
 
 // All taken section display names (lowercased), optionally skipping one entry.
-function takenSectionNames(exceptId) {
+export function  takenSectionNames(exceptId) {
   const names = [];
   state.customSections.forEach((section) => {
     if (!(exceptId && exceptId === section.id)) names.push(section.name);
@@ -1134,20 +1133,20 @@ function takenSectionNames(exceptId) {
   return names.map((name) => name.toLowerCase());
 }
 
-function uniqueSectionName() {
+export function  uniqueSectionName() {
   const taken = new Set(takenSectionNames(null));
   let counter = 1;
   while (taken.has(`section ${counter}`)) counter += 1;
   return `Section ${counter}`;
 }
 
-function uniqueSectionId() {
+export function  uniqueSectionId() {
   let id = `section-${Date.now()}`;
   while (state.customSections.some((section) => section.id === id)) id += '-x';
   return id;
 }
 
-function addCustomSection() {
+export function  addCustomSection() {
   if (!e2ee.masterKey) { showToast('Log in to manage sections'); return; }
   const section = { id: uniqueSectionId(), name: uniqueSectionName(), folders: [], icon: SECTION_ICONS[0] };
   state.customSections.push(section);
@@ -1166,7 +1165,7 @@ function addCustomSection() {
 }
 
 // Inline rename for a section header (built-in or custom); Enter commits.
-function startSectionRename(target, anchorEl) {
+export function  startSectionRename(target, anchorEl) {
   // Workspace-anchored rename (pencil/dblclick in the note list): edit inline
   // in the list header where clicked — never in the slide menu.
   if (anchorEl && anchorEl.isConnected && anchorEl.closest('#note-list')) {
@@ -1198,7 +1197,7 @@ function startSectionRename(target, anchorEl) {
       };
       input.onclick = (event) => event.stopPropagation();
       input.onblur = () => finish(true);
-      return;
+// (return removed: was IIFE-internal)
     }
     if (head) {
       const pending = head.querySelector('.section-rename-input');
@@ -1246,7 +1245,7 @@ function startSectionRename(target, anchorEl) {
 }
 
 // Validate and apply a section display-name edit (all sections share the same implementation).
-function renameSectionDisplay(id, rawNewName) {
+export function  renameSectionDisplay(id, rawNewName) {
   const newName = String(rawNewName == null ? '' : rawNewName).replace(/[\x00-\x1F<>"]/g, '').trim().replace(/\s+/g, ' ').slice(0, 40);
   if (!newName) { renderCustomSections(); renderNoteList(); return false; }
   const section = state.customSections.find((entry) => entry.id === id);
@@ -1270,7 +1269,7 @@ function renameSectionDisplay(id, rawNewName) {
 // Delete a custom section: the section is removed from the sidebar, stashed
 // in Bin, and every live note inside moves to Bin for 3 days (section tags
 // are kept, so restoring a note revives its section).
-function deleteCustomSection(id) {
+export function  deleteCustomSection(id) {
   const index = state.customSections.findIndex((entry) => entry.id === id);
   if (index === -1) return;
   const removed = state.customSections[index];
@@ -1317,7 +1316,7 @@ function deleteCustomSection(id) {
 }
 
 // De-duplicate a folder name inside one custom section.
-function uniqueCustomFolderName(sectionId, base) {
+export function  uniqueCustomFolderName(sectionId, base) {
   const section = state.customSections.find((entry) => entry.id === sectionId);
   const taken = new Set((section ? section.folders : []).map((name) => name.toLowerCase()));
   const cleanBase = String(base == null ? 'New folder' : base).trim() || 'New folder';
@@ -1327,12 +1326,12 @@ function uniqueCustomFolderName(sectionId, base) {
   return `${cleanBase} ${counter}`;
 }
 
-function findCustomItem(sectionId, folder) {
+export function  findCustomItem(sectionId, folder) {
   return [...document.querySelectorAll('#custom-sections .collection-item')]
     .find((item) => item.dataset.csection === sectionId && item.dataset.cfolder === folder) || null;
 }
 
-function addCustomFolder(sectionId) {
+export function  addCustomFolder(sectionId) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (!section) return;
@@ -1345,7 +1344,7 @@ function addCustomFolder(sectionId) {
       if (/[/\\]/.test(leaf)) { showToast('Use a plain name without slashes'); return; }
       if (section.folders.some((entry) => entry.toLowerCase() === leaf.toLowerCase())) {
         showToast('A folder with that name already exists');
-        return;
+// (return removed: was IIFE-internal)
       }
       section.folders.push(leaf);
       persistCustomSections();
@@ -1360,7 +1359,7 @@ function addCustomFolder(sectionId) {
       renderNoteList();
       showToast('Folder added');
     });
-    return;
+// (return removed: was IIFE-internal)
   }
   const name = uniqueCustomFolderName(sectionId, 'New folder');
   section.folders.push(name);
@@ -1381,7 +1380,7 @@ function addCustomFolder(sectionId) {
 // Add a folder to one section from its All-Notes header (folder-plus beside
 // the edit pencil). Keeps the current view. When the slide menu is collapsed
 // the inline rename row is hidden, so the name is asked in a popup instead.
-function addFolderToSection(sectionId) {
+export function  addFolderToSection(sectionId) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (!section) return;
@@ -1393,7 +1392,7 @@ function addFolderToSection(sectionId) {
     if (/[/\\]/.test(clean)) { showToast('Use a plain name without slashes'); return; }
     if (section.folders.some((entry) => entry.toLowerCase() === clean.toLowerCase())) {
       showToast('A folder with that name already exists');
-      return;
+// (return removed: was IIFE-internal)
     }
     section.folders.push(clean);
     persistCustomSections();
@@ -1405,7 +1404,7 @@ function addFolderToSection(sectionId) {
     askInput({ eyebrow: 'New folder', title: 'Name the folder', desc: `In ${section.name}`, label: 'Folder name', password: false, placeholder: 'e.g. Projects', okText: 'Create' }).then((value) => {
       if (value != null) commit(value);
     });
-    return;
+// (return removed: was IIFE-internal)
   }
   const name = uniqueCustomFolderName(sectionId, 'New folder');
   section.folders.push(name);
@@ -1417,7 +1416,7 @@ function addFolderToSection(sectionId) {
 }
 
 // Inline rename for a custom-section folder row.
-function startCustomFolderRename(sectionId, folder) {
+export function  startCustomFolderRename(sectionId, folder) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
   renderCustomSections();
   const item = findCustomItem(sectionId, folder);
@@ -1451,7 +1450,7 @@ function startCustomFolderRename(sectionId, folder) {
 }
 
 // Validate and rename a custom folder on the section and matching notes.
-function renameCustomFolder(sectionId, oldName, rawNewName, opts) {
+export function  renameCustomFolder(sectionId, oldName, rawNewName, opts) {
   const newName = cleanFolderPath(rawNewName);
   if (!newName) { renderCustomSections(); renderNoteList(); return false; }
   if (newName === oldName) { renderCustomSections(); renderNoteList(); return true; }
@@ -1491,7 +1490,7 @@ function renameCustomFolder(sectionId, oldName, rawNewName, opts) {
   return true;
 }
 
-function openCustomFolderDeleteConfirm(sectionId, folder) {
+export function  openCustomFolderDeleteConfirm(sectionId, folder) {
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (!section || !section.folders.includes(folder)) return;
   const count = state.notes.filter((note) => {
@@ -1521,7 +1520,7 @@ function openCustomFolderDeleteConfirm(sectionId, folder) {
 // Delete a custom folder and its nested subfolders: the folder is removed
 // from the sidebar and every live note inside moves to Bin for 3 days (tags
 // are kept, so restoring a note revives its folder via the sidebar sync).
-function deleteCustomFolder(sectionId, folder) {
+export function  deleteCustomFolder(sectionId, folder) {
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (!section) return;
   const movedAt = Date.now();
@@ -1562,7 +1561,7 @@ function deleteCustomFolder(sectionId, folder) {
 
 // Adopt custom folders found on live notes that the sidebar does not list
 // yet (imports, older data), normalizing case onto the sidebar spelling.
-function syncCustomSections() {
+export function  syncCustomSections() {
   let notesDirty = false;
   let sectionsDirty = false;
   state.customSections.forEach((section) => {
@@ -1583,7 +1582,7 @@ function syncCustomSections() {
   if (sectionsDirty) persistCustomSections();
 }
 
-function bindCustomSectionsEvents() {
+export function  bindCustomSectionsEvents() {
   const container = document.getElementById('custom-sections');
   if (container) {
     container.addEventListener('click', (event) => {
@@ -1593,21 +1592,21 @@ function bindCustomSectionsEvents() {
         event.preventDefault();
         event.stopPropagation();
         addCustomFolder(addBtn.dataset.customAdd);
-        return;
+// (return removed: was IIFE-internal)
       }
       const delSectionBtn = event.target.closest('[data-custom-del-section]');
       if (delSectionBtn) {
         event.preventDefault();
         event.stopPropagation();
         openCustomSectionDeleteConfirm(delSectionBtn.dataset.customDelSection);
-        return;
+// (return removed: was IIFE-internal)
       }
       const renameBtn = event.target.closest('[data-cf-rename]');
       if (renameBtn) {
         event.preventDefault();
         event.stopPropagation();
         startCustomFolderRename(renameBtn.dataset.cfSection, renameBtn.dataset.cfRename);
-        return;
+// (return removed: was IIFE-internal)
       }
       const item = event.target.closest('.collection-item');
       if (item && item.dataset.cfolder) {
@@ -1625,7 +1624,7 @@ function bindCustomSectionsEvents() {
           event.preventDefault();
           startSectionRename({ kind: 'custom', id: wrap.dataset.customSection });
         }
-        return;
+// (return removed: was IIFE-internal)
       }
       const item = event.target.closest('.collection-item');
       if (item && item.dataset.cfolder) {
@@ -1641,7 +1640,7 @@ function bindCustomSectionsEvents() {
         event.stopPropagation();
         closeFolderContextMenu();
         openSectionContextMenu(headWrap.dataset.customSection, event.clientX, event.clientY);
-        return;
+// (return removed: was IIFE-internal)
       }
       const item = event.target.closest('.collection-item');
       if (!item || !item.dataset.cfolder || event.target.closest('.collection-rename-input')) return;
@@ -1658,7 +1657,7 @@ function bindCustomSectionsEvents() {
   });
 }
 
-function openCustomSectionDeleteConfirm(id) {
+export function  openCustomSectionDeleteConfirm(id) {
   const section = state.customSections.find((entry) => entry.id === id);
   if (!section) return;
   const count = state.notes.filter((note) => !note.deleted && customNoteFolder(note, id) !== null).length;
@@ -1686,15 +1685,15 @@ function openCustomSectionDeleteConfirm(id) {
 // New folder / Rename section / Delete section. Replaces the old header +
 // and × buttons. Rename/add fall back to popups while the slide menu is
 // collapsed, where the inline rows are hidden.
-let sectionMenuTarget = null; // section id
+export let sectionMenuTarget = null; // section id
 
-function closeSectionContextMenu() {
+export function  closeSectionContextMenu() {
   const menu = document.getElementById('section-context-menu');
   if (menu) menu.hidden = true;
   sectionMenuTarget = null;
 }
 
-function openSectionContextMenu(sectionId, x, y) {
+export function  openSectionContextMenu(sectionId, x, y) {
   const menu = document.getElementById('section-context-menu');
   if (!menu || !sectionId) return;
   if (!state.customSections.some((entry) => entry.id === sectionId)) return;
@@ -1708,11 +1707,11 @@ function openSectionContextMenu(sectionId, x, y) {
   if (rect.bottom > window.innerHeight - padding) menu.style.top = `${Math.max(padding, y - rect.height)}px`;
 }
 
-function slideMenuCollapsed() {
+export function  slideMenuCollapsed() {
   try { return document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) { return false; }
 }
 
-function handleSectionMenuAction(action, sectionId) {
+export function  handleSectionMenuAction(action, sectionId) {
   if (!sectionId || typeof action !== 'string') return;
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (!section) return;
@@ -1737,9 +1736,9 @@ function handleSectionMenuAction(action, sectionId) {
 // ---- Section icon picker -------------------------------------------------
 // Opens a grid of line icons; picking one stores it on the section (persisted
 // in the E2EE UI envelope) and repaints the sidebar.
-let sectionIconTarget = null;
+export let sectionIconTarget = null;
 
-function openSectionIconPicker(sectionId) {
+export function  openSectionIconPicker(sectionId) {
   const overlay = document.getElementById('section-icon-overlay');
   const grid = document.getElementById('section-icon-grid');
   const section = state.customSections.find((entry) => entry.id === sectionId);
@@ -1755,13 +1754,13 @@ function openSectionIconPicker(sectionId) {
   if (first) first.focus();
 }
 
-function closeSectionIconPicker() {
+export function  closeSectionIconPicker() {
   const overlay = document.getElementById('section-icon-overlay');
   if (overlay) overlay.hidden = true;
   sectionIconTarget = null;
 }
 
-function chooseSectionIcon(name) {
+export function  chooseSectionIcon(name) {
   const section = state.customSections.find((entry) => entry.id === sectionIconTarget);
   if (!section || !SECTION_ICONS.includes(name)) { closeSectionIconPicker(); return; }
   section.icon = name;
@@ -1772,7 +1771,7 @@ function chooseSectionIcon(name) {
   showToast(`Icon set to “${name}”`);
 }
 
-function bindSectionContextMenu() {
+export function  bindSectionContextMenu() {
   const menu = document.getElementById('section-context-menu');
   if (menu) menu.addEventListener('click', (event) => {
     const item = event.target.closest('[data-section-action]');
@@ -1793,19 +1792,19 @@ function bindSectionContextMenu() {
 // ---- Folder context menu (right-click): Open / Rename / New subfolder /
 // Delete. One shared menu for sidebar rows and All-Notes folder headers;
 // the target carries its section so folders stay separate.
-let folderMenuTarget = null; // { ns: 'custom', path, section }
+export let folderMenuTarget = null; // { ns: 'custom', path, section }
 
-function getFolderContextMenu() {
+export function  getFolderContextMenu() {
   return document.getElementById('folder-context-menu');
 }
 
-function closeFolderContextMenu() {
+export function  closeFolderContextMenu() {
   const menu = getFolderContextMenu();
   if (menu) menu.hidden = true;
   folderMenuTarget = null;
 }
 
-function openFolderContextMenu(ns, path, x, y, sectionId) {
+export function  openFolderContextMenu(ns, path, x, y, sectionId) {
   const menu = getFolderContextMenu();
   if (!menu || !path || !sectionId) return;
   folderMenuTarget = { ns: 'custom', path, section: sectionId };
@@ -1829,7 +1828,7 @@ function openFolderContextMenu(ns, path, x, y, sectionId) {
   if (rect.bottom > window.innerHeight - padding) menu.style.top = `${Math.max(padding, y - rect.height)}px`;
 }
 
-function handleFolderMenuAction(action, target) {
+export function  handleFolderMenuAction(action, target) {
   const resolved = target || folderMenuTarget;
   if (!resolved || typeof action !== 'string') return;
   const { path, section: sectionId } = resolved;
@@ -1846,7 +1845,7 @@ function handleFolderMenuAction(action, target) {
     if (folderDepth(path) >= MAX_SUBFOLDER_PARENT_DEPTH) return; // depth limit
     createSubfolder('custom', path, sectionId);
   } else if (action === 'restore') {
-    return;
+// (return removed: was IIFE-internal)
   } else if (action === 'delete') {
     openCustomFolderDeleteConfirm(sectionId, path);
   }
@@ -1855,7 +1854,7 @@ function handleFolderMenuAction(action, target) {
 // Insert a folder path directly after its parent's block (the parent plus any
 // existing descendants) so a new subfolder renders under its parent instead
 // of at the end of the list. Appends when the parent is missing.
-function insertFolderAfterParent(list, parentPath, newPath) {
+export function  insertFolderAfterParent(list, parentPath, newPath) {
   if (parentPath) {
     const prefix = `${parentPath}${FOLDER_SEP}`;
     let at = -1;
@@ -1873,12 +1872,12 @@ function insertFolderAfterParent(list, parentPath, newPath) {
 
 // Create a nested folder under a parent path and jump straight into naming
 // it. Without a parent, a top-level folder is created.
-function createSubfolder(ns, parentPath, sectionId) {
+export function  createSubfolder(ns, parentPath, sectionId) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
   // Depth limit: top-level -> sub -> sub-sub, but no deeper.
   if (folderDepth(parentPath) >= MAX_SUBFOLDER_PARENT_DEPTH) {
     showToast('Subfolders can only nest two levels deep');
-    return;
+// (return removed: was IIFE-internal)
   }
   let slideCollapsed = false;
   try { slideCollapsed = document.getElementById('sidebar').classList.contains('collapsed'); } catch (error) {}
@@ -1895,7 +1894,7 @@ function createSubfolder(ns, parentPath, sectionId) {
       const name = `${parentPath}${FOLDER_SEP}${leaf}`;
       if (section.folders.some((entry) => entry.toLowerCase() === name.toLowerCase())) {
         showToast('A folder with that name already exists');
-        return;
+// (return removed: was IIFE-internal)
       }
       insertFolderAfterParent(section.folders, parentPath, name);
       persistCustomSections();
@@ -1903,7 +1902,7 @@ function createSubfolder(ns, parentPath, sectionId) {
       renderNoteList();
       showToast('Subfolder created');
     });
-    return;
+// (return removed: was IIFE-internal)
   }
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (!section) return;
@@ -1914,10 +1913,10 @@ function createSubfolder(ns, parentPath, sectionId) {
   renderNoteList();
   showToast('Folder added — name it');
   startCustomFolderRename(sectionId, name);
-  return;
+// (return removed: was IIFE-internal)
 }
 
-function bindFolderContextMenu() {
+export function  bindFolderContextMenu() {
   const menu = getFolderContextMenu();
   if (!menu) return;
   if (noteList) noteList.addEventListener('contextmenu', (event) => {
@@ -1936,18 +1935,18 @@ function bindFolderContextMenu() {
     const shellKind = shell ? shell.dataset.listSection : null;
     if (activeCustom) {
       openFolderContextMenu('custom', wrap.dataset.folderWrap, event.clientX, event.clientY, activeCustom.section);
-      return;
+// (return removed: was IIFE-internal)
     }
     if (shellKind === 'custom') {
       const secBtn = shell.querySelector('[data-section-id]');
       const secId = secBtn ? secBtn.dataset.sectionId : null;
       if (secId) {
         openFolderContextMenu('custom', wrap.dataset.folderWrap, event.clientX, event.clientY, secId);
-        return;
+// (return removed: was IIFE-internal)
       }
     }
     // Unknown shell: no folder menu.
-    return;
+// (return removed: was IIFE-internal)
   });
   menu.addEventListener('click', (event) => {
     const item = event.target.closest('[data-folder-action]');
@@ -1970,21 +1969,21 @@ function bindFolderContextMenu() {
 // inside it (top/bottom quarter = before/after, middle = nest). Unified custom
 // sections implementation (same value for all new sections); reparenting
 // reuses the rename functions so notes, collapse state and selection follow.
-function folderListOf(ns, sectionId) {
+export function  folderListOf(ns, sectionId) {
   const section = state.customSections.find((entry) => entry.id === sectionId);
   return section ? section.folders : null;
 }
 
-function persistFolderList(ns) {
+export function  persistFolderList(ns) {
   persistCustomSections();
 }
 
-function renameFolderPath(ns, sectionId, oldPath, newPath, opts) {
+export function  renameFolderPath(ns, sectionId, oldPath, newPath, opts) {
   return renameCustomFolder(sectionId, oldPath, newPath, opts);
 }
 
 // Move a folder block (path + descendants) within its list.
-function reorderFolderBlock(ns, sectionId, movedRoot, anchorPath, after) {
+export function  reorderFolderBlock(ns, sectionId, movedRoot, anchorPath, after) {
   const list = folderListOf(ns, sectionId);
   if (!list) return false;
   const block = list.filter((entry) => isFolderOrSub(entry, movedRoot));
@@ -2003,7 +2002,7 @@ function reorderFolderBlock(ns, sectionId, movedRoot, anchorPath, after) {
 
 // Reparent a folder under a new parent (null = top level). Returns the new
 // full path, or null when blocked. Shows toasts itself.
-function reparentFolder(ns, sectionId, oldPath, newParent) {
+export function  reparentFolder(ns, sectionId, oldPath, newParent) {
   if (newParent && (newParent === oldPath || isFolderOrSub(newParent, oldPath))) {
     showToast("Can't move a folder into itself");
     return null;
@@ -2027,7 +2026,7 @@ function reparentFolder(ns, sectionId, oldPath, newParent) {
   return newPath;
 }
 
-function sidebarFolderTarget(event) {
+export function  sidebarFolderTarget(event) {
   if (event.target.closest('.collection-rename-input')) return null;
   const customRow = event.target.closest('#custom-sections .collection-item');
   if (customRow && customRow.dataset.cfolder) {
@@ -2036,7 +2035,7 @@ function sidebarFolderTarget(event) {
   return null;
 }
 
-function bindFolderDragDrop() {
+export function  bindFolderDragDrop() {
   const sidebar = document.getElementById('sidebar');
   if (!sidebar) return;
   const clearIndicators = () => {
@@ -2088,7 +2087,7 @@ function bindFolderDragDrop() {
     if (isFolderOrSub(target.path, dragged.path)) {
       event.preventDefault();
       showToast("Can't move a folder into itself");
-      return;
+// (return removed: was IIFE-internal)
     }
     event.preventDefault();
     const rect = row.getBoundingClientRect();
@@ -2146,8 +2145,8 @@ function bindFolderDragDrop() {
 // One helper drives the topbar indicator: dot colour (green synced / gray
 // offline / red error) plus label text. Sync timestamps feed the
 // "Synced X min ago" wording and a ticker keeps it current.
-let lastSyncedAt = 0;
-function setSaveLabel(text, mode = 'green') {
+export let lastSyncedAt = 0;
+export function  setSaveLabel(text, mode = 'green') {
   if (saveLabel) saveLabel.textContent = text;
   const dot = document.querySelector('.save-state .save-dot');
   if (dot) {
@@ -2164,14 +2163,14 @@ function setSaveLabel(text, mode = 'green') {
   }
   if (syncText) syncText.textContent = text;
 }
-function syncAgoText() {
+export function  syncAgoText() {
   const seconds = Math.max(0, Math.floor((Date.now() - lastSyncedAt) / 1000));
   if (seconds < 15) return 'Synced just now';
   if (seconds < 120) return 'Synced 1 min ago';
   if (seconds < 3600) return `Synced ${Math.floor(seconds / 60)} min ago`;
   return `Synced at ${new Date(lastSyncedAt).toTimeString().slice(0, 5)}`;
 }
-function markSynced() {
+export function  markSynced() {
   lastSyncedAt = Date.now();
   setSaveLabel(syncAgoText(), 'green');
 }
@@ -2190,9 +2189,9 @@ setInterval(() => {
 
 
 
-const IDLE_PREVIEW_MS = 10000;
-let writeMode = 'edit';
-let idleTimer;
+export const IDLE_PREVIEW_MS = 10000;
+export let writeMode = 'edit';
+export let idleTimer;
 
 // ---- Rendering helpers: HTML escaping + allowlisted Markdown (XSS boundary) ----
 // escapeHtml() and sanitizeUrl() now live in js/core/strings.js (imported above).
@@ -2217,7 +2216,7 @@ let idleTimer;
 // First folder filing of a note across sections, or null when unfiled.
 // ---- Note list: filtering, grouping, counts, tree rendering ----
 
-function firstFilingOf(note) {
+export function  firstFilingOf(note) {
   if (note && note.sections && typeof note.sections === 'object') {
     const first = Object.values(note.sections).find((value) => typeof value === 'string' && value);
     if (first) return first;
@@ -2231,7 +2230,7 @@ function firstFilingOf(note) {
 // placed into the first folder of the first section (creating the default
 // "Notes" section when the workspace has none), so unfiled notes cannot
 // exist. Returns true when the note was refiled.
-function ensureNoteFiled(note) {
+export function  ensureNoteFiled(note) {
   if (!note || note.deleted) return false;
   if (note.sections && typeof note.sections === 'object') {
     for (const [secId, folder] of Object.entries(note.sections)) {
@@ -2256,7 +2255,7 @@ function ensureNoteFiled(note) {
 }
 
 // Sweep every live note through the invariant (boot, import, restore, sync).
-function enforceFilingInvariant() {
+export function  enforceFilingInvariant() {
   let changed = false;
   state.notes.forEach((note) => { if (ensureNoteFiled(note)) changed = true; });
   if (changed) {
@@ -2301,7 +2300,7 @@ function enforceFilingInvariant() {
 
 
 // Single place that computes the list heading from view + collection + chip filter (e.g. "Work · Starred").
-function updateListHeading() {
+export function  updateListHeading() {
   const suffix = state.activeFilter === 'favorites' ? ' · Starred' : state.activeFilter === 'recent' ? ' · Recent' : '';
   if (state.activeView === 'bin') listHeading.textContent = `Bin${suffix}`;
   else if (state.activeView === 'vault') listHeading.textContent = `Vault${suffix}`;
@@ -2322,7 +2321,7 @@ function updateListHeading() {
 }
 
 // Clear the search box and its in-memory query.
-function clearSearch() {
+export function  clearSearch() {
   state.searchQuery = '';
   const searchInput = document.getElementById('search-input');
   if (searchInput) searchInput.value = '';
@@ -2330,10 +2329,10 @@ function clearSearch() {
 
 // ---- Open-note tabs (dev): many notes open at once, replacing breadcrumbs ----
 state.openTabs = []; // [{ id, vault }] in opening order, capped
-const MAX_OPEN_TABS = 20;
+export const MAX_OPEN_TABS = 20;
 // List glyph shared by the note list, tabs and strip. Recipes and to-dos keep
 // their distinctive glyphs; everything else gets its file-type icon.
-function noteGlyphFor(note) {
+export function  noteGlyphFor(note) {
   if (note && note.template === 'recipe') return 'cooking';
   if (note && note.template === 'todo') return 'todo';
   const ext = note && note.ext;
@@ -2342,7 +2341,7 @@ function noteGlyphFor(note) {
   if (ext === 'yaml') return 'type-yaml';
   return 'type-md';
 }
-function findTabbedNote(id, isVault, isShared) {
+export function  findTabbedNote(id, isVault, isShared) {
   if (isShared) {
     const meta = sharedNoteMeta.get(String(id)) || sharedNoteMeta.get(id);
     return { id, title: (meta && meta.title) || 'Shared note', template: (meta && meta.template) || '', shared: true, deleted: false };
@@ -2352,7 +2351,7 @@ function findTabbedNote(id, isVault, isShared) {
 }
 // Remember an opened note; selecting a tab never moves it — order is fixed
 // by opening time. Evict oldest non-active past the cap.
-function trackTab(id, isVault, isShared) {
+export function  trackTab(id, isVault, isShared) {
   const shared = Boolean(isShared);
   let tabId = id;
   if (shared) {
@@ -2372,7 +2371,7 @@ function trackTab(id, isVault, isShared) {
 }
 // Close one tab; when it was active, fall back to the nearest surviving
 // neighbor (next, then previous, then outward) so selection stays put.
-function closeTab(id, isVault, isShared) {
+export function  closeTab(id, isVault, isShared) {
   const wasVault = Boolean(isVault);
   const wasShared = Boolean(isShared);
   const wasActive = wasShared
@@ -2394,7 +2393,7 @@ function closeTab(id, isVault, isShared) {
         else if (state.openTabs[i].vault) selectVaultNote(state.openTabs[i].id);
         else selectNote(state.openTabs[i].id);
         renderTabs();
-        return;
+// (return removed: was IIFE-internal)
       }
     }
     if (state.collab.noteId != null) closeCollabNote();
@@ -2406,7 +2405,7 @@ function closeTab(id, isVault, isShared) {
 }
 // Paint the strip; drop tabs whose notes are gone (purged, vault locked) or
 // binned — a deleted note leaves the tabs at once.
-function renderTabs() {
+export function  renderTabs() {
   const bar = document.getElementById('tab-bar');
   if (!bar) return;
   state.openTabs = state.openTabs.filter((tab) => {
@@ -2452,23 +2451,23 @@ function renderTabs() {
   fitTabStrip(bar);
 }
 // Overflowed tabs (id/vault/title) from the last fit; powers the dropdown.
-let lastOverflowTabs = [];
-let tabOverflowOpen = false;
-function closeTabOverflow() {
+export let lastOverflowTabs = [];
+export let tabOverflowOpen = false;
+export function  closeTabOverflow() {
   tabOverflowOpen = false;
   const menu = document.getElementById('tab-overflow-menu');
   if (menu) menu.hidden = true;
 }
 // Hide whatever does not fit; the active tab always stays, earliest others
 // fill the rest, and the remainder goes to the dropdown button. No scrollbar.
-function fitTabStrip(bar) {
+export function  fitTabStrip(bar) {
   const btn = bar.querySelector('[data-tab-overflow]');
   const tabs = [...bar.querySelectorAll('[data-tab-id]')];
   if (!btn || !bar.clientWidth) {
     if (btn) btn.hidden = true;
     lastOverflowTabs = [];
     closeTabOverflow();
-    return;
+// (return removed: was IIFE-internal)
   }
   const gap = 6;
   const home = bar.querySelector('[data-tab-home]');
@@ -2480,7 +2479,7 @@ function fitTabStrip(bar) {
     tabs.forEach((tab) => { tab.hidden = false; });
     lastOverflowTabs = [];
     closeTabOverflow();
-    return;
+// (return removed: was IIFE-internal)
   }
   btn.hidden = false;
   const btnW = btn.offsetWidth;
@@ -2505,7 +2504,7 @@ function fitTabStrip(bar) {
   if (!hidden.length) { closeTabOverflow(); return; }
   if (tabOverflowOpen) { paintTabOverflow(); placeTabOverflow(); }
 }
-function paintTabOverflow() {
+export function  paintTabOverflow() {
   const menu = document.getElementById('tab-overflow-menu');
   if (!menu) return;
   menu.innerHTML = lastOverflowTabs.map((tab) => {
@@ -2518,7 +2517,7 @@ function paintTabOverflow() {
       + `</button>`;
   }).join('');
 }
-function placeTabOverflow() {
+export function  placeTabOverflow() {
   const menu = document.getElementById('tab-overflow-menu');
   const bar = document.getElementById('tab-bar');
   if (!menu || !bar) return;
@@ -2528,7 +2527,7 @@ function placeTabOverflow() {
   menu.style.top = `${rect.bottom + 6}px`;
   menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8))}px`;
 }
-function toggleTabOverflow() {
+export function  toggleTabOverflow() {
   const menu = document.getElementById('tab-overflow-menu');
   if (!menu) return;
   if (tabOverflowOpen) { closeTabOverflow(); return; }
@@ -2545,7 +2544,7 @@ if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
   if (closer) {
     event.stopPropagation();
     closeTab(closer.dataset.tabClose, closer.dataset.tabCloseVault === '1', closer.dataset.tabCloseShared === '1');
-    return;
+// (return removed: was IIFE-internal)
   }
   if (event.target.closest('[data-tab-overflow]')) { toggleTabOverflow(); return; }
   if (event.target.closest('[data-tab-home]')) { goAllNotes(); return; }
@@ -2556,14 +2555,14 @@ if (tabBarEl) tabBarEl.addEventListener('click', (event) => {
   else selectNote(tab.dataset.tabId);
 });
 // Drag-and-drop reordering of tabs (order is otherwise fixed by opening time).
-let dragTabEl = null;
-let dragTabIndex = null;
-let tabClickSuppressed = false;
-function clearTabDropMarks() {
+export let dragTabEl = null;
+export let dragTabIndex = null;
+export let tabClickSuppressed = false;
+export function  clearTabDropMarks() {
   if (!tabBarEl) return;
   tabBarEl.querySelectorAll('.tab-drop-before, .tab-drop-after').forEach((el) => el.classList.remove('tab-drop-before', 'tab-drop-after'));
 }
-function endTabDrag() {
+export function  endTabDrag() {
   if (dragTabEl) dragTabEl.classList.remove('dragging');
   clearTabDropMarks();
   dragTabEl = null;
@@ -2615,7 +2614,7 @@ if (tabOverflowMenuEl) tabOverflowMenuEl.addEventListener('click', (event) => {
   if (closer) {
     event.stopPropagation();
     closeTab(closer.dataset.otabClose, closer.dataset.otabCloseVault === '1', closer.dataset.otabCloseShared === '1');
-    return;
+// (return removed: was IIFE-internal)
   }
   const row = event.target.closest('[data-otab-id]');
   if (!row) return;
@@ -2639,7 +2638,7 @@ window.addEventListener('resize', () => {
 // strip becomes the folder navigator: every folder of the active section (or
 // of all sections when no section is selected) renders as its colored dot;
 // clicking one opens it. Gold folder glyphs stay distinct from note glyphs.
-function renderStripItems() {
+export function  renderStripItems() {
   const box = document.getElementById('workspace-strip-items');
   if (!box) return;
   const section = activeCustom ? state.customSections.find((entry) => entry.id === activeCustom.section) : null;
@@ -2655,7 +2654,7 @@ function renderStripItems() {
       delete backBtn.dataset.stripTarget;
     }
     updateStripScrollButton();
-    return;
+// (return removed: was IIFE-internal)
   }
   // Folder navigation is always on in the strip (folders no longer live in
   // the slide menu in any state). Folders render as a tree: each subfolder
@@ -2760,7 +2759,7 @@ if (stripBackEl) stripBackEl.addEventListener('click', (event) => {
 // scroll buttons appear above/below the strip (never a scrollbar): a down
 // arrow when there is more below, and an up arrow once scrolled down. Clicking
 // pages one viewport of items; both hide automatically at their ends.
-function makeStripScrollButton(id, dir, glyphName, label) {
+export function  makeStripScrollButton(id, dir, glyphName, label) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = `strip-scroll-btn strip-scroll-${dir}`;
@@ -2770,8 +2769,8 @@ function makeStripScrollButton(id, dir, glyphName, label) {
   btn.innerHTML = icon(glyphName);
   return btn;
 }
-const stripScrollUp = makeStripScrollButton('strip-scroll-up', 'up', 'chevron-up', 'Scroll up');
-const stripScrollDown = makeStripScrollButton('strip-scroll-down', 'down', 'chevron-down', 'Scroll down');
+export const stripScrollUp = makeStripScrollButton('strip-scroll-up', 'up', 'chevron-up', 'Scroll up');
+export const stripScrollDown = makeStripScrollButton('strip-scroll-down', 'down', 'chevron-down', 'Scroll down');
 if (stripBoxEl && stripBoxEl.parentElement) {
   stripBoxEl.insertAdjacentElement('beforebegin', stripScrollUp);
   stripBoxEl.insertAdjacentElement('afterend', stripScrollDown);
@@ -2782,7 +2781,7 @@ if (stripBoxEl && stripBoxEl.parentElement) {
     stripBoxEl.scrollBy({ top: stripBoxEl.clientHeight, behavior: 'smooth' });
   });
 }
-function updateStripScrollButton() {
+export function  updateStripScrollButton() {
   if (!stripBoxEl) return;
   const collapsible = document.querySelector('.app-shell.workspace-collapsed:not(.workspace-focus)');
   const canUp = stripBoxEl.scrollTop > 1;
@@ -2794,7 +2793,7 @@ function updateStripScrollButton() {
 // Rebuild the clickable breadcrumb trail: [view] [/ folder] / [note title].
 // The title element itself is persistent (editor writes to it directly); only
 // the trail prefix is re-rendered here.
-function viewLabel(view) {
+export function  viewLabel(view) {
   if (view === 'favorites') return 'Starred notes';
   if (view === 'archive') return 'Archive';
   if (view === 'bin') return 'Bin';
@@ -2802,7 +2801,7 @@ function viewLabel(view) {
   return 'All Notes';
 }
 
-function updateBreadcrumbs() {
+export function  updateBreadcrumbs() {
   const trail = document.getElementById('breadcrumb-trail');
   if (!trail) return;
   trail.innerHTML = '';
@@ -2833,7 +2832,7 @@ function updateBreadcrumbs() {
 
 // Breadcrumb home: reset to All notes with nothing open and an enlarged
 // workspace (editor hidden). Selecting any note exits the enlarged mode.
-function goAllNotes() {
+export function  goAllNotes() {
   clearSectionSelection();
   state.activeView = 'notes';
   state.activeFilter = 'all';
@@ -2861,7 +2860,7 @@ document.getElementById('breadcrumbs').addEventListener('click', (event) => {
 });
 
 // Master list filter: Bin vs live, archive rules, search text, chip filter, selected collection.
-function visibleNotes() {
+export function  visibleNotes() {
   if (state.activeView === 'vault' || state.activeView === 'shared') return [];
   return state.notes.filter((note) => {
     const isDeleted = Boolean(note.deleted);
@@ -2888,7 +2887,7 @@ function visibleNotes() {
 // Sidebar search. Plain terms match file text (title + contents) and folder
 // names only — tags are excluded. `tag: <name>` matches tags and `body: <text>`
 // matches the note body. Terms are AND-ed.
-function noteMatchesSearch(note, query) {
+export function  noteMatchesSearch(note, query) {
   const q = String(query == null ? '' : query).trim().toLowerCase();
   if (!q) return true;
   const title = typeof note.title === 'string' ? note.title : '';
@@ -2932,7 +2931,7 @@ function noteMatchesSearch(note, query) {
 // Search a shared-note inbox entry. Title/folder/tags are in the decrypted meta;
 // `body:` matches against a session cache of note bodies (populated whenever a
 // shared note is opened — bodies live in the CRDT and aren't loaded for the list).
-function sharedNoteMatchesSearch(entry, query) {
+export function  sharedNoteMatchesSearch(entry, query) {
   const q = String(query == null ? '' : query).trim().toLowerCase();
   if (!q) return true;
   const title = typeof entry.title === 'string' ? entry.title : '';
@@ -2974,7 +2973,7 @@ function sharedNoteMatchesSearch(entry, query) {
 
 // Notes in the current view + selected folder, ignoring the search box and
 // the All/Recent/Starred chip — so the chips mirror the selected folder.
-function scopeNotes() {
+export function  scopeNotes() {
   if (state.activeView === 'vault') return state.vault.unlocked ? [...state.vault.notes] : [];
   if (state.activeView === 'shared') return [];
   return state.notes.filter((note) => {
@@ -3000,7 +2999,7 @@ function scopeNotes() {
 }
 
 // Human countdown ("2d left") until a binned note is purged.
-function binRemainingText(note) {
+export function  binRemainingText(note) {
   if (!note.deleted || typeof note.deletedAt !== 'number') return '';
   const remaining = BIN_RETENTION_MS - (Date.now() - note.deletedAt);
   if (remaining <= 0) return 'Expires soon';
@@ -3012,7 +3011,7 @@ function binRemainingText(note) {
 }
 
 // Resize the Markdown textarea to its content (skipped in preview mode).
-function autogrow() {
+export function  autogrow() {
   if (markdownInput.hidden) return;
   markdownInput.style.height = 'auto';
   markdownInput.style.height = `${markdownInput.scrollHeight}px`;
@@ -3029,7 +3028,7 @@ function autogrow() {
 
 
 // Paint (or clear) the overlay for the open note. Only JSON/YAML are colored.
-function updateSyntaxLayer(note, showPreview) {
+export function  updateSyntaxLayer(note, showPreview) {
   if (!syntaxLayer) return;
   const ext = note && note.ext;
   const lang = ext === 'json' ? 'json' : (ext === 'yaml' ? 'yaml' : null);
@@ -3037,7 +3036,7 @@ function updateSyntaxLayer(note, showPreview) {
     syntaxLayer.hidden = true;
     syntaxLayer.innerHTML = '';
     markdownInput.classList.remove('is-highlighted');
-    return;
+// (return removed: was IIFE-internal)
   }
   const source = typeof note.body === 'string' ? note.body : markdownInput.value;
   const html = lang === 'json' ? highlightJson(source) : highlightYaml(source);
@@ -3058,7 +3057,7 @@ function updateSyntaxLayer(note, showPreview) {
 
 
 // Apply the formatter to the open note (button is visible for json/yaml only).
-function applyBeautify() {
+export function  applyBeautify() {
   const note = activeEditorNote();
   if (!note || note.deleted || note.archived) return;
   if (note.ext !== 'json' && note.ext !== 'yaml') return;
@@ -3068,7 +3067,7 @@ function applyBeautify() {
     formatted = note.ext === 'json' ? beautifyJsonText(source) : beautifyYamlText(source);
   } catch (error) {
     showToast(note.ext === 'json' ? 'Invalid JSON — fix the syntax first' : 'Could not format this YAML');
-    return;
+// (return removed: was IIFE-internal)
   }
   if (formatted === source) { showToast('Already tidy'); return; }
   note.body = formatted;
@@ -3082,7 +3081,7 @@ function applyBeautify() {
 }
 
 // Swap the writing area between Markdown source and rendered preview; non-Markdown notes never preview.
-function renderPreview(note) {
+export function  renderPreview(note) {
   if (state.collab.noteId && state.collab.body) {
     note = { id: state.collab.noteId, title: state.collab.title ? state.collab.title.toString() : '',
              body: state.collab.body.toString(), ext: 'md', tags: [], favorite: false,
@@ -3115,7 +3114,7 @@ function renderPreview(note) {
 
 // ---- Note cover pictures ------------------------------------------------
 // Covers ride on the note (inside the E2EE envelope) as validated data URLs.
-function coverFocalPos(note) {
+export function  coverFocalPos(note) {
   if (note && typeof note.coverPos === 'number' && Number.isFinite(note.coverPos)) {
     return Math.min(100, Math.max(0, note.coverPos));
   }
@@ -3124,7 +3123,7 @@ function coverFocalPos(note) {
 
 // The Add-cover row lives under the topbar line; hiding the button must
 // hide the row too, or its margin leaves a gap.
-function setCoverAddHidden(hide) {
+export function  setCoverAddHidden(hide) {
   const addBtn = document.getElementById('cover-add');
   if (addBtn) addBtn.hidden = hide;
   const row = document.querySelector('.cover-add-row');
@@ -3133,7 +3132,7 @@ function setCoverAddHidden(hide) {
 
 // Paint the cover banner for the open note (null hides it). The src is
 // re-validated on every render and assigned as a property, never via HTML.
-function renderCover(note) {
+export function  renderCover(note) {
   const wrap = document.getElementById('cover-wrap');
   const img = document.getElementById('cover-img');
   const addBtn = document.getElementById('cover-add');
@@ -3166,7 +3165,7 @@ function renderCover(note) {
 // writing area. Editor chrome, not body text, so it cannot be deleted. The
 // photo reuses the note cover (same picker, validation and E2EE storage);
 // the src is re-validated on every render and assigned as a property.
-function renderRecipeHero(note) {
+export function  renderRecipeHero(note) {
   const hero = document.getElementById('recipe-hero');
   if (!hero) return;
   // A shared recipe note keeps its meal photo (Y.Map 'assets') and description
@@ -3211,7 +3210,7 @@ function renderRecipeHero(note) {
 // Recipe notes never show their Markdown body; instead these editable fields
 // are rendered as a two-column table. Local recipes store the lists on the
 // note; shared recipes keep them in a Y.Map('recipe') in the collaborative doc.
-function recipeDataForActive(note) {
+export function  recipeDataForActive(note) {
   if (state.collab.noteId) {
     const data = { ingredients: [], steps: [] };
     if (!state.collab.recipe) return data;
@@ -3224,7 +3223,7 @@ function recipeDataForActive(note) {
   }
   return { ingredients: [], steps: [] };
 }
-function renderRecipeIngredients(list) {
+export function  renderRecipeIngredients(list) {
   const box = document.getElementById('recipe-ingredients');
   if (!box) return;
   if (!list.length) { box.innerHTML = '<p class="recipe-empty">No ingredients yet.</p>'; return; }
@@ -3236,7 +3235,7 @@ function renderRecipeIngredients(list) {
     </div>`).join('');
   box.querySelectorAll('textarea').forEach((area) => { area.style.height = 'auto'; area.style.height = `${area.scrollHeight}px`; });
 }
-function renderRecipeSteps(list) {
+export function  renderRecipeSteps(list) {
   const box = document.getElementById('recipe-steps');
   if (!box) return;
   if (!list.length) { box.innerHTML = '<p class="recipe-empty">No steps yet.</p>'; return; }
@@ -3248,7 +3247,7 @@ function renderRecipeSteps(list) {
     </div>`).join('');
   box.querySelectorAll('textarea').forEach((area) => { area.style.height = 'auto'; area.style.height = `${area.scrollHeight}px`; });
 }
-function renderRecipeBody(note) {
+export function  renderRecipeBody(note) {
   const wrap = document.getElementById('recipe-body');
   const panel = document.querySelector('.editor-panel');
   if (!wrap) return;
@@ -3262,14 +3261,14 @@ function renderRecipeBody(note) {
   renderRecipeSteps(data.steps);
 }
 // Edit the recipe lists for whichever source is open (local note or shared doc).
-function recipeMutate(mutator) {
+export function  recipeMutate(mutator) {
   if (state.collab.noteId) {
     if (!state.collab.recipe) return;
     const data = recipeDataForActive(null);
     mutator(data);
     state.collab.recipe.set('ingredients', JSON.stringify(sanitizeIngredients(data.ingredients)));
     state.collab.recipe.set('steps', JSON.stringify(sanitizeSteps(data.steps)));
-    return;
+// (return removed: was IIFE-internal)
   }
   const note = currentNote();
   if (!note || note.template !== 'recipe') return;
@@ -3281,7 +3280,7 @@ function recipeMutate(mutator) {
   note.updatedAt = Date.now();
   persistNotes();
 }
-function focusRecipeField(selector, index) {
+export function  focusRecipeField(selector, index) {
   const fields = document.querySelectorAll(`.recipe-body-fixed ${selector}`);
   if (!fields.length) return;
   const at = (index === 'last') ? fields.length - 1 : Math.max(0, Math.min(fields.length - 1, Number(index) || 0));
@@ -3294,7 +3293,7 @@ function focusRecipeField(selector, index) {
   }
 }
 
-function requestCoverUpload() {
+export function  requestCoverUpload() {
   exitCoverRepos(true);
   const note = currentNote();
   if (state.activeView === 'vault') return;
@@ -3306,7 +3305,7 @@ function requestCoverUpload() {
   if (input) { input.value = ''; input.click(); }
 }
 
-function readFileAsDataUrl(file) {
+export function  readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('read'));
@@ -3316,7 +3315,7 @@ function readFileAsDataUrl(file) {
 }
 
 // Downscale to a JPEG banner (max 1200px side, quality 0.82).
-function downscaleCover(dataUrl) {
+export function  downscaleCover(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onerror = () => reject(new Error('decode'));
@@ -3341,7 +3340,7 @@ function downscaleCover(dataUrl) {
   });
 }
 
-async function handleCoverFile(file) {
+export async function  handleCoverFile(file) {
   const note = currentNote();
   if (!note || state.activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return;
   if (!file) return;
@@ -3368,14 +3367,14 @@ async function handleCoverFile(file) {
 
 // Shared recipe notes keep their meal photo in the collaborative doc
 // (Y.Map 'assets'), so every member sees the same picture.
-function requestCollabCoverUpload() {
+export function  requestCollabCoverUpload() {
   exitCoverRepos(true);
   if (!state.collab.noteId || !isUnlocked()) return;
   const input = document.getElementById('cover-input');
   if (input) { input.value = ''; input.click(); }
 }
 
-async function handleCollabCoverFile(file) {
+export async function  handleCollabCoverFile(file) {
   if (!state.collab.noteId || !state.collab.assets) return;
   if (!file) return;
   if (!isImageFile(file)) { showToast('Use a PNG, JPEG, WebP, GIF, AVIF or BMP image'); return; }
@@ -3399,18 +3398,18 @@ async function handleCollabCoverFile(file) {
 
 // Drag the banner on the note itself to reposition the cover (Notion-style).
 // Repositioning is a locked mode: Reposition unlocks, Done saves + locks.
-let coverDragging = false;
-let coverRepositioning = false;
-let coverReposStart = 50;
+export let coverDragging = false;
+export let coverRepositioning = false;
+export let coverReposStart = 50;
 
-function canEditCoverNote() {
+export function  canEditCoverNote() {
   const note = currentNote();
   if (!note || state.activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return null;
   if (!cleanCoverSrc(note.cover)) return null;
   return note;
 }
 
-function setCoverReposUI() {
+export function  setCoverReposUI() {
   const wrap = document.getElementById('cover-wrap');
   const badge = document.getElementById('cover-pos');
   const reposBtn = document.getElementById('cover-repos');
@@ -3433,7 +3432,7 @@ function setCoverReposUI() {
   }
 }
 
-function enterCoverRepos() {
+export function  enterCoverRepos() {
   const note = canEditCoverNote();
   if (!note || coverRepositioning) return;
   coverRepositioning = true;
@@ -3443,7 +3442,7 @@ function enterCoverRepos() {
 }
 
 // Leave reposition mode; save persists the staged position, cancel restores it.
-function exitCoverRepos(save) {
+export function  exitCoverRepos(save) {
   if (!coverRepositioning) return;
   coverRepositioning = false;
   coverDragging = false;
@@ -3462,12 +3461,12 @@ function exitCoverRepos(save) {
   setCoverReposUI();
 }
 
-function coverDragNote() {
+export function  coverDragNote() {
   if (!coverRepositioning) return null;
   return canEditCoverNote();
 }
 
-function moveCoverOnNote(clientY) {
+export function  moveCoverOnNote(clientY) {
   const note = coverDragNote();
   const wrap = document.getElementById('cover-wrap');
   const badge = document.getElementById('cover-pos');
@@ -3483,14 +3482,14 @@ function moveCoverOnNote(clientY) {
   }
 }
 
-function endCoverDrag() {
+export function  endCoverDrag() {
   if (!coverDragging) return;
   coverDragging = false;
   const wrap = document.getElementById('cover-wrap');
   if (wrap) wrap.classList.remove('dragging');
 }
 
-function removeCover() {
+export function  removeCover() {
   exitCoverRepos(false);
   const note = currentNote();
   if (!note || state.activeView === 'vault' || !isUnlocked() || note.deleted || note.archived) return;
@@ -3504,7 +3503,7 @@ function removeCover() {
 }
 
 // After 10s idle, auto-switch a non-empty Markdown note to preview.
-function resetIdleTimer() {
+export function  resetIdleTimer() {
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
     const note = currentNote();
@@ -3515,7 +3514,7 @@ function resetIdleTimer() {
 }
 
 // Switch write/preview mode and refocus the editor when returning to edit.
-function setWriteMode(mode, { focus = false } = {}) {
+export function  setWriteMode(mode, { focus = false } = {}) {
   writeMode = mode;
   clearTimeout(idleTimer);
   renderPreview(activeEditorNote());
@@ -3532,7 +3531,7 @@ function setWriteMode(mode, { focus = false } = {}) {
 }
 
 // Inline rename for All-Notes folder headers; refused in Bin.
-function startTreeRename(folder) {
+export function  startTreeRename(folder) {
   if (!e2ee.masterKey) { showToast('Log in to manage folders'); return; }
   if (state.activeView === 'bin') return;
   const wrap = findTreeWrap(folder);
@@ -3590,7 +3589,7 @@ function startTreeRename(folder) {
 }
 
 // Swap New/Import vs Empty-Bin buttons per view, then refresh the lock state.
-function updateBinUI() {
+export function  updateBinUI() {
   const inBin = state.activeView === 'bin';
   const emptyBinBtn = document.getElementById('empty-bin');
   if (emptyBinBtn) emptyBinBtn.hidden = !inBin;
@@ -3600,7 +3599,7 @@ function updateBinUI() {
 // Drag-and-drop note sorting: drag a row onto another note to reorder (top /
 // bottom half picks the side); dropping onto a folder header moves the note
 // into that folder. Disabled in Bin and Vault, where order is meaningless.
-function dropNoteOnNote(draggedId, targetId, after) {
+export function  dropNoteOnNote(draggedId, targetId, after) {
   if (!draggedId || !targetId || draggedId === targetId) return;
   const from = state.notes.findIndex((note) => note.id === draggedId);
   const target = state.notes.find((note) => note.id === targetId);
@@ -3621,7 +3620,7 @@ function dropNoteOnNote(draggedId, targetId, after) {
   renderNoteList();
 }
 
-function dropNoteOnFolder(draggedId, folder, sectionId) {
+export function  dropNoteOnFolder(draggedId, folder, sectionId) {
   const index = state.notes.findIndex((note) => note.id === draggedId);
   if (index === -1 || typeof folder !== 'string') return;
   const [moved] = state.notes.splice(index, 1);
@@ -3635,7 +3634,7 @@ function dropNoteOnFolder(draggedId, folder, sectionId) {
     state.notes.splice(index, 0, moved);
     persistNotes();
     renderNoteList();
-    return;
+// (return removed: was IIFE-internal)
   }
   // Append after the folder's last note in global order (empty folders: end).
   const keyOf = (note) => {
@@ -3654,7 +3653,7 @@ function dropNoteOnFolder(draggedId, folder, sectionId) {
 
 // True when a drag event carries a Notely folder (slide-menu/workspace shared
 // payload), as opposed to a note drag (text/plain) or a file hover.
-function isFolderDrag(event) {
+export function  isFolderDrag(event) {
   try {
     const types = event.dataTransfer ? Array.from(event.dataTransfer.types || []) : [];
     return types.includes('application/x-notely-folder');
@@ -3664,7 +3663,7 @@ function isFolderDrag(event) {
 // Resolve a workspace folder header to its section (same precedence as the
 // folder context menu: active custom filter, then the list-section shell,
 // then the folder owner).
-function resolveListFolderTarget(header) {
+export function  resolveListFolderTarget(header) {
   if (!header || !header.dataset.folder) return null;
   const wrap = header.closest('[data-folder-wrap]');
   const shell = header.closest('[data-list-section]');
@@ -3683,7 +3682,7 @@ function resolveListFolderTarget(header) {
   return { ns: 'custom', section: sectionId, path: header.dataset.folder };
 }
 
-function enableNoteDragDrop() {
+export function  enableNoteDragDrop() {
   const canDrag = state.activeView !== 'bin' && state.activeView !== 'vault';
   const clearIndicators = () => {
     noteList.querySelectorAll('.drop-before,.drop-after,.drop-target').forEach((el) => el.classList.remove('drop-before', 'drop-after', 'drop-target'));
@@ -3799,7 +3798,7 @@ function enableNoteDragDrop() {
       if (isFolderOrSub(target.path, dragged.path)) {
         event.preventDefault();
         showToast("Can't move a folder into itself");
-        return;
+// (return removed: was IIFE-internal)
       }
       event.preventDefault();
       event.stopPropagation();
@@ -3857,7 +3856,7 @@ function enableNoteDragDrop() {
 }
 
 // Render the grouped note tree: folder ordering, collapse, Bin actions vs rename pencil, scoped counters, and per-row event wiring.
-function renderNoteList() {
+export function  renderNoteList() {
   const sharedNewBtn = document.getElementById('shared-new');
   if (sharedNewBtn) sharedNewBtn.hidden = true;
   const refreshBtnTop = document.getElementById('refresh-view');
@@ -4090,7 +4089,7 @@ function renderNoteList() {
 }
 
 // Selected note, falling back to the first note (may be undefined when empty — callers must guard).
-function currentNote() {
+export function  currentNote() {
   return state.notes.find((note) => note.id === state.currentId) || state.notes[0];
 }
 
@@ -4098,7 +4097,7 @@ function currentNote() {
 // Human "last edited" label from a note's timestamp (falls back to its date text).
 
 
-function updateMeta(note) {
+export function  updateMeta(note) {
   // Shared notes render their tags from the Yjs doc instead of note.tags.
   if (state.collab.noteId) { renderSharedTags(); return; }
   renderRecipeHero(note);
@@ -4128,7 +4127,7 @@ function updateMeta(note) {
 // Open a note in the editor and re-render the list; lock state is reapplied afterwards.
 // Every note opens in PREVIEW mode (edit mode never carries over between
 // notes); clicking/focusing the preview switches that note to edit mode.
-function selectNote(id) {
+export function  selectNote(id) {
   if (state.collab.noteId) closeCollabNote();
   exitCoverRepos(true);
   const note = state.notes.find((item) => item.id === id);
@@ -4150,30 +4149,30 @@ function selectNote(id) {
 }
 
 // Debounced save: refuses (with a warning, never truncates) past 2000 notes, then syncs encrypted to the server.
-function persistNotes() {
+export function  persistNotes() {
   if (state.notes.length > 2000) {
     // Never silently truncate: refusing to sync preserves data locally until
     // the user deletes notes; the server would reject oversized payloads.
     setSaveLabel('Sync failed', 'red');
     showToast('Too many notes to sync (2000 max) — delete some to keep saving');
     clearTimeout(saveTimer);
-    return;
+// (return removed: was IIFE-internal)
   }
   setSaveLabel('Saving...', 'green');
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => { syncNotesToServer(); }, 450);
 }
 
-let contextMenuNoteId = null;
-const IMPORTANT_TAG = 'important';
+export let contextMenuNoteId = null;
+export const IMPORTANT_TAG = 'important';
 
 // True when a note carries the important tag (case-insensitive).
-function isImportant(note) {
+export function  isImportant(note) {
   return Boolean(note && Array.isArray(note.tags) && note.tags.some((tag) => String(tag).toLowerCase() === IMPORTANT_TAG));
 }
 
 // Add/remove the important tag; important notes require popup confirmation before deletion.
-function toggleImportantById(id) {
+export function  toggleImportantById(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note) return;
   if (!Array.isArray(note.tags)) note.tags = [];
@@ -4192,19 +4191,19 @@ function toggleImportantById(id) {
 // Return the shared right-click menu element.
 // ---- Context menu, delete dialogs, note lifecycle (Bin/Archive/restore) ----
 
-function getNoteContextMenu() {
+export function  getNoteContextMenu() {
   return document.getElementById('note-context-menu');
 }
 
 // Hide the right-click menu and forget its target note.
-function closeNoteContextMenu() {
+export function  closeNoteContextMenu() {
   const menu = getNoteContextMenu();
   if (menu) menu.hidden = true;
   contextMenuNoteId = null;
 }
 
 // Show the right-click menu at the cursor: per-state item visibility (deleted/archived/live) with viewport clamping.
-function openNoteContextMenu(noteId, x, y) {
+export function  openNoteContextMenu(noteId, x, y) {
   const menu = getNoteContextMenu();
   const note = state.notes.find((item) => item.id === noteId);
   if (!menu || !note) return;
@@ -4235,7 +4234,7 @@ function openNoteContextMenu(noteId, x, y) {
 }
 
 // Download one note with a sanitized filename and matching MIME type.
-function downloadNoteObject(note) {
+export function  downloadNoteObject(note) {
   if (!note) return;
   const body = typeof note.body === 'string' ? note.body : '';
   const blob = new Blob([body], { type: EXT_MIME[note.ext] || 'text/markdown' });
@@ -4251,12 +4250,12 @@ function downloadNoteObject(note) {
   showToast(`Downloaded ${link.download}`);
 }
 
-function downloadNoteById(id) {
+export function  downloadNoteById(id) {
   downloadNoteObject(state.notes.find((item) => item.id === id));
 }
 
 // Copy a note (fresh id, unique title, reset dates/flags) right after the original and open it.
-function duplicateNoteById(id) {
+export function  duplicateNoteById(id) {
   const original = state.notes.find((item) => item.id === id);
   if (!original) return;
   const title = uniqueTitle(`${typeof original.title === 'string' ? original.title : 'Untitled note'} copy`);
@@ -4283,7 +4282,7 @@ function duplicateNoteById(id) {
 }
 
 // Flip the star flag and refresh badges, counts and list.
-function toggleFavoriteById(id) {
+export function  toggleFavoriteById(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note) return;
   note.favorite = !note.favorite;
@@ -4294,7 +4293,7 @@ function toggleFavoriteById(id) {
 }
 
 // Empty the editor for the no-notes state and re-render.
-function clearEditor() {
+export function  clearEditor() {
   exitCoverRepos(true);
   state.currentId = null;
   currentVaultId = null;
@@ -4320,7 +4319,7 @@ function clearEditor() {
 }
 
 // Soft-delete one note into Bin (sets deletedAt); repairs the selection to a neighbor.
-function deleteNoteById(id) {
+export function  deleteNoteById(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note || note.deleted) return;
   const liveBefore = state.notes.filter((item) => !item.deleted);
@@ -4340,7 +4339,7 @@ function deleteNoteById(id) {
 }
 
 // Restore one binned note; revives its folder too when the folder itself was binned.
-function restoreNoteById(id) {
+export function  restoreNoteById(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note || !note.deleted) return;
   note.deleted = false;
@@ -4366,7 +4365,7 @@ function restoreNoteById(id) {
 }
 
 // Move one live note to Archive; repairs the selection from the still-visible list.
-function archiveNoteById(id) {
+export function  archiveNoteById(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note || note.deleted || note.archived) return;
   note.archived = true;
@@ -4381,7 +4380,7 @@ function archiveNoteById(id) {
 }
 
 // Return one archived note to All notes (refuses deleted notes) and re-sync the sidebar.
-function unarchiveNoteById(id) {
+export function  unarchiveNoteById(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note || note.deleted || !note.archived) return;
   note.archived = false;
@@ -4393,7 +4392,7 @@ function unarchiveNoteById(id) {
 }
 
 // Erase one binned note immediately; repairs the selection.
-function permanentlyDeleteNoteById(id) {
+export function  permanentlyDeleteNoteById(id) {
   const index = state.notes.findIndex((item) => item.id === id);
   if (index === -1) return;
   const wasCurrent = state.currentId === id;
@@ -4412,7 +4411,7 @@ function permanentlyDeleteNoteById(id) {
 }
 
 // Permanently erase everything in Bin (notes + folder entries) after popup confirmation.
-function emptyBin() {
+export function  emptyBin() {
   const binned = state.notes.filter((item) => item.deleted);
   if (!binned.length) { showToast('Bin is already empty'); return; }
   state.notes = state.notes.filter((item) => !item.deleted);
@@ -4431,7 +4430,7 @@ function emptyBin() {
 }
 
 // Dispatch a validated context-menu action; unknown ids/actions are ignored.
-function handleNoteMenuAction(action, id) {
+export function  handleNoteMenuAction(action, id) {
   if (!id || typeof id !== 'string' || !isValidNoteId(id)) return;
   if (typeof action !== 'string' || !/^(open|favorite|important|tags|restore|duplicate|download|archive|unarchive|delete)$/.test(action)) return;
   if (action === 'open') selectNote(id);
@@ -4450,14 +4449,14 @@ function handleNoteMenuAction(action, id) {
 // Tags live on each note as freeform strings (<=40 chars, max 20 per note).
 // The account-wide view (settings) aggregates them for rename/delete.
 
-function normalizeTagName(name) {
+export function  normalizeTagName(name) {
   return String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, 40);
 }
-function noteTagIndex(note, name) {
+export function  noteTagIndex(note, name) {
   const wanted = normalizeTagName(name).toLowerCase();
   return (Array.isArray(note.tags) ? note.tags : []).findIndex((tag) => String(tag).toLowerCase() === wanted);
 }
-function addNoteTag(note, name) {
+export function  addNoteTag(note, name) {
   const tag = normalizeTagName(name);
   if (!note || !tag) return false;
   if (!Array.isArray(note.tags)) note.tags = [];
@@ -4466,7 +4465,7 @@ function addNoteTag(note, name) {
   note.tags.push(tag);
   return true;
 }
-function removeNoteTag(note, name) {
+export function  removeNoteTag(note, name) {
   const at = noteTagIndex(note, name);
   if (at === -1) return false;
   note.tags.splice(at, 1);
@@ -4474,7 +4473,7 @@ function removeNoteTag(note, name) {
 }
 // Aggregate every tag with a note count (case-insensitive; first casing wins).
 // User-created tags with no notes yet are included with a count of 0.
-function allTagCounts() {
+export function  allTagCounts() {
   const map = new Map();
   state.notes.forEach((note) => {
     (Array.isArray(note.tags) ? note.tags : []).forEach((tag) => {
@@ -4490,14 +4489,14 @@ function allTagCounts() {
   });
   return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
-function refreshTagsAcrossUi() {
+export function  refreshTagsAcrossUi() {
   persistNotes();
   renderNoteList();
   const open = activeEditorNote();
   if (open) updateMeta(open);
 }
 // Rename a tag on every note (folds duplicates created by the rename).
-function renameTagEverywhere(oldName, rawNew) {
+export function  renameTagEverywhere(oldName, rawNew) {
   const from = normalizeTagName(oldName).toLowerCase();
   const to = normalizeTagName(rawNew);
   if (!from || !to || from === to.toLowerCase()) return false;
@@ -4527,7 +4526,7 @@ function renameTagEverywhere(oldName, rawNew) {
   return changed > 0 || hadKnown;
 }
 // Delete a tag from every note.
-function deleteTagEverywhere(name) {
+export function  deleteTagEverywhere(name) {
   const key = normalizeTagName(name).toLowerCase();
   let changed = 0;
   state.notes.forEach((note) => {
@@ -4545,7 +4544,7 @@ function deleteTagEverywhere(name) {
   return changed > 0 || hadKnown;
 }
 // Create a standalone tag (available to every note's tag editor and to search).
-function addKnownTag(raw) {
+export function  addKnownTag(raw) {
   const tag = normalizeTagName(raw);
   if (!tag) { showToast('Enter a tag name'); return false; }
   if (knownTags.some((entry) => entry.toLowerCase() === tag.toLowerCase())) { showToast(`Tag “${tag}” already exists`); return false; }
@@ -4559,22 +4558,22 @@ function addKnownTag(raw) {
 }
 
 // ---- Note tag editor (opened from the note right-click menu) --------------
-let tagEditorNoteId = null;
-let tagEditorShared = false;
+export let tagEditorNoteId = null;
+export let tagEditorShared = false;
 
 // Shared-note tags live in the Yjs doc (a Y.Array) so they sync live to every
 // member; the encrypted note meta mirrors them for the Shared list.
-function sharedTagList() {
+export function  sharedTagList() {
   if (!state.collab.noteId || !state.collab.tags) return [];
   try { return state.collab.tags.toArray().filter((x) => typeof x === 'string').slice(0, 20); } catch (error) { return []; }
 }
-function renderSharedTags() {
+export function  renderSharedTags() {
   if (!state.collab.noteId || !tagList) return;
   const tags = sharedTagList();
   const addTagButton = '<button type="button" class="tag-add" data-shared-tag-add="1" title="Add tag" aria-label="Add tag">+</button>';
   tagList.innerHTML = tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join('') + addTagButton;
 }
-function openSharedTagEditor() {
+export function  openSharedTagEditor() {
   const overlay = document.getElementById('tag-editor-overlay');
   if (!overlay || !state.collab.noteId) return;
   tagEditorShared = true;
@@ -4588,7 +4587,7 @@ function openSharedTagEditor() {
   if (input) { input.value = ''; try { input.focus(); } catch (error) {} }
 }
 
-function openTagEditor(id) {
+export function  openTagEditor(id) {
   const note = state.notes.find((item) => item.id === id);
   const overlay = document.getElementById('tag-editor-overlay');
   if (!note || !overlay) return;
@@ -4601,13 +4600,13 @@ function openTagEditor(id) {
   const input = document.getElementById('tag-editor-input');
   if (input) { input.value = ''; try { input.focus(); } catch (error) {} }
 }
-function closeTagEditor() {
+export function  closeTagEditor() {
   const overlay = document.getElementById('tag-editor-overlay');
   if (overlay) overlay.hidden = true;
   tagEditorNoteId = null;
   tagEditorShared = false;
 }
-function renderTagEditor() {
+export function  renderTagEditor() {
   let tags;
   if (tagEditorShared) {
     tags = sharedTagList();
@@ -4642,7 +4641,7 @@ function renderTagEditor() {
       : '';
   }
 }
-function tagEditorAdd(raw) {
+export function  tagEditorAdd(raw) {
   const tag = normalizeTagName(raw);
   if (!tag) return;
   if (tagEditorShared) {
@@ -4652,7 +4651,7 @@ function tagEditorAdd(raw) {
     if (list.length >= 20) { showToast('Tag limit reached (20 per note)'); return; }
     state.collab.tags.push([tag]);
     renderTagEditor();
-    return;
+// (return removed: was IIFE-internal)
   }
   const note = state.notes.find((item) => item.id === tagEditorNoteId);
   if (!note) return;
@@ -4662,7 +4661,7 @@ function tagEditorAdd(raw) {
     renderSettingsTags();
   }
 }
-function tagEditorRemove(name) {
+export function  tagEditorRemove(name) {
   if (tagEditorShared) {
     if (!state.collab.noteId || !state.collab.tags) return;
     const list = sharedTagList();
@@ -4670,7 +4669,7 @@ function tagEditorRemove(name) {
     if (at === -1) return;
     state.collab.tags.delete(at, 1);
     renderTagEditor();
-    return;
+// (return removed: was IIFE-internal)
   }
   const note = state.notes.find((item) => item.id === tagEditorNoteId);
   if (!note) return;
@@ -4682,13 +4681,13 @@ function tagEditorRemove(name) {
 }
 
 // ---- Settings → Customization → Tags --------------------------------------
-function renderSettingsTags() {
+export function  renderSettingsTags() {
   const box = document.getElementById('settings-tag-list');
   if (!box) return;
   const tags = allTagCounts();
   if (!tags.length) {
     box.innerHTML = '<p class="modal-desc">No tags yet. Right-click a note and choose “Tags…” to add some.</p>';
-    return;
+// (return removed: was IIFE-internal)
   }
   box.innerHTML = tags.map((entry) => `
     <div class="settings-tag-row" data-settings-tag="${escapeHtml(entry.label)}">
@@ -4706,8 +4705,8 @@ function renderSettingsTags() {
 // (ECIES). The server relays only ciphertext and can never read a note.
 state.sharing = { privateKey: null, signingKey: null, ready: false };
 
-let sharingKeyPromise = null;
-function sharingEnsureKeys() {
+export let sharingKeyPromise = null;
+export function  sharingEnsureKeys() {
   // Single-flight: concurrent callers must never generate two different
   // keypairs (the published public key could stop matching the in-memory key).
   if (state.sharing.ready && state.sharing.privateKey && state.sharing.signingKey) return Promise.resolve(true);
@@ -4715,7 +4714,7 @@ function sharingEnsureKeys() {
   sharingKeyPromise = sharingEnsureKeysOnce().finally(() => { sharingKeyPromise = null; });
   return sharingKeyPromise;
 }
-async function sharingUnwrapAccountKey(encPrivB64, kind) {
+export async function  sharingUnwrapAccountKey(encPrivB64, kind) {
   const wrapped = e2eeB64ToBytes(encPrivB64);
   const priv = await window.crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: wrapped.slice(0, 12) }, e2ee.masterKey, wrapped.slice(12));
@@ -4724,14 +4723,14 @@ async function sharingUnwrapAccountKey(encPrivB64, kind) {
   }
   return window.crypto.subtle.importKey('pkcs8', priv, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
 }
-async function sharingWrapAccountKey(pkcs8) {
+export async function  sharingWrapAccountKey(pkcs8) {
   const iv = e2eeRandomBytes(12);
   const ct = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, e2ee.masterKey, pkcs8));
   const out = new Uint8Array(iv.length + ct.length);
   out.set(iv); out.set(ct, iv.length);
   return e2eeBytesToB64(out);
 }
-async function sharingGenerateKeys() {
+export async function  sharingGenerateKeys() {
   try {
     const ecdh = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
     const sig = await window.crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
@@ -4753,7 +4752,7 @@ async function sharingGenerateKeys() {
     return true;
   } catch (error) { return false; }
 }
-async function sharingPublishSigningKey(pubB64, encPrivB64) {
+export async function  sharingPublishSigningKey(pubB64, encPrivB64) {
   // Additive backfill: keep the existing ECDH key, add a signing key.
   try {
     const sig = await window.crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
@@ -4770,7 +4769,7 @@ async function sharingPublishSigningKey(pubB64, encPrivB64) {
     return true;
   } catch (error) { return false; }
 }
-async function sharingEnsureKeysOnce() {
+export async function  sharingEnsureKeysOnce() {
   if (state.sharing.ready && state.sharing.privateKey && state.sharing.signingKey) return true;
   if (!e2ee.masterKey) return false;
   try {
@@ -4793,9 +4792,9 @@ async function sharingEnsureKeysOnce() {
 
 // ---- Signed wraps: a member signs the key they hand a peer, so the recipient
 // can detect a server that substitutes a wrap it controls. ------------------------------------------------------------------
-let sharingPinsLoaded = false;
-const sharingPins = new Map(); // signer username -> signing-key fingerprint
-function sharingPinsLoad() {
+export let sharingPinsLoaded = false;
+export const sharingPins = new Map(); // signer username -> signing-key fingerprint
+export function  sharingPinsLoad() {
   if (sharingPinsLoaded) return;
   sharingPinsLoaded = true;
   try {
@@ -4803,23 +4802,23 @@ function sharingPinsLoad() {
     Object.keys(obj).forEach((k) => sharingPins.set(k, String(obj[k])));
   } catch (error) {}
 }
-function sharingPinsSave() {
+export function  sharingPinsSave() {
   try { localStorage.setItem('notely-keypins', JSON.stringify(Object.fromEntries(sharingPins))); } catch (error) {}
 }
-async function sharingFingerprint(pubRawBytes) {
+export async function  sharingFingerprint(pubRawBytes) {
   const digest = new Uint8Array(await window.crypto.subtle.digest('SHA-256', pubRawBytes));
   return [...digest.slice(0, 16)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
-function wrapSigMessage(groupId, recipient, keyVersion, w) {
+export function  wrapSigMessage(groupId, recipient, keyVersion, w) {
   return `notely-wrap-v1|${groupId || ''}|${recipient}|${Number(keyVersion) || 1}|${w.wrappedKey}|${w.ephPub}|${w.wrapIv}`;
 }
-async function signWrap(groupId, recipient, keyVersion, w) {
+export async function  signWrap(groupId, recipient, keyVersion, w) {
   if (!state.sharing.signingKey) return '';
   const data = new TextEncoder().encode(wrapSigMessage(groupId, recipient, keyVersion, w));
   const sig = new Uint8Array(await window.crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, state.sharing.signingKey, data));
   return e2eeBytesToB64(sig);
 }
-async function sharingSignerPublicKey(signer) {
+export async function  sharingSignerPublicKey(signer) {
   const res = await apiFetch(`/api/keys/lookup?username=${encodeURIComponent(signer)}`);
   if (!res.ok) throw new Error('Could not load the sender\'s signing key.');
   const data = await res.json();
@@ -4836,7 +4835,7 @@ async function sharingSignerPublicKey(signer) {
 }
 // Throws if a wrap we did not make fails verification (legacy unsigned wraps are
 // allowed through so existing sections keep working).
-async function verifyWrap(groupId, recipient, keyVersion, w) {
+export async function  verifyWrap(groupId, recipient, keyVersion, w) {
   if (!w || !w.sig || !w.signer) return;
   if (w.signer === recipient) return; // our own wrap
   const pub = await sharingSignerPublicKey(w.signer);
@@ -4844,12 +4843,12 @@ async function verifyWrap(groupId, recipient, keyVersion, w) {
   const ok = await window.crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pub, e2eeB64ToBytes(w.sig), data);
   if (!ok) throw new Error(`The section key from ${w.signer} failed verification.`);
 }
-async function unwrapMyKey(myKey, groupId, recipient, keyVersion) {
+export async function  unwrapMyKey(myKey, groupId, recipient, keyVersion) {
   await verifyWrap(groupId, recipient, keyVersion, myKey);
   return unwrapRawKey(myKey.wrappedKey, myKey.ephPub, myKey.wrapIv);
 }
 
-async function sharingRecipientPublicKey(username) {
+export async function  sharingRecipientPublicKey(username) {
   const res = await apiFetch(`/api/keys/lookup?username=${encodeURIComponent(username)}`);
   if (!res.ok) {
     let message = 'Could not find a sharing key for that account.';
@@ -4866,13 +4865,13 @@ async function sharingRecipientPublicKey(username) {
 // under the group; any note added there is automatically shared with everyone
 // in the group. Edits are Yjs CRDT updates encrypted with the group key and
 // relayed over a WebSocket. The server only relays ciphertext.
-let yjsPromise = null;
-function loadYjs() {
+export let yjsPromise = null;
+export function  loadYjs() {
   if (!yjsPromise) yjsPromise = import('/vendor/yjs/yjs.mjs');
   return yjsPromise;
 }
 
-async function wrapRawKeyFor(recipientPub, rawKey) {
+export async function  wrapRawKeyFor(recipientPub, rawKey) {
   const eph = await window.crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
   const shared = await window.crypto.subtle.deriveKey(
     { name: 'ECDH', public: recipientPub }, eph.privateKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
@@ -4881,7 +4880,7 @@ async function wrapRawKeyFor(recipientPub, rawKey) {
   const ephPub = new Uint8Array(await window.crypto.subtle.exportKey('raw', eph.publicKey));
   return { wrappedKey: e2eeBytesToB64(wrapped), ephPub: e2eeBytesToB64(ephPub), wrapIv: e2eeBytesToB64(wrapIv) };
 }
-async function unwrapRawKey(wrappedB64, ephPubB64, wrapIvB64) {
+export async function  unwrapRawKey(wrappedB64, ephPubB64, wrapIvB64) {
   if (!state.sharing.privateKey) throw new Error('locked');
   const ephPub = await window.crypto.subtle.importKey('raw', e2eeB64ToBytes(ephPubB64),
     { name: 'ECDH', namedCurve: 'P-256' }, false, []);
@@ -4890,7 +4889,7 @@ async function unwrapRawKey(wrappedB64, ephPubB64, wrapIvB64) {
   return new Uint8Array(await window.crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: e2eeB64ToBytes(wrapIvB64) }, shared, e2eeB64ToBytes(wrappedB64)));
 }
-async function collabEncrypt(keyRaw, bytes) {
+export async function  collabEncrypt(keyRaw, bytes) {
   const key = await window.crypto.subtle.importKey('raw', keyRaw, { name: 'AES-GCM' }, false, ['encrypt']);
   const iv = e2eeRandomBytes(12);
   const ct = new Uint8Array(await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes));
@@ -4898,20 +4897,20 @@ async function collabEncrypt(keyRaw, bytes) {
   packed.set(iv); packed.set(ct, iv.length);
   return e2eeBytesToB64(packed);
 }
-async function collabDecrypt(keyRaw, packedB64) {
+export async function  collabDecrypt(keyRaw, packedB64) {
   const key = await window.crypto.subtle.importKey('raw', keyRaw, { name: 'AES-GCM' }, false, ['decrypt']);
   const packed = e2eeB64ToBytes(packedB64);
   return new Uint8Array(await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: packed.slice(0, 12) }, key, packed.slice(12)));
 }
 // Note "meta" (title + folder) is encrypted under the group key so the server
 // still sees nothing. It powers the Shared inbox list without loading the doc.
-async function collabEncryptMeta(keyRaw, meta) {
+export async function  collabEncryptMeta(keyRaw, meta) {
   return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({
     t: meta.title || '', f: meta.folder || '', tp: meta.template || '',
     tg: Array.isArray(meta.tags) ? meta.tags.filter((x) => typeof x === 'string').slice(0, 20) : [],
   })));
 }
-async function collabDecryptMeta(keyRaw, encB64) {
+export async function  collabDecryptMeta(keyRaw, encB64) {
   if (!encB64) return { title: '', folder: '', template: '', tags: [] };
   try {
     const obj = JSON.parse(new TextDecoder().decode(await collabDecrypt(keyRaw, encB64)));
@@ -4923,13 +4922,13 @@ async function collabDecryptMeta(keyRaw, encB64) {
     };
   } catch (error) { return { title: '', folder: '', template: '', tags: [] }; }
 }
-async function collabEncryptGroupMeta(keyRaw, folders, tags) {
+export async function  collabEncryptGroupMeta(keyRaw, folders, tags) {
   return collabEncrypt(keyRaw, new TextEncoder().encode(JSON.stringify({
     folders: Array.isArray(folders) ? folders : [],
     tags: Array.isArray(tags) ? tags.filter((x) => typeof x === 'string').slice(0, 100) : [],
   })));
 }
-async function collabDecryptGroupMeta(keyRaw, encB64) {
+export async function  collabDecryptGroupMeta(keyRaw, encB64) {
   if (!encB64) return { folders: [], tags: [] };
   try {
     const obj = JSON.parse(new TextDecoder().decode(await collabDecrypt(keyRaw, encB64)));
@@ -4940,7 +4939,7 @@ async function collabDecryptGroupMeta(keyRaw, encB64) {
   } catch (error) { return { folders: [], tags: [] }; }
 }
 // Unwrap a group's key from my membership (used by the inbox + note creation).
-async function collabGroupKey(groupId) {
+export async function  collabGroupKey(groupId) {
   const res = await apiFetch(`/api/collab/groups/${groupId}`);
   if (!res.ok) throw new Error('No access');
   const g = await res.json();
@@ -4948,7 +4947,7 @@ async function collabGroupKey(groupId) {
   return { key, group: g };
 }
 // Push the current title/folder (debounced) so the inbox list stays current.
-function scheduleCollabMeta() {
+export function  scheduleCollabMeta() {
   if (!state.collab.noteId || !state.collab.key) return;
   clearTimeout(state.collab.metaTimer);
   state.collab.metaTimer = setTimeout(async () => {
@@ -4974,13 +4973,13 @@ state.collab = { noteId: null, groupId: null, doc: null, title: null, body: null
 // Raw group key for a given epoch (falls back to the current key). After a
 // rotation the section's content is always fully under the current epoch, but a
 // frame posted just before the switch may still carry the previous version.
-function collabKeyFor(version) {
+export function  collabKeyFor(version) {
   const v = Number(version);
   if (Number.isFinite(v) && state.collab.keys.has(v)) return state.collab.keys.get(v);
   return state.collab.key;
 }
 
-function setCollabStatus(text, offline) {
+export function  setCollabStatus(text, offline) {
   const el = document.getElementById('collab-status');
   const textEl = document.getElementById('collab-status-text');
   const sep = document.getElementById('collab-status-sep');
@@ -4988,9 +4987,9 @@ function setCollabStatus(text, offline) {
   if (el) { el.hidden = false; el.style.color = offline ? '#c0453e' : ''; }
   if (sep) sep.hidden = false;
 }
-function commonPrefixLen(a, b) { const n = Math.min(a.length, b.length); let i = 0; while (i < n && a[i] === b[i]) i += 1; return i; }
-function commonSuffixLen(a, b, max) { let i = 0; while (i < max && a[a.length - 1 - i] === b[b.length - 1 - i]) i += 1; return i; }
-function applyTextDiff(ytext, oldStr, newStr) {
+export function  commonPrefixLen(a, b) { const n = Math.min(a.length, b.length); let i = 0; while (i < n && a[i] === b[i]) i += 1; return i; }
+export function  commonSuffixLen(a, b, max) { let i = 0; while (i < max && a[a.length - 1 - i] === b[b.length - 1 - i]) i += 1; return i; }
+export function  applyTextDiff(ytext, oldStr, newStr) {
   if (oldStr === newStr) return;
   const p = commonPrefixLen(oldStr, newStr);
   const suffix = commonSuffixLen(oldStr, newStr, Math.min(oldStr.length - p, newStr.length - p));
@@ -4999,7 +4998,7 @@ function applyTextDiff(ytext, oldStr, newStr) {
   if (delCount > 0) ytext.delete(p, delCount);
   if (insert) ytext.insert(p, insert);
 }
-function collabSyncDom() {
+export function  collabSyncDom() {
   if (!state.collab.doc) return;
   const titleStr = state.collab.title ? state.collab.title.toString() : '';
   if (titleInput && titleInput.value !== titleStr && document.activeElement !== titleInput) titleInput.value = titleStr;
@@ -5017,7 +5016,7 @@ function collabSyncDom() {
   }
 }
 // Keep the shared recipe hero in step with the collaborative cover asset.
-function collabAssetsChanged() {
+export function  collabAssetsChanged() {
   if (!state.collab.noteId) return;
   const raw = state.collab.assets ? state.collab.assets.get('cover') : '';
   state.collab.cover = cleanCoverSrc(raw) || '';
@@ -5025,7 +5024,7 @@ function collabAssetsChanged() {
   renderRecipeHero(null);
 }
 // The Members popup: accepted members, plus invites for the owner.
-function renderCollabMembersModal() {
+export function  renderCollabMembersModal() {
   const btn = document.getElementById('collab-pending');
   const me = state.cachedProfile && state.cachedProfile.username;
   const isOwner = state.collab.owner === me;
@@ -5056,17 +5055,17 @@ function renderCollabMembersModal() {
   }
   list.innerHTML = html;
 }
-function openCollabPending() {
+export function  openCollabPending() {
   if (!state.collab.noteId) return;
   renderCollabMembersModal();
   const overlay = document.getElementById('collab-pending-overlay');
   if (overlay) overlay.hidden = false;
 }
-function closeCollabPending() {
+export function  closeCollabPending() {
   const overlay = document.getElementById('collab-pending-overlay');
   if (overlay) overlay.hidden = true;
 }
-async function cancelCollabInvite(name) {
+export async function  cancelCollabInvite(name) {
   if (!state.collab.groupId || !name) return;
   const res = await apiFetch(`/api/collab/groups/${state.collab.groupId}/members/${encodeURIComponent(name)}`, { method: 'DELETE' });
   if (!res.ok) { showToast('Could not cancel the invitation'); return; }
@@ -5076,19 +5075,19 @@ async function cancelCollabInvite(name) {
 }
 
 // ---- Presence: who is here, where their cursor is (ephemeral, encrypted) ----
-let collabCaretMirror = null;
-let collabTypingTimer = null;
-let collabPresenceLocalTimer = null;
-const COLLAB_PRESENCE_TTL_MS = 15000;
+export let collabCaretMirror = null;
+export let collabTypingTimer = null;
+export let collabPresenceLocalTimer = null;
+export const COLLAB_PRESENCE_TTL_MS = 15000;
 
-function collabPresenceColor(username) {
+export function  collabPresenceColor(username) {
   const name = String(username || '');
   let h = 0;
   for (let i = 0; i < name.length; i += 1) h = (h * 31 + name.charCodeAt(i)) % 360;
   return `hsl(${h}, 65%, 45%)`;
 }
 // Textarea caret coordinates via an offscreen mirror with identical metrics.
-function collabCaretCoords(index) {
+export function  collabCaretCoords(index) {
   const ta = markdownInput;
   if (!ta) return null;
   if (!collabCaretMirror) {
@@ -5124,13 +5123,13 @@ function collabCaretCoords(index) {
   return { top: marker.offsetTop, left: marker.offsetLeft,
            height: marker.offsetHeight || parseFloat(cs.lineHeight) || 16 };
 }
-function renderCollabPresence() {
+export function  renderCollabPresence() {
   const box = document.getElementById('collab-presence');
   const layer = document.getElementById('collab-caret-layer');
   if (!state.collab.noteId) {
     if (box) box.innerHTML = '';
     if (layer) layer.innerHTML = '';
-    return;
+// (return removed: was IIFE-internal)
   }
   const now = Date.now();
   const entries = [];
@@ -5157,7 +5156,7 @@ function renderCollabPresence() {
     }
   }
 }
-function collabPresenceLocal(typing) {
+export function  collabPresenceLocal(typing) {
   if (!state.collab.noteId) return;
   if (typing) {
     state.collab.typing = true;
@@ -5167,7 +5166,7 @@ function collabPresenceLocal(typing) {
   if (collabPresenceLocalTimer) return;
   collabPresenceLocalTimer = setTimeout(() => { collabPresenceLocalTimer = null; collabSendPresence(false); }, 120);
 }
-async function collabSendPresence(leave) {
+export async function  collabSendPresence(leave) {
   if (!state.collab.noteId || !state.collab.key || !state.collab.clientId) return;
   const noteId = state.collab.noteId;
   const key = state.collab.key;
@@ -5188,7 +5187,7 @@ async function collabSendPresence(leave) {
     await apiFetch(`/api/collab/notes/${noteId}/presence`, { method: 'POST', body: JSON.stringify({ payload, keyVersion }) });
   } catch (error) {}
 }
-async function collabPresenceReceive(msg) {
+export async function  collabPresenceReceive(msg) {
   if (!state.collab.noteId) return;
   const key = collabKeyFor(msg.version);
   if (!key) return;
@@ -5207,7 +5206,7 @@ async function collabPresenceReceive(msg) {
   });
   renderCollabPresence();
 }
-function collabPresenceHeartbeat() {
+export function  collabPresenceHeartbeat() {
   if (!state.collab.noteId) return;
   collabSendPresence(false);
   renderCollabPresence();
@@ -5217,17 +5216,17 @@ function collabPresenceHeartbeat() {
 // POST fails: queued Yjs updates are retried until the server acks them. A 409
 // means the section key moved under us, so the full local state is compacted
 // instead (which also clears the queue).
-async function collabBroadcast(update) {
+export async function  collabBroadcast(update) {
   if (!state.collab.key || !state.collab.noteId) return;
   state.collab.outbox.push(update);
   if (state.collab.outbox.length >= 200) { state.collab.outbox.length = 0; collabCompact(); return; }
   flushCollabOutbox();
 }
-function scheduleCollabFlush() {
+export function  scheduleCollabFlush() {
   if (state.collab.flushTimer || !state.collab.noteId) return;
   state.collab.flushTimer = setTimeout(() => { state.collab.flushTimer = null; flushCollabOutbox(); }, 5000);
 }
-async function flushCollabOutbox() {
+export async function  flushCollabOutbox() {
   if (state.collab.flushing || !state.collab.outbox.length || !state.collab.key || !state.collab.noteId) return;
   state.collab.flushing = true;
   try {
@@ -5241,25 +5240,25 @@ async function flushCollabOutbox() {
       } catch (error) {
         setCollabStatus(`Offline — ${state.collab.outbox.length} unsent`, true);
         scheduleCollabFlush();
-        return;
+// (return removed: was IIFE-internal)
       }
       if (res.ok) { state.collab.outbox.shift(); continue; }
       if (res.status === 409) {
         // Epoch changed under us: drop the stale queue and push the full state.
         state.collab.outbox.length = 0;
         await collabCompact();
-        return;
+// (return removed: was IIFE-internal)
       }
       setCollabStatus(`Offline — ${state.collab.outbox.length} unsent`, true);
       scheduleCollabFlush();
-      return;
+// (return removed: was IIFE-internal)
     }
     setCollabStatus('Live · connected', false);
   } finally {
     state.collab.flushing = false;
   }
 }
-async function collabCompact() {
+export async function  collabCompact() {
   if (!state.collab.doc || !state.collab.key || !state.collab.noteId) return;
   try {
     const Y = await loadYjs();
@@ -5269,7 +5268,7 @@ async function collabCompact() {
     if (res && res.ok) state.collab.outbox.length = 0; // full state covers every queued update
   } catch (error) {}
 }
-function collabConnect(noteId, keyRaw, Y, doc) {
+export function  collabConnect(noteId, keyRaw, Y, doc) {
   if (state.collab.es) { try { state.collab.es.close(); } catch (error) {} state.collab.es = null; }
   let es;
   try { es = new EventSource(`/api/collab/notes/${noteId}/stream`); }
@@ -5283,7 +5282,7 @@ function collabConnect(noteId, keyRaw, Y, doc) {
       // Owner rotated the section key: adopt the new epoch so our edits are
       // encrypted under the key the removed member does not have.
       await collabAdoptRekey(msg.version);
-      return;
+// (return removed: was IIFE-internal)
     }
     if (msg.type === 'presence') { collabPresenceReceive(msg); return; }
     if (msg.type !== 'state' && msg.type !== 'update') return;
@@ -5296,7 +5295,7 @@ function collabConnect(noteId, keyRaw, Y, doc) {
 }
 
 // Fetch and unlock the new epoch key after the owner rotates, and switch to it.
-async function collabAdoptRekey(version) {
+export async function  collabAdoptRekey(version) {
   if (!state.collab.groupId) return;
   try {
     const res = await apiFetch(`/api/collab/groups/${state.collab.groupId}`);
@@ -5310,7 +5309,7 @@ async function collabAdoptRekey(version) {
     setCollabStatus(`Rekeyed · v${v}`, false);
   } catch (error) {}
 }
-async function openCollabNote(noteId) {
+export async function  openCollabNote(noteId) {
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
   if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
   let res;
@@ -5399,7 +5398,7 @@ async function openCollabNote(noteId) {
   try { renderTabs(); } catch (error) {}
   collabConnect(noteId, keyRaw, Y, doc);
 }
-function closeCollabNote() {
+export function  closeCollabNote() {
   if (state.collab.reconnect) { clearTimeout(state.collab.reconnect); state.collab.reconnect = null; }
   // Tell peers we left (best-effort; reads current key/note before clearing).
   try { collabSendPresence(true); } catch (error) {}
@@ -5424,7 +5423,7 @@ function closeCollabNote() {
   renderCollabPresence();
   try { renderRecipeHero(null); } catch (error) {}
 }
-async function collabAddGroupMember(groupId, keyRaw, name, keyVersion) {
+export async function  collabAddGroupMember(groupId, keyRaw, name, keyVersion) {
   const pub = await sharingRecipientPublicKey(name);
   const wrap = await wrapRawKeyFor(pub, keyRaw);
   wrap.sig = await signWrap(groupId, name, keyVersion, wrap);
@@ -5437,7 +5436,7 @@ async function collabAddGroupMember(groupId, keyRaw, name, keyVersion) {
 }
 // Start a connection: create a shared section for the person (no note yet).
 // They receive a "<you> wants to connect with you" request to accept.
-async function collabCreateSection(members) {
+export async function  collabCreateSection(members) {
   const names = Array.isArray(members) ? members : [];
   const keyRaw = e2eeRandomBytes(32);
   let selfPub;
@@ -5462,12 +5461,12 @@ async function collabCreateSection(members) {
   return data.id;
 }
 // New-note entry in the Shared tree: ask which template to start from first.
-let pendingSharedTemplate = null; // { groupId, folder } | null
-function openSharedNewNote(groupId, folder) {
+export let pendingSharedTemplate = null; // { groupId, folder } | null
+export function  openSharedNewNote(groupId, folder) {
   pendingSharedTemplate = { groupId, folder: folder || '' };
   openTemplatePicker();
 }
-function sharedUniqueTitle(base, groupId) {
+export function  sharedUniqueTitle(base, groupId) {
   const used = new Set();
   sharedNoteMeta.forEach((m) => {
     if (String(m.groupId) === String(groupId)) {
@@ -5481,7 +5480,7 @@ function sharedUniqueTitle(base, groupId) {
   return `${base} ${i}`;
 }
 // Start a shared note from the same templates used by All Notes.
-async function createSharedNoteWithTemplate(groupId, folder, templateKey) {
+export async function  createSharedNoteWithTemplate(groupId, folder, templateKey) {
   const key0 = NOTE_TEMPLATES[templateKey] ? templateKey : 'standard';
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes first'); return; }
   if (!(await sharingEnsureKeys())) { showToast('Could not unlock your sharing keys'); return; }
@@ -5515,7 +5514,7 @@ async function createSharedNoteWithTemplate(groupId, folder, templateKey) {
   if (state.activeView === 'shared') renderSharedView();
 }
 // Add a subfolder under an existing shared folder (persisted in group meta).
-async function addSubfolder(groupId, parentFolder) {
+export async function  addSubfolder(groupId, parentFolder) {
   const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
   if (!key) { showToast('Reload the Shared list and try again'); return; }
   const value = await askInput({ eyebrow: 'Subfolder', title: 'Add a subfolder', desc: `Under ${parentFolder}`, label: 'Name', password: false, placeholder: 'e.g. Notes', okText: 'Add' });
@@ -5533,7 +5532,7 @@ async function addSubfolder(groupId, parentFolder) {
     renderSharedView();
   } catch (error) { showToast('Could not add the subfolder'); }
 }
-async function collabInvite() {
+export async function  collabInvite() {
   if (!state.collab.groupId || !state.collab.key) return;
   const me = state.cachedProfile && state.cachedProfile.username;
   if (state.collab.owner !== me) { showToast('Only the owner can add members'); return; }
@@ -5549,7 +5548,7 @@ async function collabInvite() {
     showToast(`Invited ${target}`);
   } catch (error) { showToast(error && error.message ? error.message : 'Could not add member'); }
 }
-async function collabRemoveMember(name) {
+export async function  collabRemoveMember(name) {
   if (!state.collab.groupId) return;
   const me = state.cachedProfile && state.cachedProfile.username;
   if (state.collab.owner === me && state.collab.key) {
@@ -5560,7 +5559,7 @@ async function collabRemoveMember(name) {
     const ok = await collabRotateSectionKey(name);
     renderCollabMembersModal();
     showToast(ok ? `Removed ${name} — section key rotated` : `Could not remove ${name}`);
-    return;
+// (return removed: was IIFE-internal)
   }
   const res = await apiFetch(`/api/collab/groups/${state.collab.groupId}/members/${encodeURIComponent(name)}`, { method: 'DELETE' });
   if (!res.ok) { showToast('Could not remove member'); return; }
@@ -5574,7 +5573,7 @@ async function collabRemoveMember(name) {
 // version. Reusing the server only as blob storage; the key itself is never sent.
 // When `remove` names a member, the server removes them and bumps the epoch in a
 // single transaction, so the two can never diverge.
-async function collabRotateSectionKey(remove) {
+export async function  collabRotateSectionKey(remove) {
   if (!state.collab.groupId || !state.collab.key) return false;
   const Y = await loadYjs();
   const newVersion = (state.collab.keyVersion || 1) + 1;
@@ -5651,7 +5650,7 @@ async function collabRotateSectionKey(remove) {
 // Section-scoped rotation used when a section is flagged rekey_needed: a member
 // left or deleted their account. Any remaining member holding the key can rotate
 // — new epoch, re-wrap for everyone still in the section, re-encrypt the notes.
-async function rotateGroupSection({ groupId, key, version, members, notes, folderMeta, remove }) {
+export async function  rotateGroupSection({ groupId, key, version, members, notes, folderMeta, remove }) {
   const Y = await loadYjs();
   const newVersion = (Number(version) || 1) + 1;
   const newKey = e2eeRandomBytes(32);
@@ -5697,8 +5696,8 @@ async function rotateGroupSection({ groupId, key, version, members, notes, folde
   }
   return true;
 }
-const rekeyInFlight = new Set();
-async function rekeyGroupIfNeeded(group, key) {
+export const rekeyInFlight = new Set();
+export async function  rekeyGroupIfNeeded(group, key) {
   if (!group || !key || !group.rekeyNeeded || rekeyInFlight.has(group.id)) return;
   // Only a member holding the current epoch may rotate. A stale wrap (e.g. an
   // invite accepted after a rekey) must not rotate — it would re-encrypt with an
@@ -5717,18 +5716,18 @@ async function rekeyGroupIfNeeded(group, key) {
 // A member leaves a shared section: remove ourselves. The server flags the
 // section so a remaining member rotates the key on next open (the server holds
 // no key to rotate with).
-async function leaveSharedSection(groupId) {
+export async function  leaveSharedSection(groupId) {
   const me = state.cachedProfile && state.cachedProfile.username;
   if (!me) return;
   const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(me)}`, { method: 'DELETE' });
   if (res.ok) { showToast('Left the section'); renderSharedView(); }
   else showToast('Could not leave the section');
 }
-async function collabDeleteNote(noteId) {
+export async function  collabDeleteNote(noteId) {
   const me = state.cachedProfile && state.cachedProfile.username;
   if (state.collab.noteId != null && String(state.collab.noteId) === String(noteId) && state.collab.owner !== me) {
     showToast('Only the owner can delete a shared note');
-    return;
+// (return removed: was IIFE-internal)
   }
   const res = await apiFetch(`/api/collab/notes/${encodeURIComponent(noteId)}`, { method: 'DELETE' });
   if (res.ok) {
@@ -5742,12 +5741,12 @@ async function collabDeleteNote(noteId) {
     showToast(msg);
   }
 }
-async function collabDeleteGroup(groupId) {
+export async function  collabDeleteGroup(groupId) {
   const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' });
   if (res.ok) { if (String(state.collab.groupId) === String(groupId)) closeCollabNote(); showToast('Shared section deleted'); if (state.activeView === 'shared') renderSharedView(); }
   else showToast('Could not delete the section');
 }
-function confirmDeleteGroup(groupId) {
+export function  confirmDeleteGroup(groupId) {
   pendingDeleteId = String(groupId);
   pendingDeleteMode = 'collab-group';
   pendingDeleteTag = null;
@@ -5760,11 +5759,11 @@ function confirmDeleteGroup(groupId) {
   }
 }
 // Popup: ask who the new shared section is for.
-function parseUsernames(raw) {
+export function  parseUsernames(raw) {
   // Owner + invitees must stay within the 4-member section cap.
   return String(raw || '').split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean).slice(0, 3);
 }
-function openCollabNewDialog() {
+export function  openCollabNewDialog() {
   const overlay = document.getElementById('collab-new-overlay');
   if (!overlay) return;
   const input = document.getElementById('collab-new-members');
@@ -5774,15 +5773,15 @@ function openCollabNewDialog() {
   overlay.hidden = false;
   if (input) { try { input.focus(); } catch (error) {} }
 }
-function closeCollabNewDialog() {
+export function  closeCollabNewDialog() {
   const overlay = document.getElementById('collab-new-overlay');
   if (overlay) overlay.hidden = true;
 }
-function setCollabNewStatus(message) {
+export function  setCollabNewStatus(message) {
   const status = document.getElementById('collab-new-status');
   if (status) { status.textContent = message; status.hidden = false; }
 }
-async function confirmCollabNew() {
+export async function  confirmCollabNew() {
   const input = document.getElementById('collab-new-members');
   const me = state.cachedProfile && state.cachedProfile.username;
   const names = parseUsernames(input ? input.value : '').filter((n) => /^[A-Za-z0-9_-]{3,32}$/.test(n) && n !== me);
@@ -5801,23 +5800,23 @@ async function confirmCollabNew() {
   }
 }
 // Bottom "+ New note" opens the same popup (a new person = a new section).
-function collabCreate() { openCollabNewDialog(); }
+export function  collabCreate() { openCollabNewDialog(); }
 
 // The Shared view: one section per person, each holding automatically-shared notes.
-const sharedGroupKeys = new Map(); // groupId -> unwrapped group key
-const sharedGroupFolders = new Map(); // groupId -> [folder, ...]
-const sharedGroupTags = new Map(); // groupId -> [tag, ...] (owner-curated, section-level)
-const sharedGroupOwners = new Map(); // groupId -> owner username
-function sharedGroupTagList(groupId) {
+export const sharedGroupKeys = new Map(); // groupId -> unwrapped group key
+export const sharedGroupFolders = new Map(); // groupId -> [folder, ...]
+export const sharedGroupTags = new Map(); // groupId -> [tag, ...] (owner-curated, section-level)
+export const sharedGroupOwners = new Map(); // groupId -> owner username
+export function  sharedGroupTagList(groupId) {
   return sharedGroupTags.get(groupId) || sharedGroupTags.get(Number(groupId)) || [];
 }
-function sharedGroupOwnerOf(groupId) {
+export function  sharedGroupOwnerOf(groupId) {
   return sharedGroupOwners.get(groupId) || sharedGroupOwners.get(Number(groupId)) || null;
 }
-const sharedNoteMeta = new Map();  // noteId -> { title, folder, tags, groupId }
-const sharedBodyCache = new Map(); // noteId -> plaintext body (session cache for body: search)
+export const sharedNoteMeta = new Map();  // noteId -> { title, folder, tags, groupId }
+export const sharedBodyCache = new Map(); // noteId -> plaintext body (session cache for body: search)
 
-function sharedNoteRow(n, groupId, canDelete) {
+export function  sharedNoteRow(n, groupId, canDelete) {
   const title = (n.title && n.title.trim()) ? n.title.trim() : 'Untitled note';
   // Align the note's icon under its folder's icon (folder rows carry a chevron).
   const indent = n.folder ? 8 + folderDepth(n.folder) * 14 + 23 : 8;
@@ -5833,11 +5832,11 @@ function sharedNoteRow(n, groupId, canDelete) {
     </button>`;
 }
 
-const sharedCollapsed = new Set(); // `${groupId}::${folder}` collapsed folders
-function sharedFolderKey(groupId, folder) { return `${groupId}::${folder}`; }
+export const sharedCollapsed = new Set(); // `${groupId}::${folder}` collapsed folders
+export function  sharedFolderKey(groupId, folder) { return `${groupId}::${folder}`; }
 // Every folder key (including ancestors) across all shared sections, for the
 // sidebar's collapse-all/expand-all control in the Shared view.
-function sharedAllFolderKeys() {
+export function  sharedAllFolderKeys() {
   const keys = new Set();
   const addPath = (groupId, path) => {
     let cur = path;
@@ -5850,7 +5849,7 @@ function sharedAllFolderKeys() {
   return [...keys];
 }
 
-function sharedFolderTree(notesDec, groupId, folderList, canDelete) {
+export function  sharedFolderTree(notesDec, groupId, folderList, canDelete) {
   const set = new Set((folderList || []).filter(Boolean));
   notesDec.forEach((n) => { if (n.folder) set.add(n.folder); });
   const folders = new Set();
@@ -5890,11 +5889,11 @@ function sharedFolderTree(notesDec, groupId, folderList, canDelete) {
 }
 
 // Sidebar Shared badge: number of connections (plus pending invitations).
-function setSharedNavCount(n) {
+export function  setSharedNavCount(n) {
   const el = document.getElementById('nav-shared-count');
   if (el) el.textContent = String(Math.max(0, Number(n) || 0));
 }
-async function refreshSharedNavCount() {
+export async function  refreshSharedNavCount() {
   if (!state.cachedProfile) { setSharedNavCount(0); return; }
   try {
     const res = await apiFetch('/api/collab/groups');
@@ -5906,7 +5905,7 @@ async function refreshSharedNavCount() {
   } catch (error) {}
 }
 
-async function renderSharedView() {
+export async function  renderSharedView() {
   updateBinUI();
   updateVaultUI();
   updateBreadcrumbs();
@@ -5954,12 +5953,12 @@ async function renderSharedView() {
     sharedNoteMeta.clear();
     box.innerHTML = invitesHtml || '<p class="modal-desc" style="padding:6px 10px">No connections yet. Click + New connection and enter a username to start.</p>';
     updateFoldToggle();
-    return;
+// (return removed: was IIFE-internal)
   }
   if (!(await sharingEnsureKeys())) {
     box.innerHTML = invitesHtml + '<p class="modal-desc" style="padding:6px 10px">Could not unlock your sharing keys — reopen Shared to retry.</p>';
     updateFoldToggle();
-    return;
+// (return removed: was IIFE-internal)
   }
   sharedGroupKeys.clear();
   sharedGroupFolders.clear();
@@ -6013,7 +6012,7 @@ async function renderSharedView() {
   try { renderTabs(); } catch (error) {}
 }
 
-async function addSharedFolder(groupId) {
+export async function  addSharedFolder(groupId) {
   const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
   if (!key) { showToast('Reload the Shared list and try again'); return; }
   const value = await askInput({ eyebrow: 'Folder', title: 'Add a folder', desc: 'Type a name, or "Parent / Child" to nest.', label: 'Folder name', password: false, placeholder: 'e.g. Ideas / 2026', okText: 'Add' });
@@ -6030,7 +6029,7 @@ async function addSharedFolder(groupId) {
     renderSharedView();
   } catch (error) { showToast('Could not add the folder'); }
 }
-async function moveSharedNote(noteId, groupId) {
+export async function  moveSharedNote(noteId, groupId) {
   const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
   const entry = sharedNoteMeta.get(String(noteId));
   if (!key) { showToast('Reload the Shared list and try again'); return; }
@@ -6048,7 +6047,7 @@ async function moveSharedNote(noteId, groupId) {
 }
 
 // Drag-and-drop: move a note into a folder (no prompt).
-async function moveSharedNoteToFolder(noteId, groupId, folder) {
+export async function  moveSharedNoteToFolder(noteId, groupId, folder) {
   const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
   const entry = sharedNoteMeta.get(String(noteId));
   if (!key) { showToast('Reload the Shared list and try again'); return; }
@@ -6060,7 +6059,7 @@ async function moveSharedNoteToFolder(noteId, groupId, folder) {
   showToast(target ? `Moved to ${target}` : 'Moved to the section root');
 }
 // Drag-and-drop: reparent a folder (with its subfolders and notes).
-async function reparentSharedFolder(groupId, folder, newParent) {
+export async function  reparentSharedFolder(groupId, folder, newParent) {
   const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
   if (!key) { showToast('Reload the Shared list and try again'); return; }
   const parent = newParent || '';
@@ -6083,7 +6082,7 @@ async function reparentSharedFolder(groupId, folder, newParent) {
   showToast('Folder moved');
 }
 
-async function saveGroupFolders(groupId, key, folders) {
+export async function  saveGroupFolders(groupId, key, folders) {
   try {
     const encMeta = await collabEncryptGroupMeta(key, folders, sharedGroupTagList(groupId));
     await apiFetch(`/api/collab/groups/${groupId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
@@ -6091,8 +6090,8 @@ async function saveGroupFolders(groupId, key, folders) {
 }
 
 // ---- Owner-only section settings: a section-level tag list -----------------
-let sectionSettingsGroupId = null;
-function renderSectionSettingsTags() {
+export let sectionSettingsGroupId = null;
+export function  renderSectionSettingsTags() {
   const box = document.getElementById('section-tags-current');
   if (!box) return;
   const tags = sharedGroupTagList(sectionSettingsGroupId);
@@ -6100,7 +6099,7 @@ function renderSectionSettingsTags() {
     ? tags.map((tag) => `<button type="button" class="tag-chip" data-section-tag-remove="${escapeHtml(tag)}" title="Remove ${escapeHtml(tag)}">${escapeHtml(tag)}<span aria-hidden="true">×</span></button>`).join('')
     : '<span class="tag-editor-empty">No section tags yet — add one below.</span>';
 }
-async function saveSectionTags(groupId, tags) {
+export async function  saveSectionTags(groupId, tags) {
   const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
   if (!key) { showToast('Reload the Shared list and try again'); return false; }
   const folders = sharedGroupFolders.get(groupId) || sharedGroupFolders.get(Number(groupId)) || [];
@@ -6110,7 +6109,7 @@ async function saveSectionTags(groupId, tags) {
     return res.ok;
   } catch (error) { return false; }
 }
-function openSectionSettings(groupId) {
+export function  openSectionSettings(groupId) {
   const me = state.cachedProfile && state.cachedProfile.username;
   // Owner-only; the cog is only rendered for owners, this is the safety net.
   if (!me || sharedGroupOwnerOf(groupId) !== me) { showToast('Only the owner can change section settings'); return; }
@@ -6122,12 +6121,12 @@ function openSectionSettings(groupId) {
   const input = document.getElementById('section-tags-input');
   if (input) { input.value = ''; try { input.focus(); } catch (error) {} }
 }
-function closeSectionSettings() {
+export function  closeSectionSettings() {
   const overlay = document.getElementById('section-settings-overlay');
   if (overlay) overlay.hidden = true;
   sectionSettingsGroupId = null;
 }
-function sectionTagAdd(raw) {
+export function  sectionTagAdd(raw) {
   if (sectionSettingsGroupId == null) return;
   const tag = normalizeTagName(raw);
   if (!tag) return;
@@ -6139,7 +6138,7 @@ function sectionTagAdd(raw) {
   renderSectionSettingsTags();
   saveSectionTags(sectionSettingsGroupId, next).then((ok) => { if (!ok) showToast('Could not save section tags'); });
 }
-function sectionTagRemove(name) {
+export function  sectionTagRemove(name) {
   if (sectionSettingsGroupId == null) return;
   const tags = sharedGroupTagList(sectionSettingsGroupId);
   const next = tags.filter((t) => String(t).toLowerCase() !== String(name).toLowerCase());
@@ -6148,7 +6147,7 @@ function sectionTagRemove(name) {
   renderSectionSettingsTags();
   saveSectionTags(sectionSettingsGroupId, next).then((ok) => { if (!ok) showToast('Could not save section tags'); });
 }
-async function updateSharedNoteMeta(key, noteId, meta) {
+export async function  updateSharedNoteMeta(key, noteId, meta) {
   try {
     // Callers rename/move notes and don't carry tags; preserve them from the
     // last decode so the encrypted meta mirror isn't wiped.
@@ -6161,7 +6160,7 @@ async function updateSharedNoteMeta(key, noteId, meta) {
     await apiFetch(`/api/collab/notes/${noteId}/meta`, { method: 'POST', body: JSON.stringify({ encMeta }) });
   } catch (error) {}
 }
-async function renameSharedFolder(groupId, folder) {
+export async function  renameSharedFolder(groupId, folder) {
   const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
   if (!key) { showToast('Reload the Shared list and try again'); return; }
   const value = await askInput({ eyebrow: 'Rename folder', title: folderLeaf(folder), desc: 'Rename this folder in the shared section.', label: 'Name', password: false, placeholder: folderLeaf(folder), okText: 'Rename' });
@@ -6185,7 +6184,7 @@ async function renameSharedFolder(groupId, folder) {
   showToast('Folder renamed');
   renderSharedView();
 }
-function confirmDeleteSharedFolder(groupId, folder) {
+export function  confirmDeleteSharedFolder(groupId, folder) {
   pendingDeleteId = String(groupId);
   pendingDeleteMode = 'shared-folder';
   pendingDeleteSection = folder;
@@ -6193,7 +6192,7 @@ function confirmDeleteSharedFolder(groupId, folder) {
   const overlay = document.getElementById('delete-overlay');
   if (overlay) { overlay.hidden = false; const b = document.getElementById('confirm-delete'); if (b) b.focus(); }
 }
-async function deleteSharedFolderNow(groupId, folder) {
+export async function  deleteSharedFolderNow(groupId, folder) {
   const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
   if (!key) { showToast('Reload the Shared list and try again'); return; }
   const prefix = `${folder}${FOLDER_SEP}`;
@@ -6209,13 +6208,13 @@ async function deleteSharedFolderNow(groupId, folder) {
 }
 
 // Right-click menu for shared notes and folders.
-let sharedMenuTarget = null;
-function closeSharedContextMenu() {
+export let sharedMenuTarget = null;
+export function  closeSharedContextMenu() {
   const menu = document.getElementById('shared-context-menu');
   if (menu) menu.hidden = true;
   sharedMenuTarget = null;
 }
-function showSharedContextMenu(kind, payload, x, y) {
+export function  showSharedContextMenu(kind, payload, x, y) {
   const menu = document.getElementById('shared-context-menu');
   if (!menu) return;
   sharedMenuTarget = { kind, ...payload };
@@ -6235,12 +6234,12 @@ function showSharedContextMenu(kind, payload, x, y) {
   if (rect.bottom > window.innerHeight - pad) menu.style.top = `${Math.max(pad, y - rect.height)}px`;
 }
 
-async function acceptInvite(id) {
+export async function  acceptInvite(id) {
   const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(id)}/accept`, { method: 'POST', body: '{}' });
   if (res.ok) { showToast('Invitation accepted'); renderSharedView(); }
   else showToast('Could not accept the invitation');
 }
-async function declineInvite(id) {
+export async function  declineInvite(id) {
   const me = state.cachedProfile && state.cachedProfile.username;
   const res = await apiFetch(`/api/collab/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(me)}`, { method: 'DELETE' });
   if (res.ok) { showToast('Invitation declined'); renderSharedView(); }
@@ -6250,7 +6249,7 @@ async function declineInvite(id) {
 // Keyboard-accessible delete: mirrors the context-menu rules exactly —
 // binned notes ask for permanent-confirm, important-tagged notes ask for
 // confirm, everything else soft-deletes straight into Bin.
-function requestDeleteNoteById(id) {
+export function  requestDeleteNoteById(id) {
   if (!id || typeof id !== 'string' || !isValidNoteId(id)) return;
   const note = state.notes.find((item) => item.id === id);
   if (!note) return;
@@ -6259,13 +6258,13 @@ function requestDeleteNoteById(id) {
   else deleteNoteById(id);
 }
 
-let pendingDeleteId = null;
-let pendingDeleteMode = 'soft';
-let pendingDeleteSection = null; // custom section id for folder/section deletes
-let pendingDeleteTag = null; // tag name for tag deletes
+export let pendingDeleteId = null;
+export let pendingDeleteMode = 'soft';
+export let pendingDeleteSection = null; // custom section id for folder/section deletes
+export let pendingDeleteTag = null; // tag name for tag deletes
 
 // Fill the shared in-app confirm popup (eyebrow/title/name/message). Name is set via textContent — never HTML.
-function setDeleteDialog({ eyebrow, title, name, message }) {
+export function  setDeleteDialog({ eyebrow, title, name, message }) {
   const eyebrowEl = document.querySelector('#delete-overlay .eyebrow');
   const titleEl = document.getElementById('delete-title');
   const descEl = document.getElementById('delete-desc');
@@ -6284,7 +6283,7 @@ function setDeleteDialog({ eyebrow, title, name, message }) {
 }
 
 // Popup: delete an important-tagged note (moves to Bin, restorable for 3 days).
-function openDeleteConfirm(id) {
+export function  openDeleteConfirm(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note) return;
   pendingDeleteId = id;
@@ -6304,7 +6303,7 @@ function openDeleteConfirm(id) {
 }
 
 // Popup: permanently erase one binned note (no recovery).
-function openPermanentDeleteConfirm(id) {
+export function  openPermanentDeleteConfirm(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note) return;
   pendingDeleteId = id;
@@ -6324,7 +6323,7 @@ function openPermanentDeleteConfirm(id) {
 }
 
 // Popup: permanently erase the whole Bin (shows the doomed count).
-function openEmptyBinConfirm() {
+export function  openEmptyBinConfirm() {
   const count = state.notes.filter((item) => item.deleted).length;
   if (!count) { showToast('Bin is already empty'); return; }
   pendingDeleteId = '__ALL__';
@@ -6344,7 +6343,7 @@ function openEmptyBinConfirm() {
 }
 
 // Hide the confirm popup and clear the pending action.
-function closeDeleteConfirm() {
+export function  closeDeleteConfirm() {
   const overlay = document.getElementById('delete-overlay');
   if (overlay) overlay.hidden = true;
   pendingDeleteId = null;
@@ -6353,7 +6352,7 @@ function closeDeleteConfirm() {
 }
 
 // Run the pending popup action: soft/permanent/empty/folder/folder-permanent.
-function confirmPendingDelete() {
+export function  confirmPendingDelete() {
   if (!pendingDeleteId) return;
   const id = pendingDeleteId;
   const mode = pendingDeleteMode;
@@ -6373,7 +6372,7 @@ function confirmPendingDelete() {
 }
 
 // Delegated right-click handling on the note list; closes on outside click, resize, scroll and Escape.
-function bindNoteContextMenu() {
+export function  bindNoteContextMenu() {
   const menu = getNoteContextMenu();
   if (!menu || !noteList) return;
   noteList.addEventListener('contextmenu', (event) => {
@@ -6410,17 +6409,17 @@ function bindNoteContextMenu() {
 // a background sync can never wipe secrets; plaintext exists in memory only
 // while unlocked (wiped on lock/logout/reload).
 state.vault = { unlocked: false, dek: null, notes: [], blobs: [], meta: null, folders: [] };
-let currentVaultId = null;
-let vaultModalMode = null; // 'setup' | 'unlock' | 'reset-confirm'
+export let currentVaultId = null;
+export let vaultModalMode = null; // 'setup' | 'unlock' | 'reset-confirm'
 
-function validVaultBlob(item) {
+export function  validVaultBlob(item) {
   return Boolean(item && typeof item.id === 'string' && item.payload
     && typeof item.payload.iv === 'string' && typeof item.payload.data === 'string');
 }
 
 // Vault folder names: flat, trimmed, no slashes, capped. Shared by envelope
 // reads and the add/rename dialogs.
-function cleanVaultFolders(value) {
+export function  cleanVaultFolders(value) {
   if (!Array.isArray(value)) return [];
   return value
     .filter((name) => typeof name === 'string' && name.trim() && !/[/\\]/.test(name))
@@ -6429,14 +6428,14 @@ function cleanVaultFolders(value) {
     .slice(0, 200);
 }
 
-function timingSafeEqualStr(a, b) {
+export function  timingSafeEqualStr(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
 
-async function vaultEncryptNote(note) {
+export async function  vaultEncryptNote(note) {
   const iv = e2eeRandomBytes(12);
   const folder = (note && typeof note.folder === 'string' && note.folder.trim())
     ? note.folder.trim().slice(0, 60) : null;
@@ -6450,7 +6449,7 @@ async function vaultEncryptNote(note) {
   return { id: note.id, payload: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) } };
 }
 
-async function vaultDecryptItem(item) {
+export async function  vaultDecryptItem(item) {
   const plain = await window.crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: e2eeB64ToBytes(item.payload.iv) }, state.vault.dek,
     e2eeB64ToBytes(item.payload.data));
@@ -6468,7 +6467,7 @@ async function vaultDecryptItem(item) {
   };
 }
 
-async function decryptAllVaultBlobs() {
+export async function  decryptAllVaultBlobs() {
   const out = [];
   for (const item of state.vault.blobs) {
     try { out.push(await vaultDecryptItem(item)); }
@@ -6479,7 +6478,7 @@ async function decryptAllVaultBlobs() {
 
 // Ciphertext staged for upload: freshly encrypted while unlocked, retained
 // blobs while locked (a background sync can never erase secrets).
-async function currentVaultBlobs() {
+export async function  currentVaultBlobs() {
   if (!state.vault.unlocked) return state.vault.blobs;
   const out = [];
   for (const note of state.vault.notes) out.push(await vaultEncryptNote(note));
@@ -6487,7 +6486,7 @@ async function currentVaultBlobs() {
   return out;
 }
 
-function uniqueVaultTitle(base) {
+export function  uniqueVaultTitle(base) {
   const clean = (typeof base === 'string' ? base : 'Untitled note').trim().slice(0, 180) || 'Untitled note';
   const taken = new Set(state.vault.notes.map((note) => String(note.title || '').toLowerCase()));
   if (!taken.has(clean.toLowerCase())) return clean;
@@ -6497,7 +6496,7 @@ function uniqueVaultTitle(base) {
 }
 
 // Open a vault note in the editor (preview-first, like normal notes).
-function selectVaultNote(id) {
+export function  selectVaultNote(id) {
   exitCoverRepos(true);
   const note = state.vault.unlocked ? state.vault.notes.find((item) => item.id === id) : null;
   if (!note) return;
@@ -6518,7 +6517,7 @@ function selectVaultNote(id) {
 }
 
 // Save the open vault note into memory; the debounced envelope sync persists it.
-function saveVaultNote() {
+export function  saveVaultNote() {
   if (!state.vault.unlocked || !currentVaultId) return;
   const note = state.vault.notes.find((item) => item.id === currentVaultId);
   if (!note) return;
@@ -6537,9 +6536,9 @@ function saveVaultNote() {
 
 // + New secret note entry: like + New Note outside the Vault — asks for the
 // folder first (only when folders exist), then the template.
-let pendingVaultFolder = null; // folder name | null (null = Vault root)
-let vaultTemplatePending = false;
-function onNewVaultNoteClick() {
+export let pendingVaultFolder = null; // folder name | null (null = Vault root)
+export let vaultTemplatePending = false;
+export function  onNewVaultNoteClick() {
   if (!state.vault.unlocked) { showToast('Unlock the Vault first'); return; }
   pendingVaultFolder = null;
   vaultTemplatePending = false;
@@ -6550,7 +6549,7 @@ function onNewVaultNoteClick() {
 
 // Folder destination picker for new vault notes. Reuses the shared
 // folder-pick overlay with vault entries (root first).
-function openVaultFolderPicker() {
+export function  openVaultFolderPicker() {
   const box = document.getElementById('folder-pick-options');
   const overlay = document.getElementById('folder-pick-overlay');
   if (!box || !overlay) return false;
@@ -6575,7 +6574,7 @@ function openVaultFolderPicker() {
 }
 
 // Create a vault note from a template into the picked folder (or Vault root).
-function createVaultNoteFromTemplate(templateKey) {
+export function  createVaultNoteFromTemplate(templateKey) {
   if (!state.vault.unlocked) { showToast('Unlock the Vault first'); return null; }
   const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
   const folder = (pendingVaultFolder && state.vault.folders.includes(pendingVaultFolder)) ? pendingVaultFolder : null;
@@ -6594,7 +6593,7 @@ function createVaultNoteFromTemplate(templateKey) {
   return note;
 }
 
-function deleteVaultNote(id) {
+export function  deleteVaultNote(id) {
   const index = state.vault.notes.findIndex((item) => item.id === id);
   if (index === -1) return;
   state.vault.notes.splice(index, 1);
@@ -6608,7 +6607,7 @@ function deleteVaultNote(id) {
   showToast('Secret note deleted');
 }
 
-function openVaultNoteDeleteConfirm(id) {
+export function  openVaultNoteDeleteConfirm(id) {
   const note = state.vault.notes.find((item) => item.id === id);
   if (!note) return;
   pendingDeleteId = id;
@@ -6629,7 +6628,7 @@ function openVaultNoteDeleteConfirm(id) {
 
 // ---- Vault folders (flat, dev): explicit list in the envelope so empty
 // folders survive. Notes carry folder (or null for Vault root).
-function cleanVaultFolderInput(raw, exceptFolder) {
+export function  cleanVaultFolderInput(raw, exceptFolder) {
   const clean = String(raw == null ? '' : raw).trim().replace(/\s+/g, ' ').slice(0, 60);
   if (!clean) return { error: 'Give the folder a name' };
   if (/[/\\]/.test(raw)) return { error: 'Use a plain name without slashes' };
@@ -6639,7 +6638,7 @@ function cleanVaultFolderInput(raw, exceptFolder) {
   return { name: clean };
 }
 
-function addVaultFolder() {
+export function  addVaultFolder() {
   if (!state.vault.unlocked) { showToast('Unlock the Vault first'); return; }
   askInput({ eyebrow: 'Vault', title: 'New vault folder', desc: '', label: 'Folder name', password: false, placeholder: 'e.g. Receipts', okText: 'Create' }).then((value) => {
     if (value == null) return;
@@ -6652,7 +6651,7 @@ function addVaultFolder() {
   });
 }
 
-function renameVaultFolder(folder) {
+export function  renameVaultFolder(folder) {
   if (!state.vault.unlocked || !state.vault.folders.includes(folder)) return;
   askInput({ eyebrow: 'Vault', title: 'Rename vault folder', desc: '', label: 'Folder name', password: false, placeholder: folder, okText: 'Rename' }).then((value) => {
     if (value == null) return;
@@ -6667,7 +6666,7 @@ function renameVaultFolder(folder) {
   });
 }
 
-function openVaultFolderDeleteConfirm(folder) {
+export function  openVaultFolderDeleteConfirm(folder) {
   const count = state.vault.notes.filter((note) => note.folder === folder).length;
   pendingDeleteId = folder;
   pendingDeleteMode = 'vault-folder';
@@ -6689,7 +6688,7 @@ function openVaultFolderDeleteConfirm(folder) {
 
 // Delete a vault folder immediately (no Bin in the vault): its notes move to
 // the Vault root and everything syncs encrypted as usual.
-function deleteVaultFolder(folder) {
+export function  deleteVaultFolder(folder) {
   if (!state.vault.unlocked) return;
   state.vault.folders = state.vault.folders.filter((entry) => entry !== folder);
   state.vault.notes.forEach((note) => { if (note.folder === folder) { note.folder = null; note.date = 'Now'; } });
@@ -6700,7 +6699,7 @@ function deleteVaultFolder(folder) {
 
 // Render the Vault view: lock notice when locked, otherwise one Vault folder
 // with the decrypted notes. Counts/footer mirror the normal list shape.
-function renderVaultList() {
+export function  renderVaultList() {
   updateBinUI(); // Vault never shows Empty Bin; this also clears stale visibility.
   updateVaultUI();
   updateBreadcrumbs();
@@ -6726,7 +6725,7 @@ function renderVaultList() {
     if (openBtn) openBtn.addEventListener('click', openVaultModal);
     renderTabs();
     renderStripItems();
-    return;
+// (return removed: was IIFE-internal)
   }
   if (!state.vault.notes.length && !state.vault.folders.length) {
     noteList.innerHTML = '';
@@ -6851,7 +6850,7 @@ function renderVaultList() {
 }
 
 // Toggle the vault-only action buttons and the nav lock icon.
-function updateVaultUI() {
+export function  updateVaultUI() {
   const inVault = state.activeView === 'vault';
   const showVaultTools = inVault && state.vault.unlocked;
   const newVaultBtn = document.getElementById('new-vault-note');
@@ -6876,7 +6875,7 @@ function updateVaultUI() {
   if (vaultNavIcon) vaultNavIcon.innerHTML = icon(state.vault.unlocked ? 'unlock' : 'lock');
 }
 
-function enterVaultView() {
+export function  enterVaultView() {
   if (!state.vault.unlocked) { openVaultModal(); return; }
   state.activeView = 'vault';
   activeCustom = null;
@@ -6892,7 +6891,7 @@ function enterVaultView() {
 // Wipe vault plaintext (keeping ciphertext blobs AND the folder list) and
 // leave the view. Folders stay so a background sync while locked can never
 // strand or erase them from the envelope.
-async function lockVault() {
+export async function  lockVault() {
   if (state.activeView === 'vault' && currentVaultId) saveVaultNote();
   try { await currentVaultBlobs(); } catch (error) {}
   persistNotes();
@@ -6909,7 +6908,7 @@ async function lockVault() {
 // Vault password modal: 'setup' (first run), 'unlock', or 'reset-confirm'.
 // reset-confirm reuses the masked unlock password field for the LOGIN
 // password proof (no window.prompt plaintext shoulder-surfing).
-function setVaultModal(mode, message) {
+export function  setVaultModal(mode, message) {
   vaultModalMode = mode;
   document.getElementById('vault-title').textContent = mode === 'setup' ? 'Set Vault Password' : mode === 'reset-confirm' ? 'Reset Vault?' : 'Unlock Vault';
   document.getElementById('vault-desc').textContent = mode === 'setup'
@@ -6929,7 +6928,7 @@ function setVaultModal(mode, message) {
   }
 }
 
-async function openVaultModal() {
+export async function  openVaultModal() {
   if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to open the Vault'); return; }
   let meta = null;
   try {
@@ -6938,7 +6937,7 @@ async function openVaultModal() {
     meta = await response.json();
   } catch (error) {
     showToast('Cannot reach the Notely server');
-    return;
+// (return removed: was IIFE-internal)
   }
   state.vault.meta = meta;
   setVaultModal(meta && meta.exists ? 'unlock' : 'setup');
@@ -6947,7 +6946,7 @@ async function openVaultModal() {
   if (focusInput) focusInput.focus();
 }
 
-function closeVaultModal() {
+export function  closeVaultModal() {
   document.getElementById('vault-overlay').hidden = true;
   vaultModalMode = null;
   ['vault-password', 'vault-new-password', 'vault-confirm-password'].forEach((id) => {
@@ -6956,7 +6955,7 @@ function closeVaultModal() {
   });
 }
 
-function vaultFail(message) {
+export function  vaultFail(message) {
   const errorEl = document.getElementById('vault-error');
   const card = document.querySelector('#vault-overlay .modal');
   if (errorEl) { errorEl.textContent = message; errorEl.hidden = false; }
@@ -6967,7 +6966,7 @@ function vaultFail(message) {
   }
 }
 
-async function setupVaultFromModal() {
+export async function  setupVaultFromModal() {
   const password = String(document.getElementById('vault-new-password').value || '');
   const confirm = String(document.getElementById('vault-confirm-password').value || '');
   if (password !== confirm) { vaultFail('Passwords do not match.'); return; }
@@ -7003,7 +7002,7 @@ async function setupVaultFromModal() {
   }
 }
 
-async function unlockVaultFromModal() {
+export async function  unlockVaultFromModal() {
   const password = String(document.getElementById('vault-password').value || '');
   const meta = state.vault.meta;
   if (!meta || !meta.exists) { setVaultModal('setup'); return; }
@@ -7011,7 +7010,7 @@ async function unlockVaultFromModal() {
     const verifier = await argon2id32(password, e2eeB64ToBytes(meta.saltAuth));
     if (!timingSafeEqualStr(e2eeBytesToB64(verifier), meta.verifier)) {
       vaultFail('Incorrect vault password.');
-      return;
+// (return removed: was IIFE-internal)
     }
     const kekRaw = await argon2id32(password, e2eeB64ToBytes(meta.saltEnc));
     const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
@@ -7028,7 +7027,7 @@ async function unlockVaultFromModal() {
   }
 }
 
-async function resetVault() {
+export async function  resetVault() {
   // Re-auth fix: stolen cookie alone cannot wipe the vault. Read the LOGIN
   // password from the masked modal field (shown in reset-confirm mode),
   // derive the account verifier, and send as proof.
@@ -7043,18 +7042,18 @@ async function resetVault() {
     proof = e2eeBytesToB64(raw);
   } catch (error) {
     vaultFail('Could not confirm password.');
-    return;
+// (return removed: was IIFE-internal)
   }
   try {
     const response = await apiFetch('/api/vault-meta', { method: 'DELETE', body: JSON.stringify({ currentAccountAuth: proof }) });
     if (response.status === 401) {
       vaultFail('Incorrect login password — vault not reset.');
-      return;
+// (return removed: was IIFE-internal)
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
   } catch (error) {
     vaultFail('Could not reset the vault. Try again.');
-    return;
+// (return removed: was IIFE-internal)
   }
   state.vault.unlocked = false;
   state.vault.dek = null;
@@ -7091,7 +7090,7 @@ document.getElementById('new-vault-note').addEventListener('click', onNewVaultNo
 document.getElementById('lock-vault').addEventListener('click', lockVault);
 
 // Detect a trailing file extension typed in the title and switch the note type instead.
-function parseTitleExtension(rawTitle, note) {
+export function  parseTitleExtension(rawTitle, note) {
   const input = typeof rawTitle === 'string' ? rawTitle : 'Untitled note';
   const match = input.match(/\.((md|markdown|txt|text|json|yaml|yml))$/i);
   if (match) {
@@ -7102,7 +7101,7 @@ function parseTitleExtension(rawTitle, note) {
 }
 
 // Persist title/body from the editor (debounced server sync); refuses deleted/archived notes.
-function saveCurrentNote() {
+export function  saveCurrentNote() {
   // Shared (collaborative) note: edits go to the Yjs doc, not to a local note.
   if (state.collab.noteId && state.collab.title && state.collab.body) {
     applyTextDiff(state.collab.title, state.collab.title.toString(), String(titleInput.value || '').slice(0, 200));
@@ -7112,7 +7111,7 @@ function saveCurrentNote() {
       applyTextDiff(state.collab.desc, state.collab.desc.toString(), descEl && typeof descEl.value === 'string' ? descEl.value.slice(0, 2000) : '');
     }
     scheduleCollabMeta();
-    return;
+// (return removed: was IIFE-internal)
   }
   if (state.activeView === 'vault') { saveVaultNote(); return; }
   const note = currentNote();
@@ -7140,7 +7139,7 @@ function saveCurrentNote() {
 
 // De-duplicate a note title (case-insensitive) by appending a counter.
 // Binned notes don't squat names — only live ones count.
-function uniqueTitle(base) {
+export function  uniqueTitle(base) {
   const clean = (typeof base === 'string' ? base : 'Untitled note').trim().slice(0, 180) || 'Untitled note';
   const taken = new Set(state.notes.filter((note) => !note.deleted).map((note) => String(note.title || '').toLowerCase()));
   if (!taken.has(clean.toLowerCase())) return clean;
@@ -7151,7 +7150,7 @@ function uniqueTitle(base) {
 
 // ---- Templates, toasts, editor formatting commands ----
 
-const NOTE_TEMPLATES = {
+export const NOTE_TEMPLATES = {
   standard: {
     label: 'Standard note',
     caption: 'Standard',
@@ -7180,7 +7179,7 @@ const NOTE_TEMPLATES = {
 };
 // Single source of truth for the New-note chooser, shared by All Notes and the
 // Shared view so the two pickers are always identical.
-function renderTemplateOptions() {
+export function  renderTemplateOptions() {
   const box = document.getElementById('template-options');
   if (!box) return;
   box.innerHTML = Object.keys(NOTE_TEMPLATES).map((key) => {
@@ -7195,7 +7194,7 @@ function renderTemplateOptions() {
 
 // One seed used by both All Notes and the Shared view, so editing a template's
 // title/body is mirrored everywhere a new note is created from it.
-function seedFromTemplate(templateKey, title) {
+export function  seedFromTemplate(templateKey, title) {
   const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
   return {
     template,
@@ -7205,7 +7204,7 @@ function seedFromTemplate(templateKey, title) {
 }
 
 // Create a note from a template (Standard/Recipe/To-Do) into the current view+collection and open it.
-function createNoteFromTemplate(templateKey) {
+export function  createNoteFromTemplate(templateKey) {
   const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
   if (state.activeView === 'bin') {
     state.activeView = 'notes';
@@ -7294,12 +7293,12 @@ function createNoteFromTemplate(templateKey) {
 }
 
 // Shortcut for a blank Standard note.
-function addNote() {
+export function  addNote() {
   createNoteFromTemplate('standard');
 }
 
 // Show the New-note template chooser popup.
-function openTemplatePicker() {
+export function  openTemplatePicker() {
   const overlay = document.getElementById('template-overlay');
   if (!overlay) { addNote(); return; }
   renderTemplateOptions();
@@ -7309,7 +7308,7 @@ function openTemplatePicker() {
 }
 
 // Hide the template chooser popup.
-function closeTemplatePicker() {
+export function  closeTemplatePicker() {
   vaultTemplatePending = false;
   pendingSharedTemplate = null;
   const overlay = document.getElementById('template-overlay');
@@ -7317,22 +7316,22 @@ function closeTemplatePicker() {
 }
 
 // Folder picked in a bare section view, awaiting template choice.
-let pendingSectionFolder = null; // { ns: 'custom', section: id, folder } | null
+export let pendingSectionFolder = null; // { ns: 'custom', section: id, folder } | null
 // Template picked while unfiled, awaiting a folder choice (folder-required rule).
-let pendingTemplate = null; // template key | null
+export let pendingTemplate = null; // template key | null
 
 // + New note entry: a bare section view (no folder picked) asks for the
 // destination folder first, so the note lands where the user wants. A section
 // with no folders yet cannot file anything — say so instead of silently
 // creating an invisible note.
-function onNewNoteClick() {
+export function  onNewNoteClick() {
   pendingSectionFolder = null;
   pendingTemplate = null;
   if (activeCustom && !activeCustom.folder) {
     const section = state.customSections.find((entry) => entry.id === activeCustom.section);
     if (section && !section.folders.length) {
       showToast(`Create a folder in ${section.name} first`);
-      return;
+// (return removed: was IIFE-internal)
     }
     if (openFolderPicker('custom', activeCustom.section)) return;
   }
@@ -7342,7 +7341,7 @@ function onNewNoteClick() {
 // Order picker entries like the expanded workspace note list: a parent is
 // followed immediately by all its children (recursively), matching the
 // strip's tree grouping. Roots/orphans keep the section's list order.
-function orderFoldersLikeWorkspace(folders) {
+export function  orderFoldersLikeWorkspace(folders) {
   const childrenOf = new Map();
   const roots = [];
   folders.forEach((name) => {
@@ -7367,7 +7366,7 @@ function orderFoldersLikeWorkspace(folders) {
 // (bare-section flow, resumes at the template picker). With no args it lists
 // every folder in the workspace (folder-required gate, resumes a parked
 // template choice). Returns false when there is nothing to choose.
-function openFolderPicker(ns, sectionId) {
+export function  openFolderPicker(ns, sectionId) {
   const box = document.getElementById('folder-pick-options');
   const overlay = document.getElementById('folder-pick-overlay');
   if (!box || !overlay) return false;
@@ -7422,13 +7421,13 @@ function openFolderPicker(ns, sectionId) {
   return true;
 }
 
-function closeFolderPicker() {
+export function  closeFolderPicker() {
   const overlay = document.getElementById('folder-pick-overlay');
   if (overlay) overlay.hidden = true;
 }
 
 // Show a transient bottom-right status message (single timer, latest wins).
-function showToast(message) {
+export function  showToast(message) {
   const toast = document.getElementById('toast');
   toast.textContent = message;
   toast.classList.add('show');
@@ -7440,8 +7439,8 @@ function showToast(message) {
 // unmasked plaintext, unstyled, and block automation/testing). One-shot
 // promise: resolves the typed string, or null on cancel/Esc/overlay click.
 // A second call while open resolves the first waiter with null.
-let askInputPending = null;
-function askInput({ eyebrow = 'Notely', title = 'Input needed', desc = '', label = 'Value', password = true, placeholder = '', okText = 'Confirm' } = {}) {
+export let askInputPending = null;
+export function  askInput({ eyebrow = 'Notely', title = 'Input needed', desc = '', label = 'Value', password = true, placeholder = '', okText = 'Confirm' } = {}) {
   if (askInputPending) {
     try { askInputPending(null); } catch (error) {}
     askInputPending = null;
@@ -7486,13 +7485,13 @@ function askInput({ eyebrow = 'Notely', title = 'Input needed', desc = '', label
 }
 
 // True when the open note is not Markdown (formatting tools stay disabled).
-function isPlainTextNote() {
+export function  isPlainTextNote() {
   const note = activeEditorNote();
   return note && note.ext !== 'md';
 }
 
 // Wrap the editor selection (or placeholder word) with a Markdown marker and save.
-function wrapSelection(before, after = before) {
+export function  wrapSelection(before, after = before) {
   if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
   if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
   const start = markdownInput.selectionStart;
@@ -7504,7 +7503,7 @@ function wrapSelection(before, after = before) {
 }
 
 // Insert a Markdown line prefix (heading/list/quote) at the start of the current line and save.
-function linePrefix(prefix) {
+export function  linePrefix(prefix) {
   if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
   if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
   const start = markdownInput.selectionStart;
@@ -7581,7 +7580,7 @@ noteList.addEventListener('click', (event) => {
     if (sharedCollapsed.has(k)) sharedCollapsed.delete(k); else sharedCollapsed.add(k);
     renderSharedView();
     updateFoldToggle();
-    return;
+// (return removed: was IIFE-internal)
   }
   const ndel = event.target.closest('[data-collab-note-delete]');
   if (ndel) { event.preventDefault(); event.stopPropagation(); collabDeleteNote(ndel.dataset.collabNoteDelete); return; }
@@ -7613,7 +7612,7 @@ noteList.addEventListener('contextmenu', (event) => {
     if (ref) {
       event.preventDefault(); event.stopPropagation();
       showSharedContextMenu('folder', { groupId: ref.dataset.folderGroup, folder: ref.dataset.folderNote }, event.clientX, event.clientY);
-      return;
+// (return removed: was IIFE-internal)
     }
   }
   const noteRow = event.target.closest('[data-collab-open]');
@@ -7649,7 +7648,7 @@ noteList.addEventListener('contextmenu', (event) => {
   noteList.addEventListener('scroll', closeSharedContextMenu, true);
 }
 // Drag-and-drop in the Shared tree: move notes into folders, reparent folders.
-function clearSharedDropTargets() {
+export function  clearSharedDropTargets() {
   noteList.querySelectorAll('.drop-target, .drop-before').forEach((el) => el.classList.remove('drop-target', 'drop-before'));
 }
 noteList.addEventListener('dragstart', (event) => {
@@ -7699,7 +7698,7 @@ noteList.addEventListener('drop', (event) => {
 });
 noteList.addEventListener('dragend', () => clearSharedDropTargets());
 
-function refreshCurrent() {
+export function  refreshCurrent() {
   // Refresh only the workspace sidebar (the notes list / Shared inbox).
   if (state.activeView === 'shared') { renderSharedView(); return; }
   if (state.activeView === 'vault') { renderVaultList(); return; }
@@ -7778,7 +7777,7 @@ document.getElementById('settings-tag-list').addEventListener('click', (event) =
       if (!renameTagEverywhere(oldName, value)) showToast('Tag not changed');
       renderSettingsTags();
     });
-    return;
+// (return removed: was IIFE-internal)
   }
   const del = event.target.closest('[data-tag-delete]');
   if (del) {
@@ -7849,27 +7848,27 @@ if (recipeBodyEl) {
       const i = Number(toggle.dataset.recipeToggle);
       recipeMutate((data) => { if (data.ingredients[i]) data.ingredients[i].d = !data.ingredients[i].d; });
       renderRecipeBody(null);
-      return;
+// (return removed: was IIFE-internal)
     }
     const remIng = event.target.closest('[data-recipe-remove-ing]');
     if (remIng) {
       const i = Number(remIng.dataset.recipeRemoveIng);
       recipeMutate((data) => { data.ingredients.splice(i, 1); });
       renderRecipeBody(null);
-      return;
+// (return removed: was IIFE-internal)
     }
     const remStep = event.target.closest('[data-recipe-remove-step]');
     if (remStep) {
       const i = Number(remStep.dataset.recipeRemoveStep);
       recipeMutate((data) => { data.steps.splice(i, 1); });
       renderRecipeBody(null);
-      return;
+// (return removed: was IIFE-internal)
     }
     if (event.target.closest('#recipe-add-ingredient')) {
       recipeMutate((data) => { data.ingredients.push({ t: '', d: false }); });
       renderRecipeBody(null);
       focusRecipeField('[data-recipe-ing]', 'last');
-      return;
+// (return removed: was IIFE-internal)
     }
     if (event.target.closest('#recipe-add-step')) {
       recipeMutate((data) => { data.steps.push(''); });
@@ -7884,7 +7883,7 @@ if (recipeBodyEl) {
       ing.style.height = `${ing.scrollHeight}px`;
       const i = Number(ing.dataset.recipeIng);
       recipeMutate((data) => { if (data.ingredients[i]) data.ingredients[i].t = ing.value; });
-      return;
+// (return removed: was IIFE-internal)
     }
     const step = event.target.closest('[data-recipe-step]');
     if (step) {
@@ -7930,7 +7929,7 @@ document.querySelectorAll('.filter-chip').forEach((chip) => chip.addEventListene
 // points down when folders are expanded (click = collapse) and flips when
 // everything is already collapsed.
 
-function visibleFolderPaths() {
+export function  visibleFolderPaths() {
   const paths = new Set();
   state.notes.forEach((note) => {
     if (note.deleted || note.archived) return;
@@ -7943,7 +7942,7 @@ function visibleFolderPaths() {
   state.customSections.forEach((section) => section.folders.forEach((folder) => paths.add(folder)));
   return [...paths];
 }
-function updateFoldToggle() {
+export function  updateFoldToggle() {
   if (!foldToggle) return;
   const inShared = state.activeView === 'shared';
   const paths = inShared ? sharedAllFolderKeys() : visibleFolderPaths();
@@ -7963,7 +7962,7 @@ if (foldToggle) {
       else keys.forEach((key) => sharedCollapsed.delete(key));
       renderSharedView();
       updateFoldToggle();
-      return;
+// (return removed: was IIFE-internal)
     }
     const anyOpen = visibleFolderPaths().some((folder) => !state.collapsedFolders.has(folder));
     if (anyOpen) visibleFolderPaths().forEach((folder) => state.collapsedFolders.add(folder));
@@ -7975,27 +7974,27 @@ if (foldToggle) {
 
 // Display name of a sidebar section.
 // Display folder of a note inside one custom section (null when unassigned).
-function customNoteFolder(note, sectionId) {
+export function  customNoteFolder(note, sectionId) {
   if (!note || !note.sections || typeof note.sections !== 'object') return null;
   const folder = note.sections[sectionId];
   return typeof folder === 'string' && folder.trim() ? folder : null;
 }
 
 // Display name of a sidebar section (all sections share the custom implementation).
-function sectionDisplayName(kind, id) {
+export function  sectionDisplayName(kind, id) {
   const sectionId = kind === 'custom' ? id : kind;
   const section = state.customSections.find((entry) => entry.id === sectionId);
   return section ? section.name : 'Section';
 }
 
 // Persist custom sections + section display names into the encrypted UI vault.
-function persistCustomSections() {
+export function  persistCustomSections() {
   persistUiVault();
 }
 
 // Filter the list to a custom section (folder null) or one of its folders.
 // Clears every other filter, like its built-in counterparts.
-function selectCustomSection(sectionId) {
+export function  selectCustomSection(sectionId) {
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (!section) return;
   document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
@@ -8009,7 +8008,7 @@ function selectCustomSection(sectionId) {
   renderNoteList();
 }
 
-function selectCustomFolder(sectionId, folder) {
+export function  selectCustomFolder(sectionId, folder) {
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (!section || !folder) return;
   // Intermediate parents are not always stored in the folder list (a note can
@@ -8034,7 +8033,7 @@ function selectCustomFolder(sectionId, folder) {
 }
 
 // Clear section/folder filters and sidebar highlights (unified custom implementation).
-function clearSectionSelection() {
+export function  clearSectionSelection() {
   activeCustom = null;
   document.querySelectorAll('#custom-sections .collection-item').forEach((item) => item.classList.remove('active'));
 }
@@ -8153,7 +8152,7 @@ document.getElementById('cover-input').addEventListener('change', (event) => {
   if (file) { if (state.collab.noteId) handleCollabCoverFile(file); else handleCoverFile(file); }
 });
 // Reposition by dragging the banner on the note itself (buttons opt out).
-function coverDragStart(event, clientY) {
+export function  coverDragStart(event, clientY) {
   if (event.target && event.target.closest && event.target.closest('button')) return;
   if (!coverDragNote()) return;
   coverDragging = true;
@@ -8179,9 +8178,9 @@ document.addEventListener('mousemove', (event) => {
   if (coverDragging) moveCoverOnNote(event.clientY);
 });
 document.addEventListener('mouseup', () => endCoverDrag());
-const MAX_IMPORT_FILES = 20;
-const MAX_IMPORT_BYTES_PER_FILE = 1024 * 1024;
-const MAX_IMPORT_BYTES_TOTAL = 5 * 1024 * 1024;
+export const MAX_IMPORT_FILES = 20;
+export const MAX_IMPORT_BYTES_PER_FILE = 1024 * 1024;
+export const MAX_IMPORT_BYTES_TOTAL = 5 * 1024 * 1024;
 importInput.addEventListener('change', async (event) => {
   const picked = [...(event.target.files || [])].filter((file) => /\.(md|markdown|txt|text|json|yaml|yml)$/i.test(file.name || ''));
   if (!picked.length) { showToast('Choose .md, .txt, .json or .yaml files to import'); return; }
@@ -8245,17 +8244,17 @@ document.getElementById('close-sidebar').addEventListener('click', () => documen
 // chips usable; max keeps the editor readable). The collapsed strip (55px)
 // is never affected — the handle is hidden in strip/focus modes. Width is
 // persisted per device and re-applied on boot.
-const PANEL_MIN_WIDTH = 220;
-const PANEL_MAX_WIDTH = 560;
+export const PANEL_MIN_WIDTH = 220;
+export const PANEL_MAX_WIDTH = 560;
 
 
-function applyPanelWidth(px) {
+export function  applyPanelWidth(px) {
   if (!notesPanel) return;
   const width = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(px)));
   notesPanel.style.flexBasis = `${width}px`;
   try { localStorage.setItem('notely-panel-width', String(width)); } catch (error) {}
 }
-function restorePanelWidth() {
+export function  restorePanelWidth() {
   if (!notesPanel) return;
   try {
     const saved = parseInt(localStorage.getItem('notely-panel-width') || '', 10);
@@ -8294,7 +8293,7 @@ if (panelResizer && notesPanel) {
 
 
 // Collapse/expand the icon-strip sidebar and persist the choice.
-function setSidebarCollapsed(collapsed) {
+export function  setSidebarCollapsed(collapsed) {
   sidebar.classList.toggle('collapsed', collapsed);
   try { localStorage.setItem('notely-sidebar-collapsed', collapsed ? '1' : '0'); } catch (error) {}
   if (sidebarToggle) {
@@ -8306,7 +8305,7 @@ function setSidebarCollapsed(collapsed) {
   try { renderStripItems(); } catch (error) {}
 }
 // Whether the sidebar starts collapsed on load (Settings → Side Menu; device-local).
-function startCollapsedPref() {
+export function  startCollapsedPref() {
   try { return localStorage.getItem('notely-sidebar-start-collapsed') !== '0'; }
   catch (error) { return true; }
 }
@@ -8320,7 +8319,7 @@ if (sidebarToggle) {
 
 // Collapse/expand the workspace (notes panel) and persist the choice,
 // mirroring the sidebar collapse. Starts expanded.
-function setWorkspaceCollapsed(collapsed) {
+export function  setWorkspaceCollapsed(collapsed) {
   const shell = document.querySelector('.app-shell');
   if (shell) shell.classList.toggle('workspace-collapsed', collapsed);
   try { localStorage.setItem('notely-workspace-collapsed', collapsed ? '1' : '0'); } catch (error) {}
@@ -8344,7 +8343,7 @@ if (workspaceToggle) {
 }
 // Re-apply the persisted collapse choice (login, register, boot all land here
 // after their first selection, so the workspace returns as the user left it).
-function restoreWorkspaceCollapsed() {
+export function  restoreWorkspaceCollapsed() {
   try {
     setWorkspaceCollapsed(localStorage.getItem('notely-workspace-collapsed') === '1');
   } catch (error) { setWorkspaceCollapsed(false); }
@@ -8352,9 +8351,9 @@ function restoreWorkspaceCollapsed() {
 
 // ---- Auth & E2EE session, themes, settings, boot ----
 
-const THEMES = ['light', 'dark', 'dracula', 'nord', 'tokyo', 'gruvbox'];
-const THEME_META_COLORS = { light: '#f4f0e9', dark: '#1f1d1b', dracula: '#282a36', nord: '#2e3440', tokyo: '#1a1b26', gruvbox: '#282828' };
-const THEME_LABELS = { light: 'Light', dark: 'Dark', dracula: 'Dracula', nord: 'Nord', tokyo: 'Tokyo Night', gruvbox: 'Gruvbox' };
+export const THEMES = ['light', 'dark', 'dracula', 'nord', 'tokyo', 'gruvbox'];
+export const THEME_META_COLORS = { light: '#f4f0e9', dark: '#1f1d1b', dracula: '#282a36', nord: '#2e3440', tokyo: '#1a1b26', gruvbox: '#282828' };
+export const THEME_LABELS = { light: 'Light', dark: 'Dark', dracula: 'Dracula', nord: 'Nord', tokyo: 'Tokyo Night', gruvbox: 'Gruvbox' };
 
 
 // Auth is handled by the Notely server (server.py) backed by the encrypted
@@ -8365,7 +8364,7 @@ state.cachedProfile = null;
 // apiFetch() now lives in js/data/api.js (imported above).
 
 // Ask the server who holds the cookie; caches the profile in memory (null when signed out).
-async function refreshSession() {
+export async function  refreshSession() {
   try {
     const response = await apiFetch('/api/me');
     if (!response.ok) {
@@ -8385,11 +8384,11 @@ async function refreshSession() {
 // without re-typing the password we keep it in sessionStorage, which the
 // browser wipes when the tab/window closes. Clearing it (logout) or closing
 // the browser locks the vault again.
-function sessionUnlockKey() { return accountScopeKey('notely-session-unlock'); }
-function clearSessionUnlock() {
+export function  sessionUnlockKey() { return accountScopeKey('notely-session-unlock'); }
+export function  clearSessionUnlock() {
   try { sessionStorage.removeItem(sessionUnlockKey()); } catch (error) {}
 }
-async function saveSessionUnlock() {
+export async function  saveSessionUnlock() {
   if (!e2ee.masterKey || !state.cachedProfile) return;
   try {
     const raw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
@@ -8403,7 +8402,7 @@ async function saveSessionUnlock() {
     }));
   } catch (error) {}
 }
-async function restoreSessionUnlock() {
+export async function  restoreSessionUnlock() {
   if (!state.cachedProfile) return false;
   let blob;
   try { blob = JSON.parse(sessionStorage.getItem(sessionUnlockKey()) || 'null'); } catch (error) { blob = null; }
@@ -8420,7 +8419,7 @@ async function restoreSessionUnlock() {
   } catch (error) { clearSessionUnlock(); return false; }
 }
 // Load the decrypted workspace after an unlock (login or session restore).
-async function enterWorkspace() {
+export async function  enterWorkspace() {
   // Fresh account context: never leak the previous login's sidebar into this one.
   serverUiLoaded = false;
   state.collapsedFolders = new Set();
@@ -8454,34 +8453,34 @@ async function enterWorkspace() {
 }
 
 // Display name from an E2EE profile (first + last, falls back to username).
-function fullNameOf(profile) {
+export function  fullNameOf(profile) {
   return `${profile.firstName || ''} ${profile.lastName || ''}`.trim() || profile.username || '?';
 }
 
 // Synchronous view of the in-memory session for render code (null when signed out).
-function getSessionUser() {
+export function  getSessionUser() {
   if (!state.cachedProfile) return null;
   return { username: state.cachedProfile.username, name: fullNameOf(state.cachedProfile), subtitle: state.cachedProfile.subtitle || 'Personal space' };
 }
 
 // Avatar initials: first letters of the first two name words, uppercased.
-function initialsFor(name) {
+export function  initialsFor(name) {
   return String(name || '').trim().split(/\s+/).map((word) => word[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?';
 }
 
 // --- Profile avatar --------------------------------------------------------
 // Optional user picture. Stored inside the E2EE UI vault (never plaintext on
 // disk/server), rendered as an image in place of the initials.
-let profileAvatar = '';
-const AVATAR_MAX_CHARS = 400000;
-function cleanAvatarSrc(raw) {
+export let profileAvatar = '';
+export const AVATAR_MAX_CHARS = 400000;
+export function  cleanAvatarSrc(raw) {
   if (typeof raw !== 'string') return null;
   const s = raw.trim();
   if (s.length > AVATAR_MAX_CHARS) return null;
   return /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(s) ? s : null;
 }
 // Paint a round avatar element with the picture when set, else its initials.
-function paintAvatar(el, fallbackInitials) {
+export function  paintAvatar(el, fallbackInitials) {
   if (!el) return;
   el.textContent = '';
   const src = cleanAvatarSrc(profileAvatar);
@@ -8496,14 +8495,14 @@ function paintAvatar(el, fallbackInitials) {
 }
 
 // Display profile (name + subtitle) or null when signed out.
-function currentProfile() {
+export function  currentProfile() {
   const sessionUser = getSessionUser();
   if (sessionUser) return { name: sessionUser.name, subtitle: sessionUser.subtitle };
   return null;
 }
 
 // Paint the sidebar profile card and avatar from the session profile.
-function applyProfile() {
+export function  applyProfile() {
   const profile = currentProfile();
   if (!profile) return;
   const nameEl = document.querySelector('.profile-copy strong');
@@ -8515,7 +8514,7 @@ function applyProfile() {
 }
 
 // Show the login gate and focus the username field.
-function showLogin() {
+export function  showLogin() {
   const overlay = document.getElementById('login-overlay');
   if (!overlay) return;
   overlay.hidden = false;
@@ -8526,7 +8525,7 @@ function showLogin() {
 }
 
 // Hide the login gate.
-function hideLogin() {
+export function  hideLogin() {
   const overlay = document.getElementById('login-overlay');
   if (overlay) overlay.hidden = true;
 }
@@ -8535,7 +8534,7 @@ function hideLogin() {
 // Pending edits are flushed to the server FIRST so nothing made in this
 // session is lost by the relog. The per-account encrypted local cache is kept
 // (it needs the master key to read); only legacy plaintext keys are removed.
-async function logout() {
+export async function  logout() {
   // Flush while still unlocked: local UI cache + server envelope (notes + UI).
   clearSessionUnlock();
   try {
@@ -8603,7 +8602,7 @@ async function logout() {
 }
 
 // Show the login error message with a shake; defaults to the generic (non-enumerating) text.
-function loginFail(message) {
+export function  loginFail(message) {
   const errorEl = document.getElementById('login-error');
   const card = document.querySelector('.login-card');
   if (errorEl) {
@@ -8618,7 +8617,7 @@ function loginFail(message) {
 }
 
 // Client-side password rules (12+ chars, upper, lower, digit, special). The server never sees passwords, so this is the enforcement point for new ones.
-function passwordPolicyCheck(password) {
+export function  passwordPolicyCheck(password) {
   // NIST SP 800-63B: length-based, no composition rules; long passwords allowed.
   const failures = [];
   if (typeof password !== 'string' || password.length < 15) failures.push('at least 15 characters');
@@ -8629,7 +8628,7 @@ function passwordPolicyCheck(password) {
 // Switch the gate between Log in and Create account forms. The single tab
 // below the submit button doubles as the way back: it reads "Create account"
 // on the login form and "Log in" on the register form.
-function setAuthTab(mode) {
+export function  setAuthTab(mode) {
   const isRegister = mode === 'register';
   const isRecover = mode === 'recover';
   document.getElementById('login-form').hidden = isRegister || isRecover;
@@ -8669,12 +8668,12 @@ if (tabRegister) tabRegister.addEventListener('click', () => {
   setAuthTab(onRegister ? 'login' : 'register');
 });
 
-let authBusy = false;
+export let authBusy = false;
 // Derive the KEK and unwrap the account master key into memory (extractable
 // within this page so it can be re-wrapped on rotation/upgrade). Throws on
 // wrong password (vault stays locked). Bundle shape: {kdf, saltAuth,
 // saltEnc, iterations?, encMasterKey} with base64 salts/wrap.
-async function e2eeUnlockWithPassword(username, password, bundle) {
+export async function  e2eeUnlockWithPassword(username, password, bundle) {
   const saltEncBytes = e2eeB64ToBytes(bundle.saltEnc);
   let masterKey;
   if (bundle.kdf === 'argon2id') {
@@ -8697,7 +8696,7 @@ async function e2eeUnlockWithPassword(username, password, bundle) {
 // One-shot PBKDF2 -> Argon2id lift: re-wraps the SAME master key (exported
 // while unlocked) under a fresh Argon2id KEK. Notes are untouched, so this
 // cannot strand data; failures simply retry on the next login.
-async function e2eeUpgradeKdf(username, password) {
+export async function  e2eeUpgradeKdf(username, password) {
   const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
   const saltAuthBytes = e2eeRandomBytes(16);
   const saltEncBytes = e2eeRandomBytes(16);
@@ -8808,7 +8807,7 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
           done();
           if (loginResponse.status === 429) loginFail('Too many attempts — try again in a few minutes.');
           else loginFail();
-          return;
+// (return removed: was IIFE-internal)
         }
         data = await loginResponse.json();
         try {
@@ -8876,7 +8875,7 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
         done();
         if (loginResponse.status === 429) loginFail('Too many attempts — try again in a few minutes.');
         else loginFail();
-        return;
+// (return removed: was IIFE-internal)
       }
       data = await loginResponse.json();
       if (data && data.encMasterKey) {
@@ -8934,7 +8933,7 @@ if (registerForm) registerForm.addEventListener('submit', async (event) => {
     if (!await e2eeTrialUnwrapArgon2id(password, saltEncBytes, wrapped)) {
       fail('Key setup failed locally — not uploaded. Retry.');
       authBusy = false;
-      return;
+// (return removed: was IIFE-internal)
     }
     response = await apiFetch('/api/register', {
       method: 'POST',
@@ -8954,7 +8953,7 @@ if (registerForm) registerForm.addEventListener('submit', async (event) => {
   } catch (error) {
     fail('Cannot reach the Notely server. Is it running?');
     authBusy = false;
-    return;
+// (return removed: was IIFE-internal)
   }
   authBusy = false;
   if (response.status === 202) {
@@ -9011,7 +9010,7 @@ if (passkeyLoginBtn) passkeyLoginBtn.addEventListener('click', async () => {
       } else {
         loginFail('Login Failed');
       }
-      return;
+// (return removed: was IIFE-internal)
     }
     const cred = await navigator.credentials.get({
       publicKey: {
@@ -9181,11 +9180,11 @@ if (changeBtn) changeBtn.addEventListener('click', async () => {
   const missing = passwordPolicyCheck(next);
   if (missing.length) {
     if (errorEl) { errorEl.textContent = `New password needs ${missing.join(', ')}.`; errorEl.hidden = false; }
-    return;
+// (return removed: was IIFE-internal)
   }
   if (!e2ee.masterKey || !e2ee.saltAuth || !e2ee.saltEnc || !state.cachedProfile) {
     if (errorEl) { errorEl.textContent = 'Please log in again, then retry.'; errorEl.hidden = false; }
-    return;
+// (return removed: was IIFE-internal)
   }
   let response;
   let newSaltAuthBytes = null;
@@ -9216,7 +9215,7 @@ if (changeBtn) changeBtn.addEventListener('click', async () => {
     });
   } catch (error) {
     if (errorEl) { errorEl.textContent = 'Cannot reach the server.'; errorEl.hidden = false; }
-    return;
+// (return removed: was IIFE-internal)
   }
   if (response.ok) {
     e2ee.kdf = 'argon2id';
@@ -9240,7 +9239,7 @@ document.getElementById('logout-button').addEventListener('click', logout);
 // --- MFA settings (Two-Factor pane) ---
 // Lost the authenticator? Recover the account (email/recovery code) — that
 // clears MFA, so no separate MFA bypass codes exist by design.
-async function refreshMfaStatus() {
+export async function  refreshMfaStatus() {
   const statusEl = document.getElementById('mfa-status');
   const setupBtn = document.getElementById('mfa-setup-btn');
   const disableBtn = document.getElementById('mfa-disable-btn');
@@ -9258,11 +9257,11 @@ async function refreshMfaStatus() {
   }
 }
 
-function openMfaQrModal() {
+export function  openMfaQrModal() {
   const modal = document.getElementById('mfa-qr-modal');
   if (modal) modal.hidden = false;
 }
-function closeMfaQrModal() {
+export function  closeMfaQrModal() {
   const modal = document.getElementById('mfa-qr-modal');
   if (modal) modal.hidden = true;
 }
@@ -9328,13 +9327,13 @@ if (mfaDisableBtn) mfaDisableBtn.addEventListener('click', async () => {
   await refreshMfaStatus();
 });
 // --- Passkeys (option-1 login factor; password still unlocks E2EE notes) ---
-function bufToB64url(buf) {
+export function  bufToB64url(buf) {
   const bytes = new Uint8Array(buf);
   let s = '';
   for (let i = 0; i < bytes.length; i += 1) s += String.fromCharCode(bytes[i]);
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
-function b64urlToBuf(b64url) {
+export function  b64urlToBuf(b64url) {
   let s = String(b64url || '').replace(/-/g, '+').replace(/_/g, '/');
   while (s.length % 4) s += '=';
   const bin = atob(s);
@@ -9345,21 +9344,21 @@ function b64urlToBuf(b64url) {
 // PRF passwordless unlock: KEK = SHA-256(authenticator PRF output), used to
 // wrap/unwrap the account master key. MUST match on register (wrap) and login
 // (unwrap) — both sides call this one function.
-async function prfUnwrapMasterKey(prfSecretBytes, wrapped) {
+export async function  prfUnwrapMasterKey(prfSecretBytes, wrapped) {
   const kekRaw = new Uint8Array(await window.crypto.subtle.digest('SHA-256', prfSecretBytes));
   const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
   const raw = await window.crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: e2eeB64ToBytes(wrapped.iv) }, kek, e2eeB64ToBytes(wrapped.data));
   return window.crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
 }
-async function prfWrapMasterKey(prfSecretBytes, masterKeyRaw) {
+export async function  prfWrapMasterKey(prfSecretBytes, masterKeyRaw) {
   const kekRaw = new Uint8Array(await window.crypto.subtle.digest('SHA-256', prfSecretBytes));
   const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
   const iv = e2eeRandomBytes(12);
   const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, masterKeyRaw);
   return { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) };
 }
-function prfFirstResult(cred) {
+export function  prfFirstResult(cred) {
   try {
     const ext = cred.getClientExtensionResults ? cred.getClientExtensionResults() : null;
     const first = ext && ext.prf && ext.prf.results && ext.prf.results.first;
@@ -9373,7 +9372,7 @@ function prfFirstResult(cred) {
 // obtain its PRF output, so passwordless unlock works on far more devices. The
 // challenge is local — nothing is sent to the server; only the PRF output is
 // used, to wrap the master key under SHA-256(PRF).
-async function prfSecretViaAssertion(credentialId, rpId, prfSaltB64) {
+export async function  prfSecretViaAssertion(credentialId, rpId, prfSaltB64) {
   if (!window.PublicKeyCredential || !navigator.credentials || !navigator.credentials.get) return null;
   try {
     const assertion = await navigator.credentials.get({
@@ -9394,7 +9393,7 @@ async function prfSecretViaAssertion(credentialId, rpId, prfSaltB64) {
 // Attach a PRF wrap to an existing passkey (no remove/re-add needed), so it can
 // unlock notes without the password. Requires an unlocked session (master key
 // is in memory) and a PRF-capable authenticator.
-async function enablePasswordlessPasskey(credIdB64, prfSaltB64, btn) {
+export async function  enablePasswordlessPasskey(credIdB64, prfSaltB64, btn) {
   const errEl = document.getElementById('passkey-error');
   try {
     if (!e2ee.masterKey) throw new Error('Unlock your notes first (log in with your password), then retry.');
@@ -9436,7 +9435,7 @@ async function enablePasswordlessPasskey(credIdB64, prfSaltB64, btn) {
     if (btn) btn.disabled = false;
   }
 }
-async function refreshPasskeys() {
+export async function  refreshPasskeys() {
   const listEl = document.getElementById('passkey-list');
   const errEl = document.getElementById('passkey-error');
   try {
@@ -9544,7 +9543,7 @@ if (passkeyAddBtn) passkeyAddBtn.addEventListener('click', async () => {
     // not a failure: stay silent instead of flashing an error.
     if (error && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
       if (errEl) errEl.hidden = true;
-      return;
+// (return removed: was IIFE-internal)
     }
     if (errEl) { errEl.textContent = error.message || 'Could not add passkey.'; errEl.hidden = false; }
   }
@@ -9555,7 +9554,7 @@ document.getElementById('open-settings').addEventListener('click', () => {
   try { refreshAccountPane(); } catch (error) {}
 });
 // --- Account pane (username/email/delete) ---
-function refreshAccountPane() {
+export function  refreshAccountPane() {
   try {
     const u = document.getElementById('account-username');
     if (u) u.value = (state.cachedProfile && state.cachedProfile.username) || '';
@@ -9633,7 +9632,7 @@ if (accountDeleteBtn) accountDeleteBtn.addEventListener('click', async () => {
   }
 });
 // --- Name editing (stored inside the server-encrypted profile) ---
-async function saveAccountName() {
+export async function  saveAccountName() {
   const errEl = document.getElementById('account-error');
   const first = String(document.getElementById('account-first').value || '').trim().slice(0, 60);
   const last = String(document.getElementById('account-last').value || '').trim().slice(0, 60);
@@ -9654,7 +9653,7 @@ if (accountSaveNameBtn) accountSaveNameBtn.addEventListener('click', saveAccount
 
 // --- Profile popup + avatar picture ---------------------------------------
 
-function openProfilePopup() {
+export function  openProfilePopup() {
   if (!profileOverlay) return;
   refreshProfilePopup();
   profileOverlay.hidden = false;
@@ -9662,10 +9661,10 @@ function openProfilePopup() {
   const btn = document.getElementById('profile-edit-btn');
   if (btn) { try { btn.focus(); } catch (error) {} }
 }
-function closeProfilePopup() {
+export function  closeProfilePopup() {
   if (profileOverlay) profileOverlay.hidden = true;
 }
-function refreshProfilePopup() {
+export function  refreshProfilePopup() {
   const name = state.cachedProfile ? fullNameOf(state.cachedProfile) : '';
   const nameEl = document.getElementById('profile-modal-name');
   if (nameEl) nameEl.textContent = name || 'Not signed in';
@@ -9678,7 +9677,7 @@ function refreshProfilePopup() {
   if (removeBtn) removeBtn.hidden = !cleanAvatarSrc(profileAvatar);
 }
 // Center-crop to a square 256px JPEG for a compact avatar.
-function downscaleAvatar(dataUrl) {
+export function  downscaleAvatar(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onerror = () => reject(new Error('decode'));
@@ -9705,7 +9704,7 @@ function downscaleAvatar(dataUrl) {
     img.src = dataUrl;
   });
 }
-async function handleAvatarFile(file) {
+export async function  handleAvatarFile(file) {
   if (!file) return;
   if (!e2ee.masterKey) { showToast('Log in and unlock your notes to change your photo'); return; }
   if (!isImageFile(file)) { showToast('Use a PNG, JPEG, WebP, GIF, AVIF or BMP image'); return; }
@@ -9760,30 +9759,30 @@ if (avatarInputEl) avatarInputEl.addEventListener('change', (event) => {
 });
 
 // --- Password-loss recovery codes (E2EE-safe wraps, server stores hashes only) ---
-async function sha256Hex(text) {
+export async function  sha256Hex(text) {
   const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text)));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
-const REC_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-function newRecoveryCode() {
+export const REC_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+export function  newRecoveryCode() {
   const bytes = e2eeRandomBytes(20);
   let s = '';
   for (let i = 0; i < 20; i += 1) s += REC_ALPHABET[bytes[i] % REC_ALPHABET.length];
   return `${s.slice(0, 5)}-${s.slice(5, 10)}-${s.slice(10, 15)}-${s.slice(15, 20)}`;
 }
 
-let acctRecShownCodes = [];
+export let acctRecShownCodes = [];
 // Plaintext codes live ONLY here (memory) and in one encrypted on-device
 // cache below. The server keeps hashes + wraps, so a second device can never
 // re-display them — it must replace the set (invalidating the old codes).
-function acctRecCacheKey() {
+export function  acctRecCacheKey() {
   try {
     const name = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
     if (name) return `notely-recovery-codes:${name}`;
   } catch (error) {}
   return null;
 }
-async function saveRecoveryCodesLocal(codes) {
+export async function  saveRecoveryCodesLocal(codes) {
   if (!e2ee.masterKey) return;
   const key = acctRecCacheKey();
   if (!key) return;
@@ -9794,7 +9793,7 @@ async function saveRecoveryCodesLocal(codes) {
     localStorage.setItem(key, JSON.stringify({ iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) }));
   } catch (error) {}
 }
-async function loadRecoveryCodesLocal() {
+export async function  loadRecoveryCodesLocal() {
   if (!e2ee.masterKey) return null;
   const key = acctRecCacheKey();
   if (!key) return null;
@@ -9810,13 +9809,13 @@ async function loadRecoveryCodesLocal() {
     return null;
   }
 }
-function clearRecoveryCodesLocal() {
+export function  clearRecoveryCodesLocal() {
   try {
     const key = acctRecCacheKey();
     if (key) localStorage.removeItem(key);
   } catch (error) {}
 }
-function renderAcctRecCodes() {
+export function  renderAcctRecCodes() {
   const list = document.getElementById('acct-rec-codes');
   if (!list) return;
   list.innerHTML = '';
@@ -9826,14 +9825,14 @@ function renderAcctRecCodes() {
     list.appendChild(item);
   });
 }
-function openAcctRecModal() {
+export function  openAcctRecModal() {
   renderAcctRecCodes();
   const err = document.getElementById('acct-rec-modal-error');
   if (err) err.hidden = true;
   const modal = document.getElementById('acct-rec-modal');
   if (modal) modal.hidden = false;
 }
-function closeAcctRecModal() {
+export function  closeAcctRecModal() {
   // One-shot display: wipe plaintext codes from memory and DOM on close.
   acctRecShownCodes = [];
   renderAcctRecCodes();
@@ -9866,7 +9865,7 @@ if (acctRecDoneBtn) acctRecDoneBtn.addEventListener('click', async () => {
   showToast('Recovery codes saved.');
   try { await refreshAcctRecStatus(); } catch (error) {}
 });
-async function refreshAcctRecStatus() {
+export async function  refreshAcctRecStatus() {
   // Count display only; plaintext codes are never re-fetchable by design.
   // While unused codes exist the SAME set stays viewable (no regenerate);
   // generating again is only offered once the set is exhausted.
@@ -9902,7 +9901,7 @@ if (acctRecViewBtn) acctRecViewBtn.addEventListener('click', async () => {
   if (!codes) {
     showToast('Codes are on the device where they were generated.');
     await refreshAcctRecStatus();
-    return;
+// (return removed: was IIFE-internal)
   }
   acctRecShownCodes = codes;
   renderAcctRecCodes();
@@ -9933,7 +9932,7 @@ if (acctRecBtn) acctRecBtn.addEventListener('click', async () => {
         if (String(typed || '').trim().toUpperCase() !== 'REPLACE') {
           acctRecBtn.disabled = false;
           acctRecBtn.textContent = 'Replace codes…';
-          return;
+// (return removed: was IIFE-internal)
         }
       }
     } catch (error) {
@@ -9989,7 +9988,7 @@ if (recoverLink) recoverLink.addEventListener('click', () => {
 
 if (recoverBack) recoverBack.addEventListener('click', () => setAuthTab('login'));
 // Recover popup: one method per view (email / code / email-link token).
-function openRecoverModal(kind) {
+export function  openRecoverModal(kind) {
   const blockId = kind === 'email' ? 'recover-email-block'
     : kind === 'token' ? 'recover-token-block' : 'recover-code-block';
   const modal = document.getElementById('recover-modal');
@@ -9999,7 +9998,7 @@ function openRecoverModal(kind) {
       const el = document.getElementById(id);
       if (el) el.hidden = id !== blockId;
     });
-    return;
+// (return removed: was IIFE-internal)
   }
   const title = document.getElementById('recover-modal-title');
   // Code flow always restarts at the verify view; a verified match swaps the
@@ -10020,7 +10019,7 @@ function openRecoverModal(kind) {
   if (show) show.hidden = false;
   modal.hidden = false;
 }
-function closeRecoverModal() {
+export function  closeRecoverModal() {
   const modal = document.getElementById('recover-modal');
   if (modal) modal.hidden = true;
   verifiedRecovery = null;
@@ -10056,7 +10055,7 @@ if (recoverEmailBtn) recoverEmailBtn.addEventListener('click', async () => {
     fail(error.message || 'Could not send email.');
   }
 });
-let verifiedRecovery = null;
+export let verifiedRecovery = null;
 
 if (recoverVerifyBtn) recoverVerifyBtn.addEventListener('click', async () => {
   const errEl = document.getElementById('recover-error');
@@ -10154,7 +10153,7 @@ document.getElementById('open-settings').addEventListener('click', () => {
   try { refreshAcctRecStatus(); } catch (error) {}
 });
 // Apply a theme, persist the choice and update the meta theme-color.
-function applyTheme(theme, announce = false) {
+export function  applyTheme(theme, announce = false) {
   const normalized = THEMES.includes(theme) ? theme : 'light';
   document.documentElement.dataset.theme = normalized;
   try { localStorage.setItem('notely-theme', normalized); } catch (error) {}
@@ -10176,7 +10175,7 @@ function applyTheme(theme, announce = false) {
   if (announce) showToast(`${THEME_LABELS[normalized] || normalized} theme on`);
 }
 // Show the settings modal and close the mobile sidebar.
-function openSettings() {
+export function  openSettings() {
   if (!settingsOverlay) return;
   setSettingsTab('appearance');
   const startBox = document.getElementById('start-collapsed');
@@ -10186,9 +10185,9 @@ function openSettings() {
   document.getElementById('sidebar').classList.remove('open');
 }
 // Keep Side Menu settings in sync (unified custom sections have no hide toggles).
-function syncSideMenuSettings() {}
+export function  syncSideMenuSettings() {}
 // Switch the settings left-nav tab and its right-side pane.
-function setSettingsTab(name) {
+export function  setSettingsTab(name) {
   document.querySelectorAll('.settings-nav-item').forEach((item) => item.classList.toggle('active', item.dataset.settingsTab === name));
   document.querySelectorAll('.settings-pane').forEach((pane) => {
     pane.hidden = pane.dataset.settingsPane !== name;
@@ -10217,7 +10216,7 @@ document.getElementById('start-collapsed').addEventListener('change', (event) =>
 
 // Export every plainWorkspace note (and unlocked Vault notes) as one JSON
 // backup file in the browser's download folder — the "desktop copy".
-function exportAllNotes() {
+export function  exportAllNotes() {
   if (!state.cachedProfile || !notesLoaded) { showToast('Log in first'); return; }
   const payload = {
     app: 'Notely',
@@ -10247,20 +10246,20 @@ deviceOnlyBox.addEventListener('change', (event) => {
   if (!state.cachedProfile) {
     event.target.checked = false;
     showToast('Log in first');
-    return;
+// (return removed: was IIFE-internal)
   }
   if (on) {
     setDeviceOnlyPref(true);
     clearTimeout(syncTimer);
     syncNotesToServer();
     showToast('This device only — notes no longer sync to the cloud');
-    return;
+// (return removed: was IIFE-internal)
   }
   const overlay = document.getElementById('resync-overlay');
   if (!overlay) { // No dialog available: keep server notes, drop the local copy
     setDeviceOnlyPref(false);
     showToast('Sync re-enabled');
-    return;
+// (return removed: was IIFE-internal)
   }
   overlay.hidden = false;
 });
@@ -10312,11 +10311,11 @@ if (deviceOnlyBox) {
   document.getElementById('open-settings').addEventListener('click', openSettingsDeviceOnly);
 }
 // Hide the settings modal.
-function closeSettings() {
+export function  closeSettings() {
   if (!settingsOverlay) return;
   settingsOverlay.hidden = true;
 }
-let savedTheme = 'light';
+export let savedTheme = 'light';
 try { savedTheme = localStorage.getItem('notely-theme') || 'light'; } catch (error) {}
 applyTheme(savedTheme);
 document.getElementById('open-settings').addEventListener('click', (event) => {
@@ -10331,8 +10330,8 @@ if (settingsOverlay) settingsOverlay.addEventListener('click', (event) => {
 if (themeSelect) themeSelect.addEventListener('change', () => applyTheme(themeSelect.value, true));
 // Reading font (Settings → Appearance). Device-local like the sidebar prefs
 // (not part of the per-account envelope): one line, no sync conflicts.
-const FONTS = ['default', 'serif', 'palatino', 'sans', 'verdana', 'mono'];
-function applyFont(font, announce = false) {
+export const FONTS = ['default', 'serif', 'palatino', 'sans', 'verdana', 'mono'];
+export function  applyFont(font, announce = false) {
   const normalized = FONTS.includes(font) ? font : 'default';
   document.documentElement.dataset.font = normalized;
   try { localStorage.setItem('notely-font', normalized); } catch (error) {}
@@ -10340,7 +10339,7 @@ function applyFont(font, announce = false) {
   if (fontSelectEl) fontSelectEl.value = normalized;
   if (announce) showToast(`${normalized.charAt(0).toUpperCase() + normalized.slice(1)} font on`);
 }
-let savedFont = 'default';
+export let savedFont = 'default';
 try { savedFont = localStorage.getItem('notely-font') || 'default'; } catch (error) {}
 applyFont(savedFont);
 
@@ -10348,7 +10347,7 @@ if (fontSelect) fontSelect.addEventListener('change', () => applyFont(fontSelect
 // Compact picker on the login card. No toast: it would render behind the overlay.
 
 
-function setLoginThemeMenu(open) {
+export function  setLoginThemeMenu(open) {
   if (!loginThemeToggle || !loginThemeMenu) return;
   loginThemeMenu.hidden = !open;
   loginThemeToggle.setAttribute('aria-expanded', String(open));
@@ -10435,8 +10434,8 @@ boot();
 // The link proves email ownership; the new verifier is derived locally and
 // the wrapped master key is untouched server-side. After reset the user logs
 // in with the new password, then enters the OLD password once to re-wrap.
-let emailRecoveryToken = null;
-let pendingRewrap = null;
+export let emailRecoveryToken = null;
+export let pendingRewrap = null;
 try {
   const params = new URLSearchParams(window.location.search || '');
   const tok = params.get('emailToken');
@@ -10483,7 +10482,7 @@ if (recoverTokenBtn) recoverTokenBtn.addEventListener('click', async () => {
   }
 });
 // Startup: session check (vault stays locked, so the password gate always shows), empty locked workspace, folder sync, first-note selection, purge timer.
-async function boot() {
+export async function  boot() {
   await refreshSession();
   applyProfile();
   // A valid session plus a per-browser-session key (sessionStorage) restores the
@@ -10525,4 +10524,3 @@ setInterval(() => {
     if (hadBin) showToast('Bin auto-emptied expired notes');
   }
 }, 60000);
-})();
