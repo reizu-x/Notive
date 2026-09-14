@@ -23,7 +23,7 @@
 try {
   const tag = document.querySelector('meta[name="notely-build"]');
   const build = tag ? tag.getAttribute('content') : null;
-  if (build !== 'dev74') {
+  if (build !== 'dev75') {
     if (!sessionStorage.getItem('notely-build-reloaded')) {
       sessionStorage.setItem('notely-build-reloaded', '1');
       window.location.reload();
@@ -9317,7 +9317,7 @@ async function refreshPasskeys() {
         const row = document.createElement('div');
         // passwordless flag tells whether THIS key unlocks notes alone or
         // still needs the password afterwards.
-        row.textContent = `${String(k.id).slice(0, 16)}… (added ${new Date((k.created_at || 0) * 1000).toLocaleDateString()} · ${k.passwordless ? 'no password needed' : 'password still needed'}) `;
+        row.textContent = `${String(k.id).slice(0, 16)}… (added ${new Date((k.created_at || 0) * 1000).toLocaleDateString()} · ${k.passwordless ? 'no password needed' : 'password still needed — remove and re-add to enable passwordless'}) `;
         const del = document.createElement('button');
         del.textContent = 'Remove';
         del.className = 'btn btn-secondary';
