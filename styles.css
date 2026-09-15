@@ -1657,3 +1657,19 @@ html[data-font="verdana"] body :not(pre):not(code):not(kbd) { font-family: Verda
   .settings-nav { flex: none; flex-direction: row; }
   .settings-nav-item { flex: 1; text-align: center; }
 }
+
+/* CSP hardening (pentest F-6): inline styles migrated to utility classes. */
+.desc-center { text-align: center; }
+.stack-b12 { margin-bottom: 12px; }
+.desc-tight { margin: 0 0 6px; }
+.center-flex-pad { display: flex; justify-content: center; padding: 8px; }
+.select-all { user-select: all; }
+.wrap-anywhere { overflow-wrap: anywhere; }
+.actions-start { justify-content: flex-start; }
+.shared-folder-empty { padding: 2px 10px 6px; }
+.shared-search-empty { padding: 6px 10px; }
+
+/* Markdown table alignment via data-align (strict CSP; no inline styles). */
+[data-align="left"] { text-align: left; }
+[data-align="right"] { text-align: right; }
+[data-align="center"] { text-align: center; }

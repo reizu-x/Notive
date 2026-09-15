@@ -167,7 +167,8 @@ export function tableAligns(line) {
 }
 
 export function renderTable(header, aligns, rows) {
-  const alignAttr = (i) => (aligns[i] ? ` style="text-align:${aligns[i]}"` : '');
+  // Alignment via data-align + CSS (CSP: style-src has no 'unsafe-inline').
+  const alignAttr = (i) => (aligns[i] ? ` data-align="${aligns[i]}"` : '');
   const head = header.map((cell, i) => `<th${alignAttr(i)}>${inlineMarkdown(cell)}</th>`).join('');
   const body = rows.map((row) => `<tr>${header
     .map((_, i) => `<td${alignAttr(i)}>${inlineMarkdown(row[i] == null ? '' : row[i])}</td>`)

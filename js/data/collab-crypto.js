@@ -309,13 +309,13 @@ export function setSharedNavCount(n) {
 
 export function sharedNoteRow(n, groupId, canDelete) {
   const title = (n.title && n.title.trim()) ? n.title.trim() : 'Untitled note';
-  // Align the note's icon under its folder's icon (folder rows carry a chevron).
-  const indent = n.folder ? 8 + folderDepth(n.folder) * 14 + 23 : 8;
+  // Align the note's icon under its folder's icon (folder rows carry a
+  // chevron). Depth-driven padding is applied post-insertion (strict CSP).
   const glyph = (n.template && NOTE_TEMPLATES[n.template] && NOTE_TEMPLATES[n.template].icon) ? NOTE_TEMPLATES[n.template].icon : 'file';
   const deleteAction = canDelete
     ? `<span class="tree-action danger" data-collab-note-delete="${n.id}" role="button" title="Delete note" aria-label="Delete ${escapeHtml(title)}">${icon('trash')}</span>`
     : '';
-  return `<button class="tree-file shared-view-row" draggable="true" data-collab-open="${n.id}" data-collab-group="${groupId}" style="padding-left:${indent}px" title="${escapeHtml(title)}">
+  return `<button class="tree-file shared-view-row" draggable="true" data-collab-open="${n.id}" data-collab-group="${groupId}" data-indent-depth="${n.folder ? folderDepth(n.folder) : 0}" data-indent-offset="${n.folder ? 31 : 0}" title="${escapeHtml(title)}">
       <span class="tree-file-icon">${icon(glyph)}</span>
       <span class="tree-file-name">${escapeHtml(title)}</span>
       <span class="tree-action" data-note-folder="${n.id}" data-note-group="${groupId}" role="button" title="Move to folder" aria-label="Move ${escapeHtml(title)} to a folder">${icon('folder-plus')}</span>
@@ -474,6 +474,15 @@ export function collabPresenceHeartbeat() {
   state.collab.presenceTimer = setTimeout(collabPresenceHeartbeat, 5000);
 }
 
+const PRESENCE_COLOR_RE = /^hsl\(\d{1,3}(?:\.\d+)?, ?\d{1,3}%, ?\d{1,3}%\)$/;
+
+// Peer-supplied presence colors are interpolated into style attributes below;
+// validate them (XSS boundary: an accepted collaborator can send arbitrary
+// content inside the E2EE channel, so the value can never be trusted).
+function safePresenceColor(color) {
+  return (typeof color === 'string' && PRESENCE_COLOR_RE.test(color.trim())) ? color.trim() : '#888';
+}
+
 export async function collabPresenceReceive(msg) {
   if (!state.collab.noteId) return;
   const key = collabKeyFor(msg.version);
@@ -485,7 +494,7 @@ export async function collabPresenceReceive(msg) {
   if (data.leave) { state.collab.presence.delete(id); renderCollabPresence(); return; }
   state.collab.presence.set(id, {
     user: String(data.u || ''),
-    color: typeof data.c === 'string' ? data.c : '#888',
+    color: safePresenceColor(data.c),
     s: Number(data.s) || 0,
     e: Number(data.e) || 0,
     typing: Boolean(data.typing),
@@ -546,8 +555,12 @@ export function renderCollabPresence() {
     // Always show a "you" chip so the row is visible even when alone; remote
     // peers are appended after it.
     const meName = (state.cachedProfile && state.cachedProfile.username) || 'You';
-    const self = `<span class="collab-presence-chip${state.collab.typing ? ' is-typing' : ''}"><span class="collab-presence-dot" style="background:${state.collab.color || '#888'}"></span>${escapeHtml(meName)} (you)${state.collab.typing ? ' · typing…' : ''}</span>`;
-    box.innerHTML = self + entries.map((p) => `<span class="collab-presence-chip${p.typing ? ' is-typing' : ''}"><span class="collab-presence-dot" style="background:${p.color}"></span>${escapeHtml(p.user || 'Someone')}${p.typing ? ' · typing…' : ''}</span>`).join('');
+    const self = `<span class="collab-presence-chip${state.collab.typing ? ' is-typing' : ''}"><span class="collab-presence-dot" data-dot-color="${state.collab.color || '#888'}"></span>${escapeHtml(meName)} (you)${state.collab.typing ? ' · typing…' : ''}</span>`;
+    box.innerHTML = self + entries.map((p) => `<span class="collab-presence-chip${p.typing ? ' is-typing' : ''}"><span class="collab-presence-dot" data-dot-color="${safePresenceColor(p.color)}"></span>${escapeHtml(p.user || 'Someone')}${p.typing ? ' · typing…' : ''}</span>`).join('');
+    // CSP (style-src has no 'unsafe-inline'): colors applied as element styles.
+    box.querySelectorAll('[data-dot-color]').forEach((el) => {
+      try { el.style.background = safePresenceColor(el.dataset.dotColor); } catch (error) {}
+    });
   }
   if (layer) {
     if (state.writeMode !== 'edit') { layer.innerHTML = ''; }
@@ -555,9 +568,22 @@ export function renderCollabPresence() {
       layer.innerHTML = entries.map((p) => {
         const c = collabCaretCoords(p.s);
         if (!c) return '';
-        return `<div class="collab-caret" style="top:${c.top}px;left:${c.left}px;height:${c.height}px;background:${p.color}"><span class="collab-caret-label" style="background:${p.color}">${escapeHtml(p.user || '')}</span></div>`;
+        const pc = safePresenceColor(p.color);
+        return `<div class="collab-caret" data-caret-color="${pc}" data-caret-top="${c.top}" data-caret-left="${c.left}" data-caret-height="${c.height}"><span class="collab-caret-label">${escapeHtml(p.user || '')}</span></div>`;
       }).join('');
     }
+    // CSP (style-src has no 'unsafe-inline'): geometry/colors applied after.
+    layer.querySelectorAll('.collab-caret').forEach((el) => {
+      const n = (k) => `${Number(el.dataset[k] || 0)}px`;
+      try {
+        el.style.top = n('caretTop');
+        el.style.left = n('caretLeft');
+        el.style.height = n('caretHeight');
+        el.style.background = safePresenceColor(el.dataset.caretColor);
+        const label = el.querySelector('.collab-caret-label');
+        if (label) label.style.background = safePresenceColor(el.dataset.caretColor);
+      } catch (error) {}
+    });
   }
 }
 
@@ -839,13 +865,13 @@ export async function renderSharedView() {
       <div class="list-section-head">
         <span class="list-section-title">People</span>
       </div>
-      <div id="shared-view-list"><p class="modal-desc" style="padding:6px 10px">Loading…</p></div>
+      <div id="shared-view-list"><p class="modal-desc shared-pad">Loading…</p></div>
     </div>`;
   const box = document.getElementById('shared-view-list');
-  if (!e2ee.masterKey) { if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Log in and unlock your notes first.</p>'; return; }
+  if (!e2ee.masterKey) { if (box) box.innerHTML = '<p class="modal-desc shared-pad">Log in and unlock your notes first.</p>'; return; }
   let res;
   try { res = await apiFetch('/api/collab/groups'); } catch (error) { res = null; }
-  if (!res || !res.ok) { if (box) box.innerHTML = '<p class="modal-desc" style="padding:6px 10px">Could not load shared sections.</p>'; return; }
+  if (!res || !res.ok) { if (box) box.innerHTML = '<p class="modal-desc shared-pad">Could not load shared sections.</p>'; return; }
   const data = await res.json();
   const groups = Array.isArray(data.groups) ? data.groups : [];
   const invites = Array.isArray(data.invites) ? data.invites : [];
@@ -865,18 +891,38 @@ export async function renderSharedView() {
   if (!groups.length) {
     sharedGroupFolders.clear();
     sharedNoteMeta.clear();
-    box.innerHTML = invitesHtml || '<p class="modal-desc" style="padding:6px 10px">No connections yet. Click + New connection and enter a username to start.</p>';
+    box.innerHTML = invitesHtml || '<p class="modal-desc shared-pad">No connections yet. Click + New connection and enter a username to start.</p>';
     updateFoldToggle();
     return;
   }
   if (!(await sharingEnsureKeys())) {
-    box.innerHTML = invitesHtml + '<p class="modal-desc" style="padding:6px 10px">Could not unlock your sharing keys — reopen Shared to retry.</p>';
+    box.innerHTML = invitesHtml + '<p class="modal-desc shared-pad">Could not unlock your sharing keys — reopen Shared to retry.</p>';
     updateFoldToggle();
     return;
   }
   sharedGroupKeys.clear();
   sharedGroupFolders.clear();
   sharedNoteMeta.clear();
+// CSP (style-src has no 'unsafe-inline'): dynamic indents applied as element
+// styles after innerHTML insertion.
+function applySafeIndents(box) {
+  box.querySelectorAll('[data-indent-depth]').forEach((el) => {
+    try {
+      const depth = Number(el.dataset.indentDepth || 0);
+      const offset = Number(el.dataset.indentOffset || 0);
+      el.style.paddingLeft = `${8 + depth * 14 + offset}px`;
+    } catch (error) {}
+  });
+}
+
+// CSP (style-src has no 'unsafe-inline'): shared-folder indentation is a
+// dynamic depth value, applied as element styles after innerHTML insertion.
+function applySharedFolderIndents(box) {
+  box.querySelectorAll('[data-shared-folder][data-depth]').forEach((el) => {
+    try { el.style.paddingLeft = `${8 + Number(el.dataset.depth || 0) * 14}px`; } catch (error) {}
+  });
+}
+
   const groupBlocks = [];
   let totalMatches = 0;
   for (const g of groups) {
@@ -920,8 +966,10 @@ export async function renderSharedView() {
     </div>`);
   }
   let html = invitesHtml + groupBlocks.join('');
-  if (searching && totalMatches === 0) html = `<p class="modal-desc" style="padding:6px 10px">No shared notes match “${escapeHtml(query)}”.</p>`;
+  if (searching && totalMatches === 0) html = `<p class="modal-desc shared-search-empty">No shared notes match “${escapeHtml(query)}”.</p>`;
   box.innerHTML = html;
+  applySharedFolderIndents(box);
+  applySafeIndents(box);
   updateFoldToggle();
   try { renderTabs(); } catch (error) {}
 }

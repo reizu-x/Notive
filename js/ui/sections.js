@@ -225,7 +225,7 @@ export function sharedFolderTree(notesDec, groupId, folderList, canDelete) {
     const depth = folderDepth(folder);
     const leaf = folderLeaf(folder);
     const collapsed = sharedCollapsed.has(sharedFolderKey(groupId, folder));
-    parts.push(`<div class="shared-folder" draggable="true" data-shared-folder="${escapeHtml(folder)}" data-shared-group="${groupId}" style="padding-left:${8 + depth * 14}px">
+    parts.push(`<div class="shared-folder" draggable="true" data-shared-folder="${escapeHtml(folder)}" data-shared-group="${groupId}" data-depth="${depth}">
         <button type="button" class="shared-folder-toggle${collapsed ? ' is-collapsed' : ''}" data-shared-toggle="${escapeHtml(folder)}" data-shared-group="${groupId}" title="${collapsed ? 'Expand' : 'Collapse'}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(leaf)}">${icon('chevron-right')}</button>
         ${icon('folder')}<span class="shared-folder-name">${escapeHtml(leaf)}</span>
         <span class="shared-folder-actions">
@@ -240,7 +240,7 @@ export function sharedFolderTree(notesDec, groupId, folderList, canDelete) {
   };
   roots.forEach(emit);
   notesDec.filter((n) => !n.folder).forEach((n) => parts.push(sharedNoteRow(n, groupId, canDelete)));
-  return parts.join('') || '<p class="modal-desc" style="padding:2px 10px 6px">No notes yet — use + New note in this section.</p>';
+  return parts.join('') || '<p class="modal-desc shared-folder-empty">No notes yet — use + New note in this section.</p>';
 }
 
 // Every folder key (including ancestors) across all shared sections, for the
@@ -776,10 +776,15 @@ export function openFolderPicker(ns, sectionId) {
     const glyph = `<span class="${glyphClass}">${icon(folderIconForDepth(depth))}</span>`;
     return `
     <button class="template-option" data-pick-ns="${entry.ns}" data-pick-section="${escapeHtml(entry.section || '')}" data-pick-folder="${escapeHtml(entry.folder)}">
-      <span class="template-icon template-icon-bare" style="margin-left:${depth * 14}px">${glyph}</span>
+      <span class="template-icon template-icon-bare" data-indent-depth="${depth}">${glyph}</span>
       <span class="theme-option-text"><strong>${escapeHtml(leaf)}</strong><span>${escapeHtml(sub)}</span></span>
     </button>`;
   }).join('');
+  // CSP (styles-src has no 'unsafe-inline'): apply depth indents via element
+  // styles after insertion instead of inline style attributes.
+  box.querySelectorAll('[data-indent-depth]').forEach((el) => {
+    try { el.style.marginLeft = `${Number(el.dataset.indentDepth || 0) * 14}px`; } catch (error) {}
+  });
   box.querySelectorAll('[data-pick-folder]').forEach((btn) => btn.addEventListener('click', () => {
     state.pendingSectionFolder = { ns: btn.dataset.pickNs, section: btn.dataset.pickSection || null, folder: btn.dataset.pickFolder };
     closeFolderPicker();

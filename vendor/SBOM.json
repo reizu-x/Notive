@@ -1,0 +1,59 @@
+{
+  "schema": "notely-vendor-sbom/1",
+  "created": "2026-09-15",
+  "files": [
+    {
+      "path": "vendor/yjs/yjs.mjs",
+      "sha256": "03e416522d8ee15445b611b896bc8fb2e5d0849546613a07e9e0e44cb832beb7",
+      "name": "yjs",
+      "source": "https://github.com/yjs/yjs",
+      "license": "MIT",
+      "version": "unpinned-at-vendor-time",
+      "note": "argon2/* protected by SRI in js/data/crypto.js \u2014 banner modification would break integrity; verify via ARGON2_VENDOR constants"
+    },
+    {
+      "path": "vendor/lib0/index.js",
+      "sha256": "91664fea3bbc6305b6e0362960e60ce77a9d171f1d4c3c1b55953ca6ec856f8a",
+      "name": "lib0 (barrel re-export)",
+      "source": "https://github.com/yjs/yjs/tree/master/packages/lib0",
+      "license": "MIT",
+      "version": "unpinned-at-vendor-time",
+      "note": "argon2/* protected by SRI in js/data/crypto.js \u2014 banner modification would break integrity; verify via ARGON2_VENDOR constants"
+    },
+    {
+      "path": "vendor/argon2/argon2.js",
+      "sha256": "cdb6ef704dbc287ffa0056376d9af297c8691ddeb985f9137b96fc9b0ddea8b0",
+      "name": "argon2-browser wasm glue (Emscripten bundle)",
+      "source": "https://github.com/antelle/argon2-browser",
+      "license": "LGPL-3.0",
+      "version": "argon2 algorithm v0x13 (spec v19)",
+      "note": "argon2/* protected by SRI in js/data/crypto.js \u2014 banner modification would break integrity; verify via ARGON2_VENDOR constants"
+    },
+    {
+      "path": "vendor/argon2/argon2.wasm",
+      "sha256": "0c2149886c13e4eae4a6ca25ee71d47423c5c8740a874cf04ff816d1b2c901d7",
+      "name": "argon2 core wasm module (Argon2id v19)",
+      "source": "https://github.com/antelle/argon2-browser",
+      "license": "LGPL-3.0",
+      "note": "argon2/* protected by SRI in js/data/crypto.js \u2014 banner modification would break integrity; verify via ARGON2_VENDOR constants"
+    },
+    {
+      "path": "vendor/argon2/argon2-wrapper.js",
+      "sha256": "ecfe330a8f3c6d491b92197391088f117ab13ad13c784cb01235a1afb5757a3b",
+      "name": "argon2 UMD wrapper",
+      "source": "https://github.com/antelle/argon2-browser",
+      "license": "LGPL-3.0",
+      "note": "argon2/* protected by SRI in js/data/crypto.js \u2014 banner modification would break integrity; verify via ARGON2_VENDOR constants"
+    },
+    {
+      "path": "vendor/qrcode/qrcode.min.js",
+      "sha256": "c0b8ad399c72b0ddfee8a0a3e7f10bf20f3833e16fe0c19d83455c47957a2349",
+      "name": "qrcodejs (davidshimjs fork)",
+      "source": "https://github.com/davidshimjs/qrcodejs",
+      "license": "MIT",
+      "version": "master@2012-2015 snapshot (upstream never tagged semver)",
+      "note": "argon2/* protected by SRI in js/data/crypto.js \u2014 banner modification would break integrity; verify via ARGON2_VENDOR constants"
+    }
+  ],
+  "banner": "sha256 values match files as present on disk (banners included where present)."
+}

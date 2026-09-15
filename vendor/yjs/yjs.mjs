@@ -1,3 +1,4 @@
+/*! VENDOR: yjs | MIT | https://github.com/yjs/yjs | version unpinned at vendor time; see vendor/SBOM.json for the SHA-256 fingerprint of THIS exact file. */
 import { ObservableV2 } from '../lib0/observable.js';
 import * as array from '../lib0/array.js';
 import * as math from '../lib0/math.js';

@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f4f0e9" />
     <meta name="notely-build" content="dev89" />
     <meta name="referrer" content="no-referrer" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
     <link rel="stylesheet" href="styles.css?v=dev89" />
   </head>
@@ -260,11 +260,11 @@
         </form>
         <div id="login-helpers">
         <button class="btn btn-secondary login-submit" id="passkey-login-btn" type="button">Sign in with passkey</button>
-        <p class="modal-desc" style="text-align:center" id="recover-link-wrap"><button class="link-button" id="recover-link" type="button">Forgot password?</button></p>
+        <p class="modal-desc desc-center" id="recover-link-wrap"><button class="link-button" id="recover-link" type="button">Forgot password?</button></p>
         <div id="recover-block" hidden>
           <p><button class="link-button" id="recover-back" type="button">← Back to log in</button></p>
           <p class="modal-desc">Choose how to recover your password.</p>
-          <div class="template-options" id="recover-options" style="margin-bottom:12px">
+          <div class="template-options stack-b12" id="recover-options">
             <button class="template-option" id="recover-opt-email" type="button"><span class="theme-option-text"><strong>Email</strong><span>Reset link to your account email</span></span></button>
             <button class="template-option" id="recover-opt-code" type="button"><span class="theme-option-text"><strong>Recovery Code</strong><span>Offline code generated in Settings</span></span></button>
           </div>
@@ -576,7 +576,7 @@
           <button class="icon-button" id="close-section-settings" aria-label="Close" data-icon="x"></button>
         </div>
         <p class="collab-members-section">Tags</p>
-        <p class="modal-desc" style="margin:0 0 6px">A shared set of tags for this section, offered as suggestions when tagging its notes.</p>
+        <p class="modal-desc desc-tight">A shared set of tags for this section, offered as suggestions when tagging its notes.</p>
         <div class="tag-editor-current" id="section-tags-current"></div>
         <div class="section-tags-add">
           <input id="section-tags-input" type="text" placeholder="Add a tag" autocomplete="off" />
@@ -690,9 +690,9 @@
         </div>
         <p class="modal-desc">Scan into your authenticator app, or enter the secret manually:</p>
         <div id="mfa-setup-block">
-          <div id="mfa-qr" style="display:flex;justify-content:center;padding:8px"></div>
-          <p class="modal-desc" style="text-align:center">Secret: <code id="mfa-secret" style="user-select:all"></code></p>
-          <p class="modal-desc" style="overflow-wrap:anywhere"><small id="mfa-otpauth"></small></p>
+          <div id="mfa-qr" class="center-flex-pad"></div>
+          <p class="modal-desc desc-center">Secret: <code id="mfa-secret" class="select-all"></code></p>
+          <p class="modal-desc wrap-anywhere"><small id="mfa-otpauth"></small></p>
           <label class="login-field"><span>6-digit code</span><input id="mfa-confirm-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" /></label>
           <p class="login-error" id="mfa-error" hidden></p>
           <button class="btn btn-secondary login-submit" id="mfa-confirm-btn" type="button">Verify &amp; enable</button>
@@ -711,7 +711,7 @@
         <p class="modal-desc">Store them somewhere safe (password manager, printed paper). Each code works once.</p>
         <ol id="acct-rec-codes" class="recovery-code-list"></ol>
         <p class="login-error" id="acct-rec-modal-error" hidden></p>
-        <div class="modal-actions" style="justify-content:flex-start">
+        <div class="modal-actions actions-start">
           <button class="btn btn-secondary" id="acct-rec-download-btn" type="button">Download codes (.txt)</button>
           <button class="btn btn-primary" id="acct-rec-done-btn" type="button">I have saved the codes</button>
         </div>

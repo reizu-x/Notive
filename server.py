@@ -1166,6 +1166,32 @@ def rate_exceeded(conn, buckets, max_n, window):
     return False
 
 
+# Record failure hits under an exclusive write lock, re-checking the ceiling
+# inside the same transaction (pentest F-4: closes the check-then-act burst
+# race where N concurrent requests all pass the pre-read and then each burn
+# a hit). Once the ceiling is reached the event is dropped, not appended, so
+# the bounded account/IP budget stays bounded under any concurrency.
+def rate_fail_bounded(conn, buckets, max_n, window):
+    now = time.time()
+    try:
+        if getattr(conn, 'in_transaction', False):
+            conn.commit()
+        conn.execute('BEGIN IMMEDIATE')
+    except Exception:
+        return
+    try:
+        _prune_rate_hits(conn, now, max(window, 3600))
+        if not rate_exceeded(conn, buckets, max_n, window):
+            for bucket in buckets:
+                conn.execute('INSERT INTO rate_hits (bucket, ts) VALUES (?, ?)', (bucket, now))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def recovery_fail_bucket(username):
     """Per-account recovery-failure bucket (brute-force ceiling)."""
     try:
@@ -1225,6 +1251,13 @@ def csrf_check_failed():
             return False
         if not request.path.startswith('/api/'):
             return False
+        # Body-type layer (as documented): state-changing /api requests must
+        # carry JSON (or have no body at all, e.g. logout). A classic
+        # cross-site <form> POST is form-encoded, and fetch()-based forgeries
+        # cannot legitimately send this origin's JSON either.
+        content_type = (request.content_type or '').split(';')[0].strip().lower()
+        if content_type and content_type != 'application/json' and content_type != 'application/json+structured':
+            return True
         from urllib.parse import urlparse
 
         def _parts(url):
@@ -1482,10 +1515,10 @@ def security_headers(response):
         # wasm-unsafe-eval: required to compile the vendored Argon2 WASM
         # module (strictly narrower than unsafe-eval: JS eval stays blocked).
         "script-src 'self' 'wasm-unsafe-eval'; "
-        # style-src keeps 'unsafe-inline': the static shell uses a handful of
-        # inline style attributes. Refactoring those to classes would allow a
-        # fully strict style-src (see hardening backlog).
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        # style-src is now fully strict: every inline style attribute in the
+        # static shell (and the dynamically-built shared-folder tree) was
+        # refactored to classes / element.style post-processing (pentest F-6).
+        "style-src 'self' https://fonts.googleapis.com; "
         "img-src 'self' https: data:; "
         "font-src 'self' https://fonts.gstatic.com; "
         "connect-src 'self'; "
@@ -1576,6 +1609,17 @@ def api_kdf_params():
     E2EE accounts get their real salts; legacy and unknown names get an
     identical shape with dummy values so callers cannot distinguish them.
     """
+    # Pentest F-5: legacy (pre-E2EE) accounts are still structurally
+    # distinguishable here (the legacy shape is needed so their client sends
+    # the password for transparent upgrade on next login). Blunt mass
+    # enumeration with a generous per-IP budget — real logins fetch this once
+    # per attempt, so 120/15min is far above human need.
+    conn0 = get_db()
+    if rate_exceeded(conn0, [ip_bucket('kdfparams')], 120, 900):
+        conn0.close()
+        return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
+    rate_hit(conn0, ip_bucket('kdfparams'))
+    conn0.close()
     username = str(request.args.get('username', '')).strip()
     conn = get_db()
     row = None
@@ -1701,7 +1745,7 @@ def api_login():
     if not validate_username(username):
         # Dummy work to keep timing uniform for invalid input.
         hmac.compare_digest(_DUMMY_HASH, _DUMMY_HASH)
-        rate_hit(conn, ip_bucket('login'))
+        rate_fail_bounded(conn, [ip_bucket('login')], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
         conn.close()
         return jsonify({'error': 'Incorrect username or password.'}), 401
     user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
@@ -1719,8 +1763,7 @@ def api_login():
             # Burn equal PBKDF2 work so E2EE accounts are not distinguishable
             # from legacy/unknown ones by response timing.
             hashlib.pbkdf2_hmac('sha256', secrets.token_bytes(16), _DUMMY_SALT, PBKDF2_ITERATIONS)
-            rate_hit(conn, ip_bucket('login'))
-            rate_hit(conn, user_bucket)
+            rate_fail_bounded(conn, [ip_bucket('login'), user_bucket], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
             conn.close()
             return jsonify({'error': 'Incorrect username or password.'}), 401
         ok = verify_auth_hash(candidate, user)
@@ -1728,8 +1771,7 @@ def api_login():
             # Burn equal PBKDF2 work so a wrong verifier on a real account
             # costs the same as an unknown-user attempt (timing-oracle fix).
             hashlib.pbkdf2_hmac('sha256', secrets.token_bytes(16), _DUMMY_SALT, PBKDF2_ITERATIONS)
-            rate_hit(conn, ip_bucket('login'))
-            rate_hit(conn, user_bucket)
+            rate_fail_bounded(conn, [ip_bucket('login'), user_bucket], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
             conn.close()
             return jsonify({'error': 'Incorrect username or password.'}), 401
         # Non-breaking pepper upgrade: raw -> peppered on successful login, then
@@ -1787,7 +1829,7 @@ def api_login():
         # Burn equal PBKDF2 work so unknown/legacy names cost the same as a
         # wrong E2EE verifier (timing-oracle fix).
         hashlib.pbkdf2_hmac('sha256', secrets.token_bytes(16), _DUMMY_SALT, PBKDF2_ITERATIONS)
-        rate_hit(conn, ip_bucket('login'))
+        rate_fail_bounded(conn, [ip_bucket('login')], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
         conn.close()
         return jsonify({'error': 'Incorrect username or password.'}), 401
     if user and not is_e2ee_account(user):
@@ -1802,8 +1844,7 @@ def api_login():
             pass
         ok = False
     if not ok:
-        rate_hit(conn, ip_bucket('login'))
-        rate_hit(conn, user_bucket)
+        rate_fail_bounded(conn, [ip_bucket('login'), user_bucket], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
         conn.close()
         return jsonify({'error': 'Incorrect username or password.'}), 401
     # Legacy account with a correct password: transparently upgrade to E2EE.
@@ -2588,11 +2629,19 @@ def api_mfa_challenge():
         return jsonify({'error': 'MFA error.'}), 500
     ok = totp_verify(secret, str(data.get('code', '')))
     if not ok:
-        rate_hit(conn, ip_bucket('mfa'))
-        rate_hit(conn, user_mfa_bucket)
+        rate_fail_bounded(conn, [ip_bucket('mfa'), user_mfa_bucket],
+                          CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS)
         conn.close()
         return jsonify({'error': 'Incorrect code.'}), 401
-    conn.execute('DELETE FROM mfa_challenges WHERE ticket_hash = ?', (digest,))
+    # Single-use, race-safe (pentest F-4): consume the ticket atomically.
+    # With N concurrent requests presenting the same ticket, exactly one
+    # DELETE reports rowcount 1; all others are rejected instead of each
+    # minting their own session.
+    consumed = conn.execute('DELETE FROM mfa_challenges WHERE ticket_hash = ?', (digest,))
+    if consumed.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        return jsonify({'error': 'Ticket expired. Log in again.'}), 401
     try:
         conn.execute('UPDATE mfa_totp SET last_used = ? WHERE username = ?', (int(time.time()), username))
     except Exception:

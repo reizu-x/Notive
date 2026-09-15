@@ -162,7 +162,17 @@ export async function restoreSessionUnlock() {
   try { blob = JSON.parse(sessionStorage.getItem(sessionUnlockKey()) || 'null'); } catch (error) { blob = null; }
   if (!blob || blob.u !== state.cachedProfile.username || !blob.k) return false;
   try {
-    const raw = e2eeB64ToBytes(blob.k);
+    let raw;
+    if (blob.k && typeof blob.k === 'object' && blob.k.iv && blob.k.data) {
+      // Wrapped format (pentest F-2): unwrap under the per-session KEK.
+      const rawBytes = await unwrapSessionKey(blob.k);
+      raw = rawBytes;
+    } else {
+      // Legacy raw base64 blob from before the wrap upgrade: accept once,
+      // then immediately re-save in wrapped form.
+      raw = e2eeB64ToBytes(blob.k);
+      saveSessionUnlock();
+    }
     const masterKey = await window.crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
     e2ee.masterKey = masterKey;
     e2ee.kdf = blob.kdf || 'pbkdf2';
@@ -177,9 +187,10 @@ export async function saveSessionUnlock() {
   if (!e2ee.masterKey || !state.cachedProfile) return;
   try {
     const raw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
+    const wrapped = await wrapSessionKey(raw);
     sessionStorage.setItem(sessionUnlockKey(), JSON.stringify({
       u: state.cachedProfile.username,
-      k: e2eeBytesToB64(new Uint8Array(raw)),
+      k: wrapped,
       kdf: e2ee.kdf || 'pbkdf2',
       saltAuth: e2ee.saltAuth ? e2eeBytesToB64(e2ee.saltAuth) : '',
       saltEnc: e2ee.saltEnc ? e2eeBytesToB64(e2ee.saltEnc) : '',
@@ -189,15 +200,50 @@ export async function saveSessionUnlock() {
 }
 
 export function clearSessionUnlock() {
+  const kekKey = sessionKekKey();
   try { sessionStorage.removeItem(sessionUnlockKey()); } catch (error) {}
+  try { sessionStorage.removeItem(kekKey); } catch (error) {}
 }
 
 // --- Per-browser-session unlock -------------------------------------------
 // The master key never touches persistent storage. To survive a page refresh
-// without re-typing the password we keep it in sessionStorage, which the
-// browser wipes when the tab/window closes. Clearing it (logout) or closing
-// the browser locks the vault again.
+// without re-typing the password we keep it in sessionStorage (wrapped, see
+// below), which the browser wipes when the tab/window closes. Clearing it
+// (logout) or closing the browser locks the vault again.
 export function sessionUnlockKey() { return accountScopeKey('notely-session-unlock'); }
+
+// Session-wrap KEK. The master key is stored wrapped under this random
+// per-tab AES-GCM key (pentest finding F-2) instead of as raw base64 text:
+// a naive exfil via sessionStorage.getItem() no longer yields the key bytes.
+// The KEK seed also lives in sessionStorage — same-origin script can still
+// reach it, so this raises the bar rather than being a full guarantee; the
+// accepted design tradeoff (refresh without re-typing the password) is kept.
+export function sessionKekKey() { return accountScopeKey('notely-session-unlock-kek'); }
+
+function loadSessionKek() {
+  try { return e2eeB64ToBytes(sessionStorage.getItem(sessionKekKey()) || ''); }
+  catch (error) { return null; }
+}
+
+async function wrapSessionKey(raw) {
+  let kek = loadSessionKek();
+  if (!kek || kek.length !== 32) {
+    kek = window.crypto.getRandomValues(new Uint8Array(32));
+    sessionStorage.setItem(sessionKekKey(), e2eeBytesToB64(kek));
+  }
+  const kekKey = await window.crypto.subtle.importKey('raw', kek, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kekKey, raw);
+  return { iv: e2eeBytesToB64(new Uint8Array(iv)), data: e2eeBytesToB64(new Uint8Array(ct)) };
+}
+
+async function unwrapSessionKey(wrapped) {
+  const kek = loadSessionKek();
+  if (!kek || kek.length !== 32) throw new Error('session-kek');
+  const kekKey = await window.crypto.subtle.importKey('raw', kek, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+  return new Uint8Array(await window.crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: e2eeB64ToBytes(wrapped.iv) }, kekKey, e2eeB64ToBytes(wrapped.data)));
+}
 
 // Re-apply the persisted collapse choice (login, register, boot all land here
 // after their first selection, so the workspace returns as the user left it).

@@ -1,3 +1,4 @@
+/*! VENDOR: lib0 (companion of yjs) | MIT | https://github.com/yjs/yjs/tree/master/packages/lib0 | version unpinned at vendor time; see vendor/SBOM.json. */
 /**
  * Experimental method to import lib0.
  *
