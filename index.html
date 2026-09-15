@@ -782,8 +782,8 @@
     <!-- Right-click menu for shared notes / shared folders (items filled by JS) -->
     <div class="context-menu" id="shared-context-menu" role="menu" aria-label="Shared actions" hidden></div>
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
-    <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
-    <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
+    <!-- Vendored QR (MIT, qrcode-generator 1.5.0; adapter keeps the QRCode(...) API) for MFA setup. Local only: secret never leaves device. -->
+    <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-fNse+GzXblndDsHPTGnb91FmFdpQmGqYCGhwecMIsHKDmKkjiuy5DZmjYggpKP6e" crossorigin="anonymous" defer></script>
     <script type="module" src="js/app.js?v=dev89"></script>
   </body>
 </html>

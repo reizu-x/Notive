@@ -47,13 +47,17 @@
     },
     {
       "path": "vendor/qrcode/qrcode.min.js",
-      "sha256": "c0b8ad399c72b0ddfee8a0a3e7f10bf20f3833e16fe0c19d83455c47957a2349",
-      "name": "qrcodejs (davidshimjs fork)",
-      "source": "https://github.com/davidshimjs/qrcodejs",
+      "sha256": "dad62d2e67873fba8e338fe54121da54db436614931b083bf2bf19f2a37b4d25",
+      "name": "qrcode-generator",
+      "source": "https://github.com/kazuhikoarase/qrcode-generator",
       "license": "MIT",
-      "version": "master@2012-2015 snapshot (upstream never tagged semver)",
-      "note": "argon2/* protected by SRI in js/data/crypto.js \u2014 banner modification would break integrity; verify via ARGON2_VENDOR constants"
+      "version": "1.5.0",
+      "note": "upstream qrcode.js + Notely adapter appending window.QRCode legacy API; served with SRI in index.html"
     }
   ],
-  "banner": "sha256 values match files as present on disk (banners included where present)."
+  "banner": "sha256 values match files as present on disk (banners included where present).",
+  "replaced": {
+    "item": "vendor/qrcode/qrcode.min.js",
+    "reason": "davidshimjs qrcodejs snapshot unmaintained (no tags), replaced by qrcode-generator 1.5.0"
+  }
 }
