@@ -6,7 +6,7 @@ import { icon } from '../core/icons.js';
 import { isValidNoteId } from '../core/ids.js';
 import { folderDepth, folderIconForDepth, folderLeaf, folderParent, isFolderOrSub } from '../core/paths.js';
 import { escapeHtml } from '../core/strings.js';
-import { MAX_OPEN_TABS, sharedNoteMeta } from '../domain/constants.js';
+import { MAX_OPEN_TABS, NOTE_TEMPLATES, sharedGroupFolders, sharedGroupOwners, sharedNoteMeta } from '../domain/constants.js';
 import { state } from '../domain/state.js';
 import { canEditCoverNote, moveCoverOnNote } from './editor.js';
 import { clearTabDropMarks, noteGlyphFor, updateStripScrollButton, viewLabel } from './feedback.js';
@@ -68,6 +68,18 @@ export function updateBreadcrumbs() {
   root.textContent = viewLabel(state.activeView);
   root.title = 'Back to All Notes';
   trail.appendChild(root);
+  // Shared folder scope: read-only crumb naming the scoped folder.
+  if (state.activeView === 'shared' && state.sharedFolder) {
+    const sep = document.createElement('span');
+    sep.className = 'crumb-separator';
+    sep.textContent = '/';
+    trail.appendChild(sep);
+    const folderLabel = document.createElement('span');
+    folderLabel.className = 'crumb-link';
+    folderLabel.textContent = state.sharedFolder.folder ? folderLeaf(state.sharedFolder.folder) : 'Notes';
+    folderLabel.title = state.sharedFolder.folder ? `Scoped to ${state.sharedFolder.folder}` : 'Section root notes';
+    trail.appendChild(folderLabel);
+  }
   const activeFolderPath = (state.activeCustom ? state.activeCustom.folder : null);
   const activeFolder = activeFolderPath
     || (state.activeCustom ? sectionDisplayName('custom', state.activeCustom.section) : null);
@@ -100,7 +112,7 @@ export function renderStripItems() {
   // Back button sits under the collapse toggle, over the folder name —
   // visible only inside a subfolder.
   const backBtn = document.getElementById('workspace-strip-back');
-  if (state.activeView === 'vault' || state.activeView === 'shared') {
+  if (state.activeView === 'vault') {
     box.innerHTML = '';
     if (backBtn) {
       backBtn.hidden = true;
@@ -110,50 +122,74 @@ export function renderStripItems() {
     updateStripScrollButton();
     return;
   }
-  // Folder navigation is always on in the strip (folders no longer live in
-  // the slide menu in any state). Folders render as a tree: each subfolder
-  // sits indented under its parent, preserving the section's list order.
-  // Notes join the strip only while inside a folder, after the tree.
+  if (state.activeView === 'shared') {
+    // Shared strip: one initial tag per shared section (sections only — never
+    // folders), plus the direct notes of the selected folder after a real
+    // separator, mirroring the All Notes strip.
+    const sel = state.sharedFolder;
+    const entries = [...sharedGroupFolders.entries()];
+    let html = '';
+    entries.forEach(([groupId, folders]) => {
+      const owner = sharedGroupOwners.get(groupId) || '?';
+      html += `<span class="strip-section-tag is-shared" title="Shared with ${escapeHtml(owner)}" aria-hidden="true">${escapeHtml(owner.charAt(0).toUpperCase() || '?')}</span>`;
+      const activeGroup = sel && String(sel.groupId) === String(groupId);
+      // Full folder universe for this shared section: group meta + any folder
+      // that appears on a note (same as sharedFolderTree) so note-created
+      // subfolders are visible and correctly parented.
+      const folderSet = new Set((folders || []).filter(Boolean));
+      sharedNoteMeta.forEach((m) => { if (String(m.groupId) === String(groupId) && m.folder) folderSet.add(m.folder); });
+      // Direct notes of the selected folder: a real separator, then the notes.
+      if (activeGroup && sel.folder) {
+        const direct = [...sharedNoteMeta.values()].filter((m) => String(m.groupId) === String(groupId) && (m.folder || '') === sel.folder);
+        if (direct.length) {
+          html += `<span class="strip-separator" aria-hidden="true"></span>`;
+          html += direct.map((m) => {
+            const glyph = (m.template && NOTE_TEMPLATES[m.template] && NOTE_TEMPLATES[m.template].icon) ? NOTE_TEMPLATES[m.template].icon : 'file';
+            const activeNote = String(state.collab.noteId) === String(m.id);
+            return `<button type="button" class="strip-btn${activeNote ? ' is-note-active' : ''}" data-shared-strip-note="${escapeHtml(String(m.id))}" data-shared-strip-group="${escapeHtml(String(groupId))}" title="${escapeHtml(m.title || 'Untitled note')}" aria-label="Open ${escapeHtml(m.title || 'Untitled note')}">${icon(glyph)}</button>`;
+          }).join('');
+        }
+      }
+    });
+    box.innerHTML = html;
+    if (backBtn) {
+      if (sel) {
+        const parent = folderParent(sel.folder);
+        backBtn.hidden = false;
+        backBtn.dataset.stripShared = '1';
+        backBtn.dataset.sharedGroup = String(sel.groupId);
+        backBtn.dataset.stripTarget = parent || '';
+        if (parent) {
+          backBtn.title = `${parent} — back to shared parent folder`;
+          backBtn.setAttribute('aria-label', `Back to ${folderLeaf(parent)}`);
+        } else {
+          backBtn.title = 'Back to all shared notes';
+          backBtn.setAttribute('aria-label', 'Back to all shared notes');
+        }
+      } else {
+        backBtn.hidden = true;
+        delete backBtn.dataset.stripShared;
+        delete backBtn.dataset.sharedGroup;
+        delete backBtn.dataset.stripTarget;
+      }
+    }
+    updateStripScrollButton();
+    return;
+  }
+  // The main strip shows SECTIONS only — never folders under a section.
+  // Clicking a section glyph opens that section; folders live in the note list.
   const sections = section ? [section] : state.customSections.slice();
   let html = '';
   sections.forEach((sec) => {
     if (!sec.folders.length) return;
-    if (!section && sections.length > 1) {
-      html += `<span class="strip-section-tag" title="${escapeHtml(sec.name)}" aria-hidden="true">${escapeHtml(sec.name.charAt(0).toUpperCase() || '?')}</span>`;
-    }
-    // When a folder is selected the strip is scoped to that folder's branch:
-    // it shows only the folder and its contents (its subfolders). Otherwise
-    // the whole section tree is shown for navigation.
-    const pool = (section && folder)
-      ? [folder, ...sec.folders.filter((name) => name !== folder && isFolderOrSub(name, folder))]
-      : sec.folders;
-    const childrenOf = new Map();
-    const roots = [];
-    pool.forEach((name) => {
-      const parent = folderParent(name);
-      if (parent && pool.includes(parent)) {
-        if (!childrenOf.has(parent)) childrenOf.set(parent, []);
-        childrenOf.get(parent).push(name);
-      } else roots.push(name);
-    });
-    const emitted = new Set();
-    const emitFolder = (name) => {
-      if (emitted.has(name)) return;
-      emitted.add(name);
-      const depth = folderDepth(name);
-      const activeDot = section && folder === name;
-      const glyph = `<span class="strip-folder-glyph ${customFolderColor(sec, name)}">${icon(folderIconForDepth(depth))}</span>`;
-      html += `<button type="button" class="strip-btn is-folder${depth > 0 ? ' is-subfolder' : ''}${depth > 1 ? ' is-deep' : ''}${activeDot ? ' is-dot-active' : ''}" data-strip-section="${escapeHtml(sec.id)}" data-strip-folder="${escapeHtml(name)}" title="${escapeHtml(sec.name)} / ${escapeHtml(name)}" aria-label="Open ${escapeHtml(folderLeaf(name))}">${glyph}</button>`;
-      (childrenOf.get(name) || []).forEach(emitFolder);
-    };
-    roots.forEach(emitFolder);
-    pool.forEach(emitFolder);
+    html += `<span class="strip-section-tag" title="${escapeHtml(sec.name)}" aria-hidden="true">${escapeHtml(sec.name.charAt(0).toUpperCase() || '?')}</span>`;
+    html += `<button type="button" class="strip-btn" data-strip-section="${escapeHtml(sec.id)}" data-strip-folder="" title="Open section ${escapeHtml(sec.name)}" aria-label="Open section ${escapeHtml(sec.name)}"><span class="strip-folder-glyph ${customFolderColor(sec, '')}">${icon('folder-solid')}</span></button>`;
   });
   // Inside a folder: append its direct notes beneath the folder icons.
   if (section && folder && state.activeView !== 'bin') {
     const pool = visibleNotes().filter((note) => !note.deleted);
     const direct = pool.filter((note) => customNoteFolder(note, section.id) === folder);
-    if (direct.length) html += `<span class="strip-section-tag" title="Notes in ${escapeHtml(folderLeaf(folder))}" aria-hidden="true">·</span>`;
+    if (direct.length) html += `<span class="strip-separator" aria-hidden="true"></span>`;
     html += direct.map((note) => `<button type="button" class="strip-btn${note.id === state.currentId ? ' is-note-active' : ''}" data-strip-note="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}" aria-label="Open ${escapeHtml(note.title || 'Untitled note')}">${icon(noteGlyphFor(note))}</button>`).join('');
   }
   box.innerHTML = html;

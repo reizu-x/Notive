@@ -727,8 +727,27 @@ if (BUILD_NOTE_OK) {
   if (stripBoxEl) {
     stripBoxEl.addEventListener('scroll', updateStripScrollButton, { passive: true });
     stripBoxEl.addEventListener('click', (event) => {
+      const snote = event.target.closest('[data-shared-strip-note]');
+      if (snote && state.activeView === 'shared') { openCollabNote(snote.dataset.sharedStripNote); return; }
+      const ssub = event.target.closest('[data-shared-strip-folder]');
+      if (ssub && state.activeView === 'shared') {
+        const groupId = ssub.dataset.sharedStripGroup;
+        const folderPath = ssub.dataset.sharedStripFolder || '';
+        // Same folder re-click clears the scope (whole section shows again).
+        const same = state.sharedFolder && String(state.sharedFolder.groupId) === String(groupId) && (state.sharedFolder.folder || '') === folderPath;
+        state.sharedFolder = same ? null : { groupId, folder: folderPath };
+        renderSharedView();
+        renderStripItems();
+        updateBreadcrumbs();
+        updateFoldToggle();
+        return;
+      }
       const sub = event.target.closest('[data-strip-folder]');
-      if (sub) { selectCustomFolder(sub.dataset.stripSection, sub.dataset.stripFolder); return; }
+      if (sub) {
+        // Empty folder path = section glyph → open the whole section.
+        if (!sub.dataset.stripFolder) { selectCustomSection(sub.dataset.stripSection); return; }
+        selectCustomFolder(sub.dataset.stripSection, sub.dataset.stripFolder); return;
+      }
       const item = event.target.closest('[data-strip-note]');
       if (item) selectNote(item.dataset.stripNote);
     });

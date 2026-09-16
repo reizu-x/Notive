@@ -18,14 +18,14 @@ import { renderRecipeHero } from '../ui/editor.js';
 import { askInput, showToast } from '../ui/modal.js';
 import { collabRotateSectionKey } from '../ui/sections.js';
 import { allCount, listEmpty, noteList, recentCountEl, starredCountEl, totalCount } from '../core/elements.js';
-import { FOLDER_SEP } from '../core/paths.js';
+import { FOLDER_SEP, isFolderOrSub } from '../core/paths.js';
 import { sanitizeIngredients, sanitizeSteps } from '../core/schema.js';
 import { sharedGroupFolders, sharedGroupKeys, sharedGroupTags } from '../domain/constants.js';
 import { renderPreview, renderRecipeBody } from '../ui/editor.js';
 import { updateBinUI } from '../ui/notes.js';
 import { collabCreateSection, sharedFolderTree, updateFoldToggle } from '../ui/sections.js';
 import { seedFromTemplate } from '../ui/shell.js';
-import { renderTabs, trackTab, updateBreadcrumbs } from '../ui/tabs.js';
+import { renderStripItems, renderTabs, trackTab, updateBreadcrumbs } from '../ui/tabs.js';
 import { renderSharedTags } from '../ui/tags.js';
 import { updateVaultUI } from '../ui/vault.js';
 import { rekeyInFlight } from '../domain/constants.js';
@@ -315,12 +315,37 @@ export function sharedNoteRow(n, groupId, canDelete) {
   const deleteAction = canDelete
     ? `<span class="tree-action danger" data-collab-note-delete="${n.id}" role="button" title="Delete note" aria-label="Delete ${escapeHtml(title)}">${icon('trash')}</span>`
     : '';
-  return `<button class="tree-file shared-view-row" draggable="true" data-collab-open="${n.id}" data-collab-group="${groupId}" data-indent-depth="${n.folder ? folderDepth(n.folder) : 0}" data-indent-offset="${n.folder ? 31 : 0}" title="${escapeHtml(title)}">
+  return `<button class="tree-file shared-view-row${String(state.collab.noteId) === String(n.id) ? ' selected' : ''}" draggable="true" data-collab-open="${n.id}" data-collab-group="${groupId}" title="${escapeHtml(title)}">
       <span class="tree-file-icon">${icon(glyph)}</span>
-      <span class="tree-file-name">${escapeHtml(title)}</span>
+      <span class="tree-file-name">${highlightShared(title)}</span>
       <span class="tree-action" data-note-folder="${n.id}" data-note-group="${groupId}" role="button" title="Move to folder" aria-label="Move ${escapeHtml(title)} to a folder">${icon('folder-plus')}</span>
       ${deleteAction}
     </button>`;
+}
+
+function highlightShared(text) {
+  const raw = String(text || '');
+  const q = String(state.searchQuery || '').trim();
+  if (!q) return escapeHtml(raw);
+  const tokens = q.toLowerCase().split(/\s+/).filter(Boolean).filter((t) => !t.startsWith('tag:') && !t.startsWith('body:') && t !== 'tag:' && t !== 'body:');
+  if (!tokens.length) return escapeHtml(raw);
+  let html = escapeHtml(raw);
+  tokens.forEach((tok) => {
+    const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try { html = html.replace(new RegExp(`(${esc})`, 'gi'), '<mark>$1</mark>'); } catch (error) {}
+  });
+  return html;
+}
+
+// Toggle the highlight on the currently open shared note without re-rendering
+// the whole list (rows carry data-collab-open ids).
+function updateSharedSelection() {
+  const box = document.getElementById('shared-view-list');
+  if (!box) return;
+  box.querySelectorAll('[data-collab-open]').forEach((row) => {
+    const open = String(state.collab.noteId) === String(row.dataset.collabOpen);
+    row.classList.toggle('selected', open);
+  });
 }
 
 export function sharedGroupOwnerOf(groupId) {
@@ -438,6 +463,7 @@ export function closeCollabNote() {
   state.collab.presence.clear(); state.collab.clientId = null; state.collab.color = null;
   renderCollabPresence();
   try { renderRecipeHero(null); } catch (error) {}
+  updateSharedSelection();
 }
 
 // Fetch and unlock the new epoch key after the owner rotates, and switch to it.
@@ -903,25 +929,6 @@ export async function renderSharedView() {
   sharedGroupKeys.clear();
   sharedGroupFolders.clear();
   sharedNoteMeta.clear();
-// CSP (style-src has no 'unsafe-inline'): dynamic indents applied as element
-// styles after innerHTML insertion.
-function applySafeIndents(box) {
-  box.querySelectorAll('[data-indent-depth]').forEach((el) => {
-    try {
-      const depth = Number(el.dataset.indentDepth || 0);
-      const offset = Number(el.dataset.indentOffset || 0);
-      el.style.paddingLeft = `${8 + depth * 14 + offset}px`;
-    } catch (error) {}
-  });
-}
-
-// CSP (style-src has no 'unsafe-inline'): shared-folder indentation is a
-// dynamic depth value, applied as element styles after innerHTML insertion.
-function applySharedFolderIndents(box) {
-  box.querySelectorAll('[data-shared-folder][data-depth]').forEach((el) => {
-    try { el.style.paddingLeft = `${8 + Number(el.dataset.depth || 0) * 14}px`; } catch (error) {}
-  });
-}
 
   const groupBlocks = [];
   let totalMatches = 0;
@@ -949,8 +956,28 @@ function applySharedFolderIndents(box) {
     // After decoding this render, a flagged section (member left / account
     // deleted) is re-keyed in the background by a remaining member.
     if (key && g.rekeyNeeded) rekeyGroupIfNeeded(g, key);
-    const visible = searching ? decoded.filter((entry) => sharedNoteMatchesSearch(entry, query)) : decoded;
-    if (searching && !visible.length) continue;
+    let visible = searching ? decoded.filter((entry) => sharedNoteMatchesSearch(entry, query)) : decoded;
+    // Strip folder scope: show this section's folder subtree only (folder ''
+    // = root-level notes). Sections outside the selection stay visible.
+    if (!searching && state.sharedFolder && String(state.sharedFolder.groupId) === String(g.id)) {
+      const f = state.sharedFolder.folder;
+      visible = f
+        ? visible.filter((n) => (n.folder || '') === f || isFolderOrSub(n.folder || '', f))
+        : visible.filter((n) => !(n.folder));
+    }
+    if ((searching || state.sharedFolder) && !visible.length) {
+      if (searching) continue;
+      if (String(state.sharedFolder.groupId) === String(g.id)) {
+        groupBlocks.push(`<div class="shared-group">
+          <div class="shared-group-head">
+            <span class="shared-group-name">${escapeHtml(displayName)}</span>
+          </div>
+          <p class="modal-desc shared-folder-empty">No notes in this folder yet.</p>
+        </div>`);
+        continue;
+      }
+      continue;
+    }
     totalMatches += visible.length;
     groupBlocks.push(`<div class="shared-group">
       <div class="shared-group-head">
@@ -968,10 +995,12 @@ function applySharedFolderIndents(box) {
   let html = invitesHtml + groupBlocks.join('');
   if (searching && totalMatches === 0) html = `<p class="modal-desc shared-search-empty">No shared notes match “${escapeHtml(query)}”.</p>`;
   box.innerHTML = html;
-  applySharedFolderIndents(box);
-  applySafeIndents(box);
   updateFoldToggle();
   try { renderTabs(); } catch (error) {}
+  // The strip + breadcrumb read sharedGroupFolders, which was just repopulated
+  // — refresh them here so they never race ahead of the decrypted metadata.
+  try { renderStripItems(); } catch (error) {}
+  try { updateBreadcrumbs(); } catch (error) {}
 }
 
 export async function confirmCollabNew() {
@@ -1145,6 +1174,7 @@ export async function openCollabNote(noteId) {
   const editorPanel = document.querySelector('.editor-panel');
   if (editorPanel) editorPanel.classList.add('collab-mode');
   trackTab(noteId, false, true);
+  updateSharedSelection();
   try { renderTabs(); } catch (error) {}
   collabConnect(noteId, keyRaw, Y, doc);
 }

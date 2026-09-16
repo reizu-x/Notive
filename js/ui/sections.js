@@ -171,9 +171,89 @@ export function openSectionSettings(groupId) {
   if (!overlay) return;
   state.sectionSettingsGroupId = Number(groupId) || groupId;
   renderSectionSettingsTags();
+  renderSectionMembers();
   overlay.hidden = false;
-  const input = document.getElementById('section-tags-input');
-  if (input) { input.value = ''; try { input.focus(); } catch (error) {} }
+  const input = document.getElementById('section-invite-input');
+  if (input) input.value = '';
+  const err1 = document.getElementById('section-invite-error');
+  if (err1) { err1.hidden = true; err1.textContent = ''; }
+  const err2 = document.getElementById('section-invite-status');
+  if (err2) { err2.hidden = true; err2.textContent = ''; }
+  const tagInput = document.getElementById('section-tags-input');
+  if (tagInput) { tagInput.value = ''; }
+}
+
+export async function renderSectionMembers() {
+  const box = document.getElementById('section-members-list');
+  if (!box || state.sectionSettingsGroupId == null) return;
+  const me = state.cachedProfile && state.cachedProfile.username;
+  box.innerHTML = '<p class="modal-desc">Loading members…</p>';
+  try {
+    const res = await apiFetch(`/api/collab/groups/${state.sectionSettingsGroupId}`);
+    if (!res.ok) { box.innerHTML = '<p class="modal-desc">Could not load members.</p>'; return; }
+    const g = await res.json();
+    const members = Array.isArray(g.members) ? g.members : [];
+    const pending = Array.isArray(g.pending) ? g.pending : [];
+    const isOwner = g.owner === me;
+    const memberRows = members.map((name) => {
+      const tags = `${name === me ? ' (you)' : ''}${name === g.owner ? ' · owner' : ''}`;
+      return `<div class="collab-pending-row"><span class="collab-pending-name">${escapeHtml(name)}${tags}</span></div>`;
+    }).join('');
+    let html = `${memberRows || '<p class="modal-desc">No members yet.</p>'}`;
+    if (isOwner && pending.length) {
+      const pendingRows = pending.map((name) => `<div class="collab-pending-row"><span class="collab-pending-name">${escapeHtml(name)} (invited)</span></div>`).join('');
+      html += `<p class="collab-members-section">Invited</p>${pendingRows}`;
+    }
+    box.innerHTML = html;
+    const whole = document.getElementById('section-invite-whole');
+    const inviteBtn = document.getElementById('section-invite-btn');
+    const inviteInput = document.getElementById('section-invite-input');
+    const canInvite = isOwner;
+    if (whole) whole.disabled = !canInvite;
+    if (inviteBtn) inviteBtn.disabled = !canInvite;
+    if (inviteInput) inviteInput.disabled = !canInvite;
+  } catch (error) {
+    box.innerHTML = '<p class="modal-desc">Could not load members.</p>';
+  }
+}
+
+export async function sectionInviteMember() {
+  const groupId = state.sectionSettingsGroupId;
+  const errEl = document.getElementById('section-invite-error');
+  const statusEl = document.getElementById('section-invite-status');
+  const input = document.getElementById('section-invite-input');
+  const whole = document.getElementById('section-invite-whole');
+  const username = String(input ? input.value : '').trim();
+  const showErr = (msg) => { if (errEl) { errEl.textContent = msg; errEl.hidden = false; } if (statusEl) statusEl.hidden = true; };
+  const showOk = (msg) => { if (statusEl) { statusEl.textContent = msg; statusEl.hidden = false; statusEl.style.color = 'var(--ink)'; } if (errEl) errEl.hidden = true; };
+  if (!groupId) { showErr('Open section settings again.'); return; }
+  if (!/^[A-Za-z0-9_-]{3,32}$/.test(username)) { showErr('Enter a valid username (3-32 chars: letters, numbers, _ or -).'); return; }
+  const me = state.cachedProfile && state.cachedProfile.username;
+  if (!me || sharedGroupOwnerOf(groupId) !== me) { showErr('Only the owner can add members.'); return; }
+  if (whole && !whole.checked) { showErr('Check “Whole section” to give access to the entire section.'); return; }
+  if (username === me) { showErr('You are already a member.'); return; }
+  const key = sharedGroupKeys.get(groupId) || sharedGroupKeys.get(Number(groupId));
+  if (!key) { showErr('Reload the Shared list and try again'); return; }
+  let keyVersion = 1;
+  try {
+    const res = await apiFetch(`/api/collab/groups/${groupId}`);
+    if (!res.ok) { showErr('Could not load section key.'); return; }
+    const g = await res.json();
+    keyVersion = Number(g.keyVersion || g.myKeyVersion || 1);
+  } catch (error) { showErr('Could not load section key.'); return; }
+  const btn = document.getElementById('section-invite-btn');
+  if (btn) btn.disabled = true;
+  try {
+    await collabAddGroupMember(groupId, key, username, keyVersion);
+    showOk(`Invited ${username} — they will see the whole section once they accept.`);
+    if (input) input.value = '';
+    await renderSectionMembers();
+    try { renderSharedView(); } catch (error) {}
+  } catch (error) {
+    showErr(error && error.message ? error.message : 'Could not add member');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 export async function saveSectionTags(groupId, tags) {
@@ -218,27 +298,39 @@ export function sharedFolderTree(notesDec, groupId, folderList, canDelete) {
       childrenOf.get(parent).push(f);
     } else roots.push(f);
   });
-  roots.sort((a, b) => a.localeCompare(b));
-  childrenOf.forEach((arr) => arr.sort((a, b) => a.localeCompare(b)));
-  const parts = [];
+  // Keep the user's drag-sorted order (folderList order) — no alphabetical sort.
+  // Subtree note counts mirror the All Notes tree's per-folder counters.
+  const subtreeCount = (folder) => {
+    const own = notesDec.filter((n) => n.folder === folder).length;
+    return (childrenOf.get(folder) || []).reduce((sum, child) => sum + subtreeCount(child), own);
+  };
   const emit = (folder) => {
     const depth = folderDepth(folder);
     const leaf = folderLeaf(folder);
     const collapsed = sharedCollapsed.has(sharedFolderKey(groupId, folder));
-    parts.push(`<div class="shared-folder" draggable="true" data-shared-folder="${escapeHtml(folder)}" data-shared-group="${groupId}" data-depth="${depth}">
-        <button type="button" class="shared-folder-toggle${collapsed ? ' is-collapsed' : ''}" data-shared-toggle="${escapeHtml(folder)}" data-shared-group="${groupId}" title="${collapsed ? 'Expand' : 'Collapse'}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(leaf)}">${icon('chevron-right')}</button>
-        ${icon('folder')}<span class="shared-folder-name">${escapeHtml(leaf)}</span>
+    const childHtml = (childrenOf.get(folder) || []).map(emit).join('');
+    const notesHtml = notesDec.filter((n) => n.folder === folder).map((n) => sharedNoteRow(n, groupId, canDelete)).join('');
+    // Same nesting the All Notes tree uses (tree-folder-wrap > tree-children):
+    // the children containers carry the vertical guide lines and indentation,
+    // so the hierarchy reads exactly like the personal workspace.
+    return `
+    <div class="tree-folder-wrap${collapsed ? ' closed' : ''} shared-folder" draggable="true" data-shared-folder="${escapeHtml(folder)}" data-shared-group="${groupId}" data-depth="${depth}">
+      <div class="tree-folder-row">
+        <button type="button" class="tree-folder" data-shared-toggle="${escapeHtml(folder)}" data-shared-group="${groupId}" aria-expanded="${collapsed ? 'false' : 'true'}" title="${escapeHtml(folder)}">
+          <span class="tree-chevron">${icon('chevron-right')}</span>
+          <span class="tree-folder-icon">${icon(folderIconForDepth(depth))}</span>
+          <span class="tree-folder-name">${escapeHtml(leaf)}</span>
+          <span class="tree-count">${subtreeCount(folder)}</span>
+        </button>
         <span class="shared-folder-actions">
           <button type="button" class="shared-folder-action" data-folder-note="${escapeHtml(folder)}" data-folder-group="${groupId}" title="New note in ${escapeHtml(leaf)}" aria-label="New note in ${escapeHtml(leaf)}">${icon('file-text')}</button>
           <button type="button" class="shared-folder-action" data-folder-sub="${escapeHtml(folder)}" data-folder-group="${groupId}" title="New subfolder in ${escapeHtml(leaf)}" aria-label="New subfolder in ${escapeHtml(leaf)}">${icon('folder-plus')}</button>
         </span>
-      </div>`);
-    if (collapsed) return;
-    // A folder's own notes come first, directly under it, then its subfolders.
-    notesDec.filter((n) => n.folder === folder).forEach((n) => parts.push(sharedNoteRow(n, groupId, canDelete)));
-    (childrenOf.get(folder) || []).forEach(emit);
+      </div>
+      <div class="tree-children">${notesHtml}${childHtml}</div>
+    </div>`;
   };
-  roots.forEach(emit);
+  const parts = roots.map(emit);
   notesDec.filter((n) => !n.folder).forEach((n) => parts.push(sharedNoteRow(n, groupId, canDelete)));
   return parts.join('') || '<p class="modal-desc shared-folder-empty">No notes yet — use + New note in this section.</p>';
 }
