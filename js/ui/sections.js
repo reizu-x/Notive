@@ -633,6 +633,44 @@ export function closeSectionContextMenu() {
   state.sectionMenuTarget = null;
 }
 
+// Vault context menu: open/close/handle actions
+export function openVaultContextMenu(vaultId, x, y) {
+  const menu = document.getElementById('vault-context-menu');
+  if (!menu || !vaultId) return;
+  state.vaultMenuTarget = vaultId;
+  menu.hidden = false;
+  const padding = 8;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth - padding) menu.style.left = `${Math.max(padding, x - rect.width)}px`;
+  if (rect.bottom > window.innerHeight - padding) menu.style.top = `${Math.max(padding, y - rect.height)}px`;
+}
+
+export function closeVaultContextMenu() {
+  const menu = document.getElementById('vault-context-menu');
+  if (menu) menu.hidden = true;
+  state.vaultMenuTarget = null;
+}
+
+export function handleVaultMenuAction(action, vaultId) {
+  if (!vaultId || typeof action !== 'string') return;
+  const id = vaultId == null ? 1 : vaultId;
+  if (action === 'rename') {
+    try {
+      import('./vault.js').then((m) => {
+        try { m.renameVault(id); } catch (error) {}
+      });
+    } catch (error) {}
+  } else if (action === 'delete') {
+    try {
+      import('./vault.js').then((m) => {
+        try { m.deleteVault(id); } catch (error) {}
+      });
+    } catch (error) {}
+  }
+}
+
 export function openCustomSectionDeleteConfirm(id) {
   const section = state.customSections.find((entry) => entry.id === id);
   if (!section) return;
@@ -733,16 +771,34 @@ function renderVaultFolderRows(container) {
   const known = Array.isArray(state.vaultList) && state.vaultList.length
     ? state.vaultList
     : [{ id: state.vaultId || 1, name: 'Vault' }];
-  container.innerHTML = `<div><div class="collection-list">`
-    + known.map((entry) => {
-      const active = unlocked && String(state.vaultId || 1) === String(entry.id);
-      return `
-        <a href="#" class="person-row${active ? ' active' : ''}" data-vault-row="${escapeHtml(String(entry.id))}" title="${escapeHtml(entry.name || 'Vault')}">
-          <span class="collection-dot mint"></span>
-          <span class="collection-label">${escapeHtml(entry.name || 'Vault')}</span>
-        </a>`;
-    }).join('')
-    + `</div></div>`;
+  // Render each vault as a section matching the custom sections UI:
+  // section header with lock icon + folder list with colored dots, rename, drag.
+  container.innerHTML = known.map((entry) => {
+    const active = unlocked && String(state.vaultId || 1) === String(entry.id);
+    const vaultId = entry.id == null ? 1 : entry.id;
+    const folders = (state.vaultFolderMap && Array.isArray(state.vaultFolderMap[vaultId]))
+      ? state.vaultFolderMap[vaultId] : [];
+    const vaultSection = { id: `vault-${vaultId}`, name: entry.name || 'Vault', folders, icon: 'lock' };
+    return `
+    <div class="sidebar-section${active ? ' active-section' : ''}" data-vault-section="${escapeHtml(String(vaultId))}" data-section="vault">
+      <div class="section-label">
+        <span class="section-initial" title="${escapeHtml(entry.name || 'Vault')}" aria-hidden="true">${icon('lock')}</span>
+        <span class="section-icon" title="${escapeHtml(entry.name || 'Vault')}" aria-hidden="true">${icon('lock')}</span>
+        <span class="section-label-text" data-vault-name="${escapeHtml(String(vaultId))}">${escapeHtml(entry.name || 'Vault')}</span>
+      </div>
+      <div class="collection-list">
+        ${folders.map((name) => `
+        <a href="#" draggable="true" class="collection-item${state.activeView === 'vault' && state.vaultFolder === name ? ' active' : ''}" data-vault-section="${escapeHtml(String(vaultId))}" data-vault-cfolder="${escapeHtml(name)}" data-depth="${folderDepth(name)}" title="${escapeHtml(name)}">
+          <span class="collection-dot ${customFolderColor(vaultSection, name)}"></span>
+          <span class="collection-label">${escapeHtml(folderLeaf(name))}</span>
+          <span class="collection-actions">
+            <button type="button" class="collection-action" data-vault-cf-rename="${escapeHtml(name)}" data-vault-cf-section="${escapeHtml(String(vaultId))}" title="Rename folder" aria-label="Rename ${escapeHtml(name)}">${icon('pencil')}</button>
+          </span>
+          <input class="collection-rename-input" value="${escapeHtml(folderLeaf(name))}" hidden maxlength="180" aria-label="Folder name" />
+        </a>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // Connected-person rows for the Shared view (see renderCustomSections).
@@ -780,10 +836,17 @@ function renderSharedPersonRows(container) {
 
 // Paint section headers (all sections share the same custom implementation).
 export function updateSectionHeaders() {
-  document.querySelectorAll('#custom-sections .sidebar-section').forEach((wrap) => {
+  // Custom sections
+  document.querySelectorAll('#custom-sections .sidebar-section[data-custom-section]').forEach((wrap) => {
     const id = wrap.dataset.customSection;
     wrap.classList.toggle('active-section', Boolean(state.activeCustom && !state.activeCustom.folder && state.activeCustom.section === id));
     wrap.classList.toggle('is-empty', isSectionEmpty('custom', id));
+  });
+  // Vault sections: highlight the currently active vault
+  document.querySelectorAll('#custom-sections .sidebar-section[data-vault-section]').forEach((wrap) => {
+    const vaultId = wrap.dataset.vaultSection;
+    const isActive = state.activeView === 'vault' && String(state.vaultId || 1) === String(vaultId);
+    wrap.classList.toggle('active-section', isActive);
   });
 }
 
@@ -1542,6 +1605,24 @@ export function bindSectionContextMenu() {
   window.addEventListener('resize', closeSectionContextMenu);
 }
 
+export function bindVaultContextMenu() {
+  const menu = document.getElementById('vault-context-menu');
+  if (menu) menu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-vault-action]');
+    if (!item) return;
+    const target = state.vaultMenuTarget;
+    closeVaultContextMenu();
+    handleVaultMenuAction(item.dataset.vaultAction, target);
+  });
+  document.addEventListener('click', (event) => {
+    if (state.vaultMenuTarget && !event.target.closest('#vault-context-menu')) closeVaultContextMenu();
+  });
+  document.addEventListener('contextmenu', (event) => {
+    if (state.vaultMenuTarget && !event.target.closest('#vault-context-menu')) closeVaultContextMenu();
+  });
+  window.addEventListener('resize', closeVaultContextMenu);
+}
+
 export function chooseSectionIcon(name) {
   const section = state.customSections.find((entry) => entry.id === state.sectionIconTarget);
   if (!section || !SECTION_ICONS.includes(name)) { closeSectionIconPicker(); return; }
@@ -1591,14 +1672,17 @@ export function bindCustomSectionsEvents() {
         return;
       }
       // Vault-view rows: locked vault opens the unlock modal, unlocked
-      // switches between vaults.
+      // switches between vaults. Also handles the new vault section headers.
       const vaultRow = event.target.closest('[data-vault-row]');
-      if (vaultRow && state.activeView === 'vault') {
+      const vaultSection = event.target.closest('[data-vault-section]');
+      const vaultTarget = vaultRow || (vaultSection && vaultSection.dataset.vaultSection ? vaultSection : null);
+      if (vaultTarget && state.activeView === 'vault') {
         event.preventDefault();
+        const vaultId = vaultTarget.dataset.vaultRow || vaultTarget.dataset.vaultSection;
         try {
           import('./vault.js').then((m) => {
             try {
-              if (state.vault.unlocked) m.switchVault(vaultRow.dataset.vaultRow);
+              if (state.vault.unlocked) m.switchVault(vaultId);
               else if (typeof m.openVaultModal === 'function') m.openVaultModal();
             } catch (error) {}
           });
@@ -1627,10 +1711,43 @@ export function bindCustomSectionsEvents() {
         startCustomFolderRename(renameBtn.dataset.cfSection, renameBtn.dataset.cfRename);
         return;
       }
+      // Vault folder rename button
+      const vaultRenameBtn = event.target.closest('[data-vault-cf-rename]');
+      if (vaultRenameBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        try {
+          import('./vault.js').then((m) => {
+            try { m.renameVaultFolder(vaultRenameBtn.dataset.vaultCfRename); } catch (error) {}
+          });
+        } catch (error) {}
+        return;
+      }
       const item = event.target.closest('.collection-item');
       if (item && item.dataset.cfolder) {
         event.preventDefault();
         selectCustomFolder(item.dataset.csection, item.dataset.cfolder);
+        return;
+      }
+      // Vault folder click: filter vault view to this folder
+      const vaultItem = event.target.closest('[data-vault-cfolder]');
+      if (vaultItem && state.activeView === 'vault') {
+        event.preventDefault();
+        const vaultId = vaultItem.dataset.vaultSection;
+        const folder = vaultItem.dataset.vaultCfolder;
+        try {
+          import('./vault.js').then((m) => {
+            try {
+              // Switch to the vault if not already active
+              if (String(state.vaultId || 1) !== String(vaultId)) {
+                m.switchVault(vaultId).then(() => { m.toggleVaultFolderFilter(folder); });
+              } else {
+                m.toggleVaultFolderFilter(folder);
+              }
+            } catch (error) {}
+          });
+        } catch (error) {}
+        return;
       }
     });
     container.addEventListener('dblclick', (event) => {
@@ -1649,6 +1766,29 @@ export function bindCustomSectionsEvents() {
       if (item && item.dataset.cfolder) {
         event.preventDefault();
         startCustomFolderRename(item.dataset.csection, item.dataset.cfolder);
+        return;
+      }
+      // Vault section label double-click to rename vault
+      const vaultLabel = event.target.closest('.section-label-text[data-vault-name]');
+      if (vaultLabel && state.activeView === 'vault') {
+        event.preventDefault();
+        const vaultId = vaultLabel.dataset.vaultName;
+        try {
+          import('./vault.js').then((m) => {
+            try { m.renameVault(vaultId); } catch (error) {}
+          });
+        } catch (error) {}
+        return;
+      }
+      // Vault folder double-click to rename
+      const vaultItem = event.target.closest('[data-vault-cfolder]');
+      if (vaultItem && state.activeView === 'vault') {
+        event.preventDefault();
+        try {
+          import('./vault.js').then((m) => {
+            try { m.renameVaultFolder(vaultItem.dataset.vaultCfolder); } catch (error) {}
+          });
+        } catch (error) {}
       }
     });
     container.addEventListener('contextmenu', (event) => {
@@ -1659,6 +1799,15 @@ export function bindCustomSectionsEvents() {
         event.stopPropagation();
         closeFolderContextMenu();
         openSectionContextMenu(headWrap.dataset.customSection, event.clientX, event.clientY);
+        return;
+      }
+      // Vault section right-click: open vault context menu
+      const vaultHeadWrap = event.target.closest('[data-vault-section]');
+      if (head && vaultHeadWrap && state.activeView === 'vault' && !event.target.closest('input')) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeFolderContextMenu();
+        openVaultContextMenu(vaultHeadWrap.dataset.vaultSection, event.clientX, event.clientY);
         return;
       }
       const item = event.target.closest('.collection-item');

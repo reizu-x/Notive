@@ -825,6 +825,12 @@
       <div class="context-separator" aria-hidden="true"></div>
       <button type="button" class="context-item danger" data-section-action="delete" role="menuitem"><span data-icon="trash"></span><span>Delete section</span></button>
     </div>
+    <!-- Right-click menu for vaults: Rename / Delete -->
+    <div class="context-menu" id="vault-context-menu" role="menu" aria-label="Vault actions" hidden>
+      <button type="button" class="context-item" data-vault-action="rename" role="menuitem"><span data-icon="pencil"></span><span>Rename vault</span></button>
+      <div class="context-separator" aria-hidden="true"></div>
+      <button type="button" class="context-item danger" data-vault-action="delete" role="menuitem"><span data-icon="trash"></span><span>Delete vault</span></button>
+    </div>
     <!-- Right-click folder menu: Open / Rename / New subfolder / Delete (Bin folders get Restore instead) -->
     <div class="context-menu" id="folder-context-menu" role="menu" aria-label="Folder actions" hidden>
       <button type="button" class="context-item" data-folder-action="open" role="menuitem"><span data-icon="folder"></span><span>Open</span></button>

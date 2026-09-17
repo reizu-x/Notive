@@ -51,7 +51,7 @@ import { listHeading } from '../core/elements.js';
 import { collabDeleteGroup, collabDeleteNote } from '../data/collab-crypto.js';
 import { deleteCustomFolder, deleteCustomSection, deleteSharedFolderNow, deleteVaultFolder } from './sections.js';
 import { deleteTagEverywhere, renderSettingsTags, renderSharedTags } from './tags.js';
-import { deleteVaultNote } from './vault.js';
+import { deleteVaultNote, deleteVault } from './vault.js';
 import { refreshEditorLock } from './auth.js';
 import { openTemplatePicker, uniqueTitle } from './editor.js';
 import { startTreeRename } from './sections.js';
@@ -1404,7 +1404,7 @@ export async function syncNotesToServer() {
   if (!state.cachedProfile) return;
   // Serialize syncs: concurrent PUTs race on baseVersion and the loser paints
   // red over a green state. Reuse an in-flight promise instead.
-  if (state.syncInFlight) return state.syncInFlight;
+  if (state.syncInFlight || state.syncBusy) return state.syncInFlight;
   if (deviceOnlyPref()) {
     await saveNotesToDevice();
     return;
@@ -1515,14 +1515,6 @@ export async function adoptNotesEnvelope(envelope) {
     if (blobMap[vid].length < 2000) blobMap[vid].push(item);
   }
   state.vaultBlobMap = blobMap;
-  try {
-    const sizes = {};
-    for (const key of Object.keys(blobMap)) sizes[key] = blobMap[key].length;
-  } catch (e) {}
-  try {
-    const sizes = {};
-    for (const key of Object.keys(blobMap)) sizes[key] = blobMap[key].length;
-  } catch (e) {}
   const folderMap = {};
   try {
     const rawFolders = (!Array.isArray(envelope) && envelope) ? envelope.vaultFolders : null;
@@ -1670,6 +1662,7 @@ export function confirmPendingDelete() {
   else if (mode === 'permanent') permanentlyDeleteNoteById(id);
   else if (mode === 'vault-note') deleteVaultNote(id);
   else if (mode === 'vault-folder') deleteVaultFolder(id);
+  else if (mode === 'vault') deleteVault(id);
   else if (mode === 'custom-section') deleteCustomSection(id);
   else if (mode === 'custom-folder') deleteCustomFolder(sectionId, id);
   else if (mode === 'tag') { if (state.pendingDeleteTag) { deleteTagEverywhere(state.pendingDeleteTag); renderSettingsTags(); } }

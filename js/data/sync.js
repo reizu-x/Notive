@@ -7,8 +7,7 @@ import { escapeHtml } from '../core/strings.js';
 
 let lastSyncedAt = 0;
 let serverVersion = 0;
-let syncBusy = false;
-export function isSyncing() { return syncBusy; }
+export function isSyncing() { return Boolean(state.syncBusy); }
 
 // AAD context binding for workspace notes encryption (mirrors notes.js).
 function syncAadContext() {
@@ -72,9 +71,9 @@ export function persistNotes() { markDirty(); }
 export function isDirty() { return Boolean(state.syncDirty); }
 
 export async function syncNow() {
-  if (syncBusy) return false; // an autosync is already in flight — skip this tick
+  if (state.syncBusy || state.syncInFlight) return false; // another sync path is already in flight
   if (!state.cachedProfile || !e2ee.masterKey) { paint('Locked', 'gray'); return false; }
-  syncBusy = true;
+  state.syncBusy = true;
   const choice = storageChoice();
   paint('Syncing…', 'gray');
   try {
@@ -104,7 +103,7 @@ export async function syncNow() {
             }
             state.notes = [...merged.values()].slice(0, 2000);
           } else {
-            try { const notesMod = await import('../ui/notes.js'); await notesMod.adoptNotesEnvelope(parsed); } catch (error) {}
+            try { const notesMod = await import('../ui/notes.js'); await notesMod.adoptNotesEnvelope(parsed); } catch (error) { console.error('syncNow: adoptNotesEnvelope failed:', error); }
           }
         }
       }
@@ -145,7 +144,7 @@ export async function syncNow() {
     scheduleSync(5000); // back off and retry
     return false;
   } finally {
-    syncBusy = false;
+    state.syncBusy = false;
   }
   function uiSnapshot() {
     try {
@@ -156,7 +155,26 @@ export async function syncNow() {
       } : {};
     } catch (error) { return {}; }
   }
-  function localKeyFor() { return scope('notely-local-notes'); }
 }
 
 export function lastSynced() { return lastSyncedAt; }
+export function lastServerVersion() { return serverVersion; }
+
+export async function buildAndEncryptEnvelope() {
+  const envelope = {
+    v: 2,
+    notes: state.notes,
+    vault: await allVaultBlobs(),
+    vaultFolders: allVaultFolders(),
+    ui: (() => {
+      try {
+        return state.customSections ? {
+          customSections: state.customSections.map((s) => ({ id: s.id, name: s.name, folders: [...s.folders], icon: s.icon })),
+          collapsed: [...state.collapsedFolders],
+          deletedCustomSections: [...(state.deletedCustomSections || [])],
+        } : {};
+      } catch (error) { return {}; }
+    })(),
+  };
+  return e2eeEncryptNotes(envelope, syncAadContext());
+}

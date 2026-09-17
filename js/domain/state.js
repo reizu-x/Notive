@@ -51,9 +51,11 @@ export const state = {
   sharedPerson: null, // username — person filter inside the Shared view (sidebar person rows),
   vaultFolder: null, // folder path — folder filter inside the Vault view (sidebar vault rows),
   syncInFlight: null, // promise while a PUT is running — serializes syncs so no baseVersion race
+  syncBusy: false, // true while syncNow() is in progress (shared across sync paths)
   vaultSwitching: null, // promise while a vault switch runs — serializes rapid switches
   sectionMenuTarget: null, // section id,
   sectionIconTarget: null,
+  vaultMenuTarget: null, // vault id for context menu
   folderMenuTarget: null, // { ns: 'custom', path, section },
   writeMode: 'edit',
   idleTimer: null,

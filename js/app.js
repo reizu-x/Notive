@@ -52,7 +52,7 @@ import { acceptInvite, collabDeleteNote, confirmCollabNew, createSharedNoteWithT
 import { refreshPasskeys } from './ui/auth.js';
 import { applyBeautify, exitCoverRepos, handleCoverFile, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
 import { bindNoteContextMenu, clearEditor, createNoteFromTemplate, goAllNotes, goAllNotesKeepNote, loadNotesFromServer, onNewNoteClick, persistNotes, purgeExpiredBin, renderNoteList, requestDeleteNoteById, saveCurrentNote, selectNote, stepListBack, syncNotesToServer } from './ui/notes.js';
-import { addSharedFolder, addSubfolder, applyStripFolderFilter, bindCustomSectionsEvents, bindFolderContextMenu, bindFolderDragDrop, bindSectionContextMenu, bindSectionHeaderEvents, chooseSectionIcon, deleteCustomSection, isFavoritesView, leaveSharedSection, moveSharedNoteToFolder, persistCollapsedFolders, renameSharedFolder, reparentSharedFolder, selectCustomFolder, selectCustomSection, syncCustomSections } from './ui/sections.js';
+import { addSharedFolder, addSubfolder, applyStripFolderFilter, bindCustomSectionsEvents, bindFolderContextMenu, bindFolderDragDrop, bindSectionContextMenu, bindVaultContextMenu, bindSectionHeaderEvents, chooseSectionIcon, deleteCustomSection, isFavoritesView, leaveSharedSection, moveSharedNoteToFolder, persistCollapsedFolders, renameSharedFolder, reparentSharedFolder, selectCustomFolder, selectCustomSection, syncCustomSections } from './ui/sections.js';
 import { applyTheme, enterWorkspace, handleAvatarFile } from './ui/shell.js';
 import { closeTab, renderTabs } from './ui/tabs.js';
 import { addKnownTag, renameTagEverywhere, tagEditorAdd, tagEditorRemove } from './ui/tags.js';
@@ -1493,7 +1493,7 @@ if (BUILD_NOTE_OK) {
   // Note view: the inline "+" next to a note's tags opens the tag editor for the
   // exact note the button was rendered for (same modal as the note menu's
   // "Tags…"). Binding by id means a stale/other view can never tag a wrong note.
-  tagList.addEventListener('click', (event) => {
+  if (tagList) tagList.addEventListener('click', (event) => {
     const btn = event.target.closest('.tag-add');
     if (!btn) return;
     if (btn.dataset.sharedTagAdd || state.collab.noteId) { openSharedTagEditor(); return; }
@@ -3052,11 +3052,6 @@ if (BUILD_NOTE_OK) {
       if (errEl) { errEl.textContent = error.message || 'Could not add passkey.'; errEl.hidden = false; }
     }
   });
-  document.getElementById('open-settings').addEventListener('click', () => {
-    try { refreshMfaStatus(); } catch (error) {}
-    try { refreshPasskeys(); } catch (error) {}
-    try { refreshAccountPane(); } catch (error) {}
-  });
   // --- Account pane (username/email/delete) ---
 
 
@@ -3656,6 +3651,7 @@ if (BUILD_NOTE_OK) {
   bindNoteContextMenu();
   bindFolderContextMenu();
   bindSectionContextMenu();
+  bindVaultContextMenu();
   bindFolderDragDrop();
   // --- Ground-up sync (automatic) ------------------------------------------
   // No button. Changing anything (editor typing, tags, folders, sections)
@@ -3674,8 +3670,23 @@ if (BUILD_NOTE_OK) {
   });
   window.addEventListener('pagehide', () => {
     try {
-      if (state.cachedProfile && e2ee.masterKey) {
-        import('./data/sync.js').then((m) => { try { m.syncNow(); } catch (error) {} });
+      if (state.cachedProfile && e2ee.masterKey && state.syncDirty) {
+        import('./data/sync.js').then(async (m) => {
+          try {
+            const payload = await m.buildAndEncryptEnvelope();
+            // keepalive: true lets the browser hold this request open after
+            // the page closes. No GET first — too slow for pagehide. Uses the
+            // last known serverVersion as baseVersion; 409 conflicts resolve
+            // on next normal sync.
+            fetch('/api/notes', {
+              method: 'PUT',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ payload, baseVersion: m.lastServerVersion() }),
+              keepalive: true,
+            });
+          } catch (error) {}
+        });
       }
     } catch (error) {}
   });
