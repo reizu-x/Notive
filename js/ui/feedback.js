@@ -25,11 +25,12 @@ export function setSaveLabel(text, mode = 'green') {
 }
 
 export function syncAgoText() {
-  const seconds = Math.max(0, Math.floor((Date.now() - lastSyncedAt) / 1000));
+  const ts = state.lastSyncedAt || 0;
+  const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
   if (seconds < 15) return 'Synced just now';
   if (seconds < 120) return 'Synced 1 min ago';
   if (seconds < 3600) return `Synced ${Math.floor(seconds / 60)} min ago`;
-  return `Synced at ${new Date(lastSyncedAt).toTimeString().slice(0, 5)}`;
+  return `Synced at ${new Date(ts).toTimeString().slice(0, 5)}`;
 }
 
 export function viewLabel(view) {

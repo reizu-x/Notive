@@ -153,7 +153,7 @@ export function paintAvatar(el, fallbackInitials) {
 // Synchronous view of the in-memory session for render code (null when signed out).
 export function getSessionUser() {
   if (!state.cachedProfile) return null;
-  return { username: state.cachedProfile.username, name: fullNameOf(state.cachedProfile), subtitle: state.cachedProfile.subtitle || 'Personal space' };
+  return { username: state.cachedProfile.username, name: fullNameOf(state.cachedProfile), subtitle: state.cachedProfile.subtitle || 'Notely User' };
 }
 
 export async function restoreSessionUnlock() {
@@ -263,6 +263,15 @@ export function setWorkspaceCollapsed(collapsed) {
     const label = collapsed ? 'Expand workspace' : 'Collapse workspace';
     workspaceToggle.setAttribute('aria-label', label);
     workspaceToggle.setAttribute('title', label);
+  }
+  // Expanding clears a Shared folder filter (strip click) so the full section
+  // shows again — matches "clear on expand".
+  if (!collapsed && state.activeView === 'shared' && state.sharedFolder) {
+    state.sharedFolder = null;
+    try { import('../data/collab-crypto.js').then((m) => { try { m.renderSharedView(); } catch (error) {} }); } catch (error) {}
+    try { renderStripItems(); } catch (error) {}
+    try { import('./tabs.js').then((m) => { try { m.updateBreadcrumbs(); } catch (error) {} }); } catch (error) {}
+    try { import('./sections.js').then((m) => { try { m.updateFoldToggle(); } catch (error) {} }); } catch (error) {}
   }
   // The strip is only measurable while collapsed: repaint it and re-evaluate
   // the scroll arrows after the layout switches.
@@ -482,4 +491,6 @@ export async function enterWorkspace() {
   restoreWorkspaceCollapsed();
   try { sharingEnsureKeys(); } catch (error) {}
   try { refreshSharedNavCount(); } catch (error) {}
+  // Ground-up sync: paint the storage choice buttons (cloud/local).
+  try { const mod = await import('../data/sync.js'); mod.paintStoragePicker(); } catch (error) {}
 }

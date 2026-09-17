@@ -245,6 +245,15 @@ export async function unlockVaultFromModal() {
   const password = String(document.getElementById('vault-password').value || '');
   const meta = state.vault.meta;
   if (!meta || !meta.exists) { setVaultModal('setup'); return; }
+  if (state.vault.unlocking) return;
+  state.vault.unlocking = true;
+  try {
+    await unlockVaultInner(password, meta);
+  } finally {
+    state.vault.unlocking = false;
+  }
+}
+async function unlockVaultInner(password, meta) {
   try {
     const verifier = await argon2id32(password, e2eeB64ToBytes(meta.saltAuth));
     if (!timingSafeEqualStr(e2eeBytesToB64(verifier), meta.verifier)) {

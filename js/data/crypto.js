@@ -6,6 +6,10 @@
 
 export const E2EE_KDF_ARGON2ID = { kdf: 'argon2id', t: 3, m: 65536, p: 1 };
 
+// Legacy PBKDF2 accounts: never derive a KEK weaker than the platform default.
+// Enforced with a dual-read attempt (floored first, stored count fallback).
+export const PBKDF2_ITERATIONS_FLOOR = 210_000;
+
 export const e2ee = { masterKey: null, kdf: null, saltAuth: null, saltEnc: null, iterations: 0 };
 
 export const ARGON2_VENDOR = {
@@ -148,16 +152,33 @@ export async function e2eeUnwrapMasterKey(password, saltEncBytes, iterations, wr
   return window.crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
 }
 
-export async function e2eeEncryptNotes(noteArray) {
+// AAD context binding: envelopes are crypto-bound to the account so a
+// server/DB-write attacker cannot swap blobs between accounts undetected.
+// Dual-read: legacy unbound blobs still decrypt (staged rollout).
+function workspaceAad(aadContext) {
+  return aadContext ? new TextEncoder().encode(String(aadContext)) : null;
+}
+
+export async function e2eeEncryptNotes(noteArray, aadContext) {
   const iv = e2eeRandomBytes(12);
   const ct = await window.crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv }, e2ee.masterKey, new TextEncoder().encode(JSON.stringify(noteArray)));
+    { name: 'AES-GCM', iv, additionalData: workspaceAad(aadContext) }, e2ee.masterKey,
+    new TextEncoder().encode(JSON.stringify(noteArray)));
   return { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) };
 }
 
-export async function e2eeDecryptPayload(payload) {
-  const plain = await window.crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: e2eeB64ToBytes(payload.iv) }, e2ee.masterKey, e2eeB64ToBytes(payload.data));
+export async function e2eeDecryptPayload(payload, aadContext) {
+  const key = e2ee.masterKey;
+  const raw = e2eeB64ToBytes(payload.data);
+  const iv = e2eeB64ToBytes(payload.iv);
+  let plain;
+  try {
+    plain = await window.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv, additionalData: workspaceAad(aadContext) }, key, raw);
+  } catch (error) {
+    if (!aadContext) throw error;
+    plain = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, raw);
+  }
   const parsed = JSON.parse(new TextDecoder().decode(plain));
   if (Array.isArray(parsed) || (parsed && typeof parsed === 'object')) return parsed;
   throw new Error('bad payload');

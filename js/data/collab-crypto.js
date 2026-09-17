@@ -5,7 +5,7 @@
 // Yjs itself is loaded lazily; notes content streams through collabEncrypt.
 
 import { e2ee, e2eeRandomBytes, e2eeBytesToB64, e2eeB64ToBytes, e2eeKekFromPassword, e2eePasswordBase } from './crypto.js';
-import { apiFetch } from './api.js';
+import { apiFetch, collabEgressBlocked } from './api.js';
 import { state } from '../domain/state.js';
 import { markdownInput, preview, titleInput } from '../core/elements.js';
 import { icon } from '../core/icons.js';
@@ -1179,8 +1179,18 @@ export async function openCollabNote(noteId) {
   collabConnect(noteId, keyRaw, Y, doc);
 }
 
+// Pentest F-46: the SSE channel is collab egress too — a shared-section
+// stream must honor the device-only opt-out (EventSource bypasses apiFetch).
+
 export function collabConnect(noteId, keyRaw, Y, doc) {
+  // F-46: SSE opens a server event-stream directly — gate it here as well.
+  if (collabEgressBlocked(`/api/collab/notes/${noteId}/stream`)) {
+    setCollabStatus('Offline — retrying…');
+    showToast('Device-only mode is on — shared sections need sync re-enabled');
+    return;
+  }
   if (state.collab.es) { try { state.collab.es.close(); } catch (error) {} state.collab.es = null; }
+
   let es;
   try { es = new EventSource(`/api/collab/notes/${noteId}/stream`); }
   catch (error) { setCollabStatus('Could not connect', true); return; }

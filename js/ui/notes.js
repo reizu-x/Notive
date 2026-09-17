@@ -28,6 +28,21 @@ import { exitCoverRepos, renderCover, renderPreview, renderRecipeHero, resetIdle
 import { binRemainingText, noteGlyphFor } from './feedback.js';
 import { addFolderToSection, clearSectionSelection, openFolderPicker, persistCollapsedFolders, persistDeletedCustomSections, pruneDeletedCustomSections, renderCustomSections, reviveSectionsForNote, sectionDisplayName, selectCustomSection, startSectionRename, syncCustomSections, updateFoldToggle } from './sections.js';
 import { seedFromTemplate, welcomeSeedNotes, welcomeSeedUi } from './shell.js';
+
+// Search-as-you-type highlight (local copy, no cross-module dep)
+function highlightText(text, query) {
+  const raw = String(text || '');
+  const q = String(query || '').trim();
+  if (!q) return escapeHtml(raw);
+  const tokens = q.toLowerCase().split(/\s+/).filter(Boolean).filter((t) => !t.startsWith('tag:') && !t.startsWith('body:') && t !== 'tag:' && t !== 'body:');
+  if (!tokens.length) return escapeHtml(raw);
+  let html = escapeHtml(raw);
+  tokens.forEach((tok) => {
+    const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try { html = html.replace(new RegExp(`(${esc})`, 'gi'), '<mark>$1</mark>'); } catch (error) {}
+  });
+  return html;
+}
 import { enableNoteDragDrop, renderStripItems, renderTabs, trackTab, updateBreadcrumbs } from './tabs.js';
 import { openTagEditor } from './tags.js';
 import { renderVaultList, saveVaultNote, updateVaultUI, writeUiVaultLocal } from './vault.js';
@@ -65,6 +80,76 @@ export function exportAllNotes() {
   link.click();
   setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 800);
   showToast('Notes exported to your device');
+}
+
+// F-41/F-42: export all notes as .md files in a ZIP (tags in front-matter).
+// Unlocked vault notes export after an explicit plaintext warning dialog.
+export async function exportAllNotesMdZip() {
+  if (!state.cachedProfile || !state.notesLoaded) { showToast('Log in first'); return; }
+  const entries = [];
+  let vaultCount = 0;
+  const list = [...state.notes];
+  if (state.vault.unlocked && state.vault.notes.length) {
+    list.push(...state.vault.notes.map((note) => ({ ...note, vault: true })));
+  }
+  for (const note of list) {
+    if (note.deleted) continue;
+    const body0 = typeof note.body === 'string' ? note.body : '';
+    const title = String(note.title || 'Untitled note');
+    const tags = (Array.isArray(note.tags) ? note.tags : []).slice(0, 20);
+    const body = (note.ext === 'md' || !note.ext)
+      ? `---
+
+title: ${title}
+
+tags: [${tags.map((t) => String(t)).join(', ')}]
+
+---
+
+${body0}`.replace(/^\n+/, '')
+      : body0;
+    let name = sanitizeFilename(title || 'note', 'md').replace(/\.md$/, '');
+    let counter = 2;
+    while (entries.some((e) => e.name === `${name}.md`)) name = `${name}-${counter += 1}`;
+    if (note.vault) { name = `vault/${name}`; vaultCount += 1; }
+    entries.push({ name: `${name}.md`, data: new TextEncoder().encode(body) });
+  }
+  if (vaultCount && !window.confirm(
+    `Export includes ${vaultCount} vault note(s) as PLAINTEXT markdown files — they leave the vault's password protection. Continue?`)) {
+    return;
+  }
+  const blob = buildStoreZip(entries);
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = sanitizeFilename(`Notely-notes-${new Date().toISOString().slice(0, 10)}`, 'zip');
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 800);
+  showToast(`Exported ${entries.length} notes (markdown ZIP)`);
+}
+
+// F-45: paste the clipboard contents as one new standard note (≤500K chars).
+export async function importFromClipboard() {
+  if (!state.cachedProfile || !state.notesLoaded) { showToast('Log in first'); return; }
+  if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+    showToast('Clipboard access is not available in this browser');
+    return;
+  }
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!String(text || '').trim()) { showToast('Clipboard is empty'); return; }
+    createNoteFromTemplate('standard');
+    const note = state.notes[0];
+    note.body = String(text).slice(0, 500000);
+    state.currentId = note.id;
+    selectNote(note.id);
+    persistNotes();
+    renderNoteList();
+    showToast('Clipboard imported as a new note');
+  } catch (error) {
+    showToast('Could not read the clipboard (permission denied?)');
+  }
 }
 
 // Show a transient bottom-right status message (single timer, latest wins).
@@ -124,7 +209,20 @@ export function downloadNoteById(id) {
 // Download one note with a sanitized filename and matching MIME type.
 export function downloadNoteObject(note) {
   if (!note) return;
-  const body = typeof note.body === 'string' ? note.body : '';
+  const raw = typeof note.body === 'string' ? note.body : '';
+  // F-41: markdown downloads carry front-matter so a re-import round-trips
+  // the title + tags; other exts keep raw-only bodies.
+  const body = (note.ext === 'md' || !note.ext)
+    ? `---
+
+title: ${String(note.title || 'Untitled note')}
+
+tags: [${(Array.isArray(note.tags) ? note.tags : []).map((t) => String(t)).join(', ')}]
+
+---
+
+${raw}`.replace(/^\n+/, '')
+    : raw;
   const blob = new Blob([body], { type: EXT_MIME[note.ext] || 'text/markdown' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -355,7 +453,7 @@ export async function saveNotesToDevice() {
     return;
   }
   try {
-    const payload = await e2eeEncryptNotes(await buildNotesEnvelope());
+    const payload = await e2eeEncryptNotes(await buildNotesEnvelope(), notesAadContext());
     try { localStorage.setItem(localNotesKey(), JSON.stringify(payload)); } catch (error) {
       setSaveLabel('Save failed', 'red');
       return;
@@ -388,6 +486,12 @@ export function deviceOnlyPref() {
 }
 
 export function localNotesKey() { return accountScopeKey('notely-local-notes'); }
+
+// AAD context binding for the workspace envelope (cross-account swap resistance).
+export function notesAadContext() {
+  const name = state.cachedProfile && state.cachedProfile.username;
+  return 'notely-notes-v1:' + (name ? String(name) : '');
+}
 
 export function deviceOnlyKey() { return accountScopeKey('notely-device-only'); }
 
@@ -447,6 +551,10 @@ export function addNote() {
 
 // Create a note from a template (Standard/Recipe/To-Do) into the current view+collection and open it.
 export function createNoteFromTemplate(templateKey) {
+  if (state.notes.length >= 2000) {
+    showToast('2000 notes max reached — delete some before creating more');
+    return;
+  }
   const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
   if (state.activeView === 'bin') {
     state.activeView = 'notes';
@@ -821,19 +929,10 @@ export function toggleImportantById(id) {
   renderNoteList();
 }
 
-// Debounced save: refuses (with a warning, never truncates) past 2000 notes, then syncs encrypted to the server.
+// Save point: editors/sections call this ~80×; in the ground-up rebuild it
+// just marks the workspace dirty (sync is explicit via js/data/sync.js).
 export function persistNotes() {
-  if (state.notes.length > 2000) {
-    // Never silently truncate: refusing to sync preserves data locally until
-    // the user deletes notes; the server would reject oversized payloads.
-    setSaveLabel('Sync failed', 'red');
-    showToast('Too many notes to sync (2000 max) — delete some to keep saving');
-    clearTimeout(state.saveTimer);
-    return;
-  }
-  setSaveLabel('Saving...', 'green');
-  clearTimeout(state.syncTimer);
-  state.syncTimer = setTimeout(() => { syncNotesToServer(); }, 450);
+  try { import('../data/sync.js').then((m) => { try { m.persistNotes(); } catch (error) {} }); } catch (error) {}
 }
 
 // Open a note in the editor and re-render the list; lock state is reapplied afterwards.
@@ -966,7 +1065,7 @@ export function renderNoteList() {
         ${files.map((note) => `
         <button class="tree-file${note.id === state.currentId ? ' selected' : ''}" data-note-id="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}">
           <span class="tree-file-icon tree-file-icon-${note.ext}">${icon(noteGlyphFor(note))}</span>
-          <span class="tree-file-name">${escapeHtml(note.title || 'Untitled note')}</span>
+          <span class="tree-file-name">${highlightText(note.title || 'Untitled note', state.searchQuery)}</span>
           ${state.activeView === 'bin' ? `<span class="bin-meta">${binRemainingText(note)}</span>` : ''}
           ${note.favorite && state.activeView !== 'bin' ? `<span class="mini-star">${icon('star')}</span>` : ''}
         </button>`).join('')}
@@ -1172,7 +1271,7 @@ export async function loadNotesFromServer() {
     if (data && data.payload) {
       // E2EE blob: only this device can read it. Envelope is either a legacy
       // bare notes array or {v, notes, vault} (vault items stay ciphertext).
-      await adoptNotesEnvelope(await e2eeDecryptPayload(data.payload));
+      await adoptNotesEnvelope(await e2eeDecryptPayload(data.payload, notesAadContext()));
     } else if (Array.isArray(data.notes) && (data.notes.length || data.updated_at)) {
       // Legacy plaintext-shape response (pre-E2EE row): adopt, then the next
       // debounced save re-uploads it encrypted.
@@ -1215,6 +1314,9 @@ export async function flushNotesToServer() {
 // Device-only mode redirects the same save into local storage instead.
 export async function syncNotesToServer() {
   if (!state.cachedProfile) return;
+  // Serialize syncs: concurrent PUTs race on baseVersion and the loser paints
+  // red over a green state. Reuse an in-flight promise instead.
+  if (state.syncInFlight) return state.syncInFlight;
   if (deviceOnlyPref()) {
     await saveNotesToDevice();
     return;
@@ -1223,25 +1325,64 @@ export async function syncNotesToServer() {
     setSaveLabel('Locked', 'gray');
     return;
   }
-  try {
-    const payload = await e2eeEncryptNotes(await buildNotesEnvelope());
-    const response = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload, baseVersion: state.serverNotesVersion }) });
-    if (response.status === 409) {
-      setSaveLabel('Out of date', 'red');
-      try { showToast('Notes changed on server — reloading'); } catch (error) {}
-      try { await loadNotesFromServer(); } catch (error) {}
-      try { renderNoteList(); } catch (error) {}
-      return;
-    }
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  state.syncInFlight = (async () => {
     try {
-      const data = await response.json();
-      if (data && typeof data.updated_at === 'number') state.serverNotesVersion = data.updated_at;
-    } catch (error) {}
-    markSynced();
-  } catch (error) {
-    setSaveLabel('Sync failed', 'red');
-  }
+      const payload = await e2eeEncryptNotes(await buildNotesEnvelope(), notesAadContext());
+      const response = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload, baseVersion: state.serverNotesVersion }) });
+      if (response.status === 409) {
+        setSaveLabel('Out of date — reloading…', 'red');
+        try { showToast('Notes changed on server — reloading'); } catch (error) {}
+        // Preserve the local edits that were just rejected so they are not lost
+        // when we pull the server's newer envelope.
+        const localBeforeReload = JSON.parse(JSON.stringify(state.notes));
+        try { await loadNotesFromServer(); } catch (error) {}
+        try { renderNoteList(); } catch (error) {}
+        // If the reload brought a different server version, retry once with the
+        // fresh baseVersion so the pending local edits are not stuck in "Sync failed".
+        // A simple merge: keep any local notes that are not on the server by id.
+        try {
+          const serverIds = new Set(state.notes.map((n) => n.id));
+          const missingLocal = localBeforeReload.filter((n) => !serverIds.has(n.id) && !n.deleted);
+          if (missingLocal.length) {
+            state.notes = [...missingLocal, ...state.notes].slice(0, 2000);
+            // The next debounced persist will carry the merged set; trigger it now
+            // with the fresh baseVersion.
+            setTimeout(() => { try { syncNotesToServer(); } catch (error) {} }, 600);
+            setSaveLabel('Merging…', 'red');
+          } else {
+            setSaveLabel('Reloaded — edit to save again', 'gray');
+          }
+        } catch (error) {}
+        return;
+      }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      try {
+        const data = await response.json();
+        if (data && typeof data.updated_at === 'number') state.serverNotesVersion = data.updated_at;
+        // Green only when both cloud and Server file are in sync (user requested).
+        // serverFile missing (older server) counts as green — only an explicit
+        // false blocks.
+        if (data && data.serverFile === false) {
+          setSaveLabel('Server file not written', 'red');
+          try { showToast('Notes saved to cloud but Server file not written'); } catch (error) {}
+          return;
+        }
+      } catch (error) {}
+      markSynced();
+      // Belt-and-braces: clear any stale is-error from an earlier failure so the
+      // light reflects the current (successful) state even if a previous paint
+      // left it red.
+      document.querySelectorAll('.sync-dot,.save-dot').forEach((d) => d.classList.remove('is-error', 'is-offline'));
+      return true;
+    } catch (error) {
+      setSaveLabel('Sync failed', 'red');
+      return false;
+    } finally {
+      // Always release the gate so the next save can run (it will reuse the
+      // freshest serverNotesVersion the successful PUT just set).
+      state.syncInFlight = null;
+    }
+  })();
 }
 
 // Device-only boot: load from the encrypted local slot (onboarding workspace
@@ -1251,7 +1392,7 @@ export async function loadNotesFromDevice() {
     const raw = localStorage.getItem(localNotesKey());
     if (raw) {
       const payload = JSON.parse(raw);
-      await adoptNotesEnvelope(await e2eeDecryptPayload(payload));
+      await adoptNotesEnvelope(await e2eeDecryptPayload(payload, notesAadContext()));
       state.notesLoaded = true;
       setSaveLabel('Offline · loaded', 'gray');
       return;

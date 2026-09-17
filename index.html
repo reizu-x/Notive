@@ -2,15 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#f4f0e9" />
     <meta name="notely-build" content="dev89" />
     <meta name="referrer" content="no-referrer" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' https: data:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
     <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev89" />
+    <link rel="stylesheet" href="styles.css?v=dev167" />
   </head>
   <body>
+    <div class="boot-shimmer" id="boot-shimmer" aria-hidden="true">
+      <div class="boot-shimmer-card">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
+        </span>
+        <span class="brand-name">Notely</span>
+        <div class="shimmer-lines" aria-hidden="true"><span class="shimmer-line" style="width:70%"></span><span class="shimmer-line" style="width:85%"></span><span class="shimmer-line" style="width:60%"></span></div>
+      </div>
+    </div>
     <div class="app-shell">
     <!-- Sidebar: brand, profile card (rendered from session), nav views, sections folders -->
       <aside class="sidebar" id="sidebar">
@@ -327,6 +336,22 @@
         </button>
       </div>
     </div>
+    <!-- Account created popup -->
+    <div class="modal-overlay" id="account-created-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="account-created-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Success</p>
+            <h2 id="account-created-title">Account Created</h2>
+          </div>
+          <button class="icon-button" id="close-account-created" aria-label="Close" data-icon="x"></button>
+        </div>
+        <p class="modal-desc">Your account has been created successfully. Please log in with your new credentials.</p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" id="account-created-ok" type="button">OK</button>
+        </div>
+      </div>
+    </div>
     <!-- Settings modal: left nav (Appearance / Change Password / Side Menu), options on the right -->
     <div class="modal-overlay" id="settings-overlay" hidden>
       <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title">
@@ -429,7 +454,17 @@
             <p class="modal-desc">Keep a copy of your notes on this desktop, or take them off the cloud entirely.</p>
             <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Notely server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
             <button class="btn btn-secondary" id="export-all-btn" type="button">Export all notes to this device</button>
+            <button class="btn btn-secondary" id="export-md-btn" type="button">Export as markdown ZIP (.md)</button>
+            <button class="btn btn-secondary" id="import-clipboard-btn" type="button">Import from clipboard (new note)</button>
             <button class="btn btn-secondary" id="import-notes" type="button">Import notes from this device</button>
+            <input type="file" id="import-json-input" accept=".json" hidden />
+            <button class="btn btn-secondary" id="import-json-btn" type="button">Upload JSON for notes</button>
+            <div class="storage-picker-row">
+              <span class="setting-row-text"><strong>Save to</strong></span>
+              <button type="button" id="storage-picker" class="storage-btn-group" title="Save location — cloud sync">
+                <button type="button" data-storage="cloud">☁ Cloud</button>
+              </button>
+            </div>
           </div>
           <div class="settings-pane" data-settings-pane="tags" hidden>
             <div class="settings-pane-head">
@@ -575,6 +610,20 @@
           </div>
           <button class="icon-button" id="close-section-settings" aria-label="Close" data-icon="x"></button>
         </div>
+        <div id="section-members-block">
+          <p class="collab-members-section">Members — whole section access</p>
+          <p class="modal-desc desc-tight">Invite someone to see the entire shared section (all folders and notes). Only the owner can add members.</p>
+          <div id="section-members-list"></div>
+          <div class="section-tags-add section-invite-row">
+            <input id="section-invite-input" class="section-invite-input" type="text" placeholder="username" autocomplete="off" maxlength="32" />
+            <label class="setting-row section-invite-whole"><input type="checkbox" id="section-invite-whole" checked /><span class="setting-row-text"><strong>Whole section</strong></span></label>
+            <button class="btn btn-primary" id="section-invite-btn" type="button">Invite</button>
+          </div>
+          <p class="modal-desc desc-tight section-invite-hint">Checked = new member sees every folder and note in this section.</p>
+          <p class="login-error" id="section-invite-error" hidden></p>
+          <p class="login-error" id="section-invite-status" hidden></p>
+        </div>
+        <hr />
         <p class="collab-members-section">Tags</p>
         <p class="modal-desc desc-tight">A shared set of tags for this section, offered as suggestions when tagging its notes.</p>
         <div class="tag-editor-current" id="section-tags-current"></div>
@@ -783,7 +832,8 @@
     <div class="context-menu" id="shared-context-menu" role="menu" aria-label="Shared actions" hidden></div>
     <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcode-generator 1.5.0; adapter keeps the QRCode(...) API) for MFA setup. Local only: secret never leaves device. -->
+    <script src="js/boot.js"></script>
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-fNse+GzXblndDsHPTGnb91FmFdpQmGqYCGhwecMIsHKDmKkjiuy5DZmjYggpKP6e" crossorigin="anonymous" defer></script>
-    <script type="module" src="js/app.js?v=dev89"></script>
+    <script type="module" src="js/app.js?v=dev167"></script>
   </body>
 </html>

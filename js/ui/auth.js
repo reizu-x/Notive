@@ -8,7 +8,7 @@ export const AVATAR_MAX_CHARS = 400000;
 
 import { apiFetch } from '../data/api.js';
 import { state } from '../domain/state.js';
-import { E2EE_KDF_ARGON2ID, argon2id32, e2ee, e2eeB64ToBytes, e2eeBytesToB64, e2eeDeriveBits, e2eeRandomBytes, e2eeUnwrapMasterKey, e2eeWrapMasterKeyArgon2id } from '../data/crypto.js';
+import {E2EE_KDF_ARGON2ID, argon2id32, e2ee, e2eeB64ToBytes, e2eeBytesToB64, e2eeDeriveBits, e2eeRandomBytes, e2eeUnwrapMasterKey, e2eeWrapMasterKeyArgon2id , PBKDF2_ITERATIONS_FLOOR} from '../data/crypto.js';
 import { b64urlToBuf } from '../data/collab-crypto.js';
 import { clearRecoveryCodesLocal, loadRecoveryCodesLocal } from './editor.js';
 import { showToast } from './modal.js';
@@ -35,7 +35,17 @@ export async function e2eeUnlockWithPassword(username, password, bundle) {
       { name: 'AES-GCM', iv: e2eeB64ToBytes(bundle.encMasterKey.iv) }, kek, e2eeB64ToBytes(bundle.encMasterKey.data));
     masterKey = await window.crypto.subtle.importKey('raw', rawMk, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
   } else {
-    masterKey = await e2eeUnwrapMasterKey(password, saltEncBytes, bundle.iterations, bundle.encMasterKey);
+    // Legacy unwrap: clamp to the platform floor first (blocks attacker-served
+    // weak counts); historical rows fall back to their stored count.
+    const stored = Number(bundle.iterations) || 0;
+    const floor = Math.max(stored, PBKDF2_ITERATIONS_FLOOR);
+    try {
+      masterKey = await e2eeUnwrapMasterKey(password, saltEncBytes, floor, bundle.encMasterKey);
+    } catch (error) {
+      if (floor === stored) throw error;
+      masterKey = await e2eeUnwrapMasterKey(password, saltEncBytes, stored, bundle.encMasterKey);
+    }
+    bundle.iterations = floor;
   }
   const saltAuthBytes = e2eeB64ToBytes(bundle.saltAuth);
   e2ee.masterKey = masterKey;

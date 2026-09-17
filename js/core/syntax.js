@@ -1,30 +1,92 @@
 // js/core/syntax.js — JSON/YAML highlighting + beautify (pure text -> HTML).
 import { escapeHtml } from './strings.js';
 
-export function highlightJson(text) {
-  const re = /("(?:\\.|[^"\\])*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false)\b|\b(null)\b|(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|([{}\[\],:])/g;
-  let out = '';
-  let last = 0;
-  let match;
-  while ((match = re.exec(text))) {
-    out += escapeHtml(text.slice(last, match.index));
-    if (match[1] !== undefined) {
-      out += `<span class="tok-${match[2] ? 'key' : 'string'}">${escapeHtml(match[1])}</span>`;
-      if (match[2]) out += `<span class="tok-punct">${escapeHtml(match[2])}</span>`;
-    } else if (match[3] !== undefined) {
-      out += `<span class="tok-number">${escapeHtml(match[3])}</span>`;
-    } else if (match[4] !== undefined) {
-      out += `<span class="tok-bool">${escapeHtml(match[4])}</span>`;
-    } else if (match[5] !== undefined) {
-      out += `<span class="tok-bool">${escapeHtml(match[5])}</span>`;
-    } else if (match[6] !== undefined) {
-      out += `<span class="tok-comment">${escapeHtml(match[6])}</span>`;
-    } else {
-      out += `<span class="tok-punct">${escapeHtml(match[7])}</span>`;
-    }
-    last = re.lastIndex;
+const JSON_NUMBER_RE = /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/;
+const JSON_WORD_RE = /^[a-zA-Z]+/;
+
+// String tokens are scanned character-by-character (linear, no regex): a
+// greedy alternating regex suffers catastrophic backtracking on unterminated
+// escape runs (pentest F-9: a 500 KB note froze the tab for ~66 s on every
+// keystroke). This scanner is O(n) worst case.
+function scanJsonString(src, i) {
+  const n = src.length;
+  let j = i + 1;
+  while (j < n) {
+    const ch = src[j];
+    if (ch === '\\') j += 2;
+    else if (ch === '"') return j + 1;
+    else j += 1;
   }
-  return out + escapeHtml(text.slice(last));
+  return -1;
+}
+
+export function highlightJson(text) {
+  const src = String(text);
+  const n = src.length;
+  let out = '';
+  let i = 0;
+  let last = 0;
+  const flushTo = (end) => { out += escapeHtml(src.slice(last, end)); };
+  while (i < n) {
+    const ch = src[i];
+    if (ch === '"') {
+      const end = scanJsonString(src, i);
+      if (end === -1) {
+        flushTo(i);
+        out += escapeHtml(src.slice(i));
+        return out;
+      }
+      flushTo(i);
+      let k = end;
+      while (k < n && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')) k += 1;
+      const key = k < n && src[k] === ':';
+      out += `<span class="tok-${key ? 'key' : 'string'}">${escapeHtml(src.slice(i, end))}</span>`;
+      if (key) {
+        out += `<span class="tok-punct">${escapeHtml(src.slice(end, k + 1))}</span>`;
+        last = i = k + 1;
+      } else {
+        last = i = end;
+      }
+    } else if (ch === '/' && src[i + 1] === '/') {
+      let j = i;
+      while (j < n && src[j] !== '\n') j += 1;
+      flushTo(i);
+      out += `<span class="tok-comment">${escapeHtml(src.slice(i, j))}</span>`;
+      last = i = j;
+    } else if (ch === '/' && src[i + 1] === '*') {
+      const close = src.indexOf('*/', i + 2);
+      const j = close === -1 ? n : close + 2;
+      flushTo(i);
+      out += `<span class="tok-comment">${escapeHtml(src.slice(i, j))}</span>`;
+      last = i = j;
+    } else if (/[0-9]/.test(ch) || (ch === '-' && /[0-9]/.test(src[i + 1] || ''))) {
+      const wm = JSON_NUMBER_RE.exec(src.slice(i, i + 40));
+      const word = wm[0];
+      const j = i + word.length;
+      flushTo(i);
+      out += `<span class="tok-number">${escapeHtml(word)}</span>`;
+      last = i = j;
+    } else if (/[a-zA-Z]/.test(ch)) {
+      const wm = JSON_WORD_RE.exec(src.slice(i, i + 8));
+      const j = i + wm[0].length;
+      const word = wm[0];
+      if (word === 'true' || word === 'false' || word === 'null') {
+        flushTo(i);
+        out += `<span class="tok-bool">${escapeHtml(word)}</span>`;
+        last = i = j;
+      } else {
+        i = j;
+      }
+    } else if ('{}[],:'.includes(ch)) {
+      flushTo(i);
+      out += `<span class="tok-punct">${escapeHtml(ch)}</span>`;
+      last = i = i + 1;
+    } else {
+      i += 1;
+    }
+  }
+  flushTo(n);
+  return out;
 }
 
 export function yamlCommentAt(line) {

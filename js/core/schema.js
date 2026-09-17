@@ -199,6 +199,28 @@ export function cleanCoverSrc(raw) {
 
 // Build a safe download filename from a note title: strips path separators,
 // control chars and dot-runs (no hidden double extensions).
+// Parse a leading YAML-ish front-matter block (title + tags) so exported
+// and re-imported .md files round-trip structured metadata. Returns {meta, body}.
+export function parseMarkdownFrontMatter(text) {
+  const source = String(text == null ? '' : text).replace(/\r/g, '');
+  if (!source.startsWith('---')) return { meta: null, body: source };
+  const end = source.indexOf('\n---', 3);
+  if (end === -1) return { meta: null, body: source };
+  const meta = { title: '', tags: [] };
+  for (const raw of source.slice(3, end).split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('title:')) {
+      meta.title = line.slice(6).trim().slice(0, 180);
+    } else if (line.startsWith('tags:')) {
+      const value = line.slice(5).trim();
+      if (value.startsWith('[') && value.endsWith(']')) {
+        meta.tags = value.slice(1, -1).split(',').map((t) => t.trim().replace(/["']/g, '')).filter(Boolean).slice(0, 20);
+      }
+    }
+  }
+  return { meta, body: source.slice(end + 4).replace(/^\n/, '') };
+}
+
 export function sanitizeFilename(name, ext) {
   const base = String(name == null ? 'note' : name).trim() || 'note';
   const clean = base.replace(/[^a-zA-Z0-9-_. ]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || 'note';

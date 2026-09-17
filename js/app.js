@@ -24,7 +24,7 @@ import { E2EE_KDF_ARGON2ID, e2ee, e2eeBytesToB64, e2eeB64ToBytes, e2eeRandomByte
 import { icon, iconPaths } from './core/icons.js';
 import { renderMarkdown, inlineMarkdown, splitTableRow, tableAligns, renderTable, splitRecipeColumns, stripMarkdown } from './core/markdown.js';
 import { highlightJson, yamlCommentAt, highlightYamlValue, highlightYaml, beautifyJsonText, beautifyYamlText } from './core/syntax.js';
-import { NOTE_EXTS, COVER_ACCEPT, COVER_MAX_CHARS, MIGRATED_COLLECTIONS_SECTION_ID, normalizeExt, isImageFile, parseRecipeBody, migrateNote, sanitizeIngredients, sanitizeSteps, cleanCoverSrc, sanitizeFilename, parseTitleExtension, EXT_LABELS, EXT_MIME, COVER_MAX_DIM } from './core/schema.js';
+import {NOTE_EXTS, COVER_ACCEPT, COVER_MAX_CHARS, MIGRATED_COLLECTIONS_SECTION_ID, normalizeExt, isImageFile, parseRecipeBody, migrateNote, sanitizeIngredients, sanitizeSteps, cleanCoverSrc, sanitizeFilename, parseTitleExtension, EXT_LABELS, EXT_MIME, COVER_MAX_DIM, parseMarkdownFrontMatter} from './core/schema.js';
 import { THEMES, THEME_META_COLORS, THEME_LABELS, FONTS } from './ui/theme.js';
 import { showToast, askInput } from './ui/modal.js';
 import { sharingFingerprint, sharingPinsLoad, sharingPinsSave, wrapSigMessage, signWrap, verifyWrap, sharingSignerPublicKey, sharingUnwrapAccountKey, sharingWrapAccountKey, sharingRecipientPublicKey, wrapRawKeyFor, unwrapRawKey, unwrapMyKey, collabGroupKey, collabKeyFor, collabEncrypt, collabDecrypt, collabEncryptMeta, collabDecryptMeta, collabEncryptGroupMeta, collabDecryptGroupMeta, commonPrefixLen, commonSuffixLen, applyTextDiff, bufToB64url, b64urlToBuf, sha256Hex } from './data/collab-crypto.js';
@@ -42,12 +42,12 @@ import { cancelCollabInvite, closeCollabNewDialog, closeCollabNote, closeCollabP
 import { COLLAPSED_FOLDERS_KEY, IMPORTANT_TAG, NOTE_TEMPLATES, SECTION_DATA_KEY, SECTION_ICONS, UI_VAULT_KEY, sharedBodyCache, sharedCollapsed, sharedGroupFolders, sharedGroupKeys, sharedGroupOwners, sharedGroupTags, sharedNoteMeta } from './domain/constants.js';
 import { closeAcctRecModal, closeMfaQrModal, openAcctRecModal, openMfaQrModal, prfFirstResult, prfSecretViaAssertion, refreshAccountPane, refreshAcctRecStatus, renderAcctRecCodes, saveAccountName } from './ui/auth.js';
 import { clearRecoveryCodesLocal, closeRecoverModal, downscaleCover, enterCoverRepos, findTreeWrap, focusRecipeField, handleCollabCoverFile, loadRecoveryCodesLocal, moveCoverOnNote, newRecoveryCode, openRecoverModal, prfUnwrapMasterKey, prfWrapMasterKey, recipeDataForActive, renderCover, renderPreview, renderRecipeBody, renderRecipeHero, saveRecoveryCodesLocal, setCoverReposUI } from './ui/editor.js';
-import { activeEditorNote, buildNotesEnvelope, clearSearch, closeNoteContextMenu, currentNote, deviceOnlyPref, downloadNoteById, ensureNoteFiled, exportAllNotes, firstFilingOf, getNoteContextMenu, isImportant, isPlainTextNote, localNotesKey, markSynced, openEmptyBinConfirm, openNoteContextMenu, readLegacyLocalNotes, saveNotesToDevice, scopeNotes, setDeleteDialog, setDeviceOnlyPref, updateBinUI, visibleNotes, wipeLegacyLocalNotes } from './ui/notes.js';
-import { clearSectionSelection, closeFolderContextMenu, closeFolderPicker, closeSectionContextMenu, closeSectionIconPicker, closeSectionSettings, confirmDeleteSharedFolder, customFolderColor, customNoteFolder, folderListOf, getFolderContextMenu, insertFolderAfterParent, isFolderDrag, isSectionEmpty, openCustomFolderDeleteConfirm, openCustomSectionDeleteConfirm, openFolderContextMenu, openSectionContextMenu, openSectionIconPicker, openSectionSettings, openVaultFolderDeleteConfirm, orderFoldersLikeWorkspace, renderCustomSections, resolveListFolderTarget, saveGroupFolders, sectionDisplayName, sectionTagAdd, sectionTagRemove, sharedAllFolderKeys, sharedFolderKey, sharedFolderTree, sidebarFolderTarget, takenSectionNames, uniqueCustomFolderName, uniqueSectionId, uniqueSectionName, updateFoldToggle, visibleFolderPaths } from './ui/sections.js';
+import {activeEditorNote, buildNotesEnvelope, clearSearch, closeNoteContextMenu, currentNote, deviceOnlyPref, downloadNoteById, ensureNoteFiled, exportAllNotes, firstFilingOf, getNoteContextMenu, isImportant, isPlainTextNote, localNotesKey, markSynced, openEmptyBinConfirm, openNoteContextMenu, readLegacyLocalNotes, saveNotesToDevice, scopeNotes, setDeleteDialog, setDeviceOnlyPref, updateBinUI, visibleNotes, wipeLegacyLocalNotes, exportAllNotesMdZip, importFromClipboard} from './ui/notes.js';
+import { clearSectionSelection, closeFolderContextMenu, closeFolderPicker, closeSectionContextMenu, closeSectionIconPicker, closeSectionSettings, confirmDeleteSharedFolder, customFolderColor, customNoteFolder, folderListOf, getFolderContextMenu, insertFolderAfterParent, isFolderDrag, isSectionEmpty, openCustomFolderDeleteConfirm, openCustomSectionDeleteConfirm, openFolderContextMenu, openSectionContextMenu, openSectionIconPicker, openSectionSettings, openVaultFolderDeleteConfirm, orderFoldersLikeWorkspace, renderCustomSections, renderSectionMembers, resolveListFolderTarget, saveGroupFolders, sectionDisplayName, sectionInviteMember, sectionTagAdd, sectionTagRemove, sharedAllFolderKeys, sharedFolderKey, sharedFolderTree, sidebarFolderTarget, takenSectionNames, uniqueCustomFolderName, uniqueSectionId, uniqueSectionName, updateFoldToggle, visibleFolderPaths } from './ui/sections.js';
 import { applyFont, applyPanelWidth, applyProfile, clearSessionUnlock, closeProfilePopup, closeSettings, downscaleAvatar, openProfilePopup, openSettings, paintAvatar, refreshProfilePopup, restorePanelWidth, restoreSessionUnlock, restoreWorkspaceCollapsed, saveSessionUnlock, seedFromTemplate, setLoginThemeMenu, setSidebarCollapsed, setWorkspaceCollapsed, slideMenuCollapsed, startCollapsedPref, welcomeSeedNotes, welcomeSeedUi } from './ui/shell.js';
 import { clearSharedDropTargets, closeTabOverflow, coverDragStart, endCoverDrag, endTabDrag, findTabbedNote, fitTabStrip, renderStripItems, setSettingsTab, toggleTabOverflow, trackTab, updateBreadcrumbs } from './ui/tabs.js';
 import { addNoteTag, cleanTagList, closeTagEditor, normalizeTagName, openSharedTagEditor, openTagEditor, removeNoteTag, renderSettingsTags, renderSharedTags, renderTagEditor, sharedGroupTagList, sharedTagList } from './ui/tags.js';
-import { decryptUiVaultRaw, openVaultModal, openVaultNoteDeleteConfirm, uiVaultKey, writeUiVaultLocal } from './ui/vault.js';
+import { applyUiSnapshot, decryptUiVaultRaw, openVaultModal, openVaultNoteDeleteConfirm, uiVaultKey, writeUiVaultLocal } from './ui/vault.js';
 import { acceptInvite, collabDeleteNote, confirmCollabNew, createSharedNoteWithTemplate, declineInvite, moveSharedNote, openCollabNote, openSharedNewNote, renderSharedView } from './data/collab-crypto.js';
 import { refreshPasskeys } from './ui/auth.js';
 import { applyBeautify, exitCoverRepos, handleCoverFile, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
@@ -764,6 +764,16 @@ if (BUILD_NOTE_OK) {
 
   if (stripBackEl) stripBackEl.addEventListener('click', (event) => {
     event.preventDefault();
+    if (stripBackEl.dataset.stripShared === '1' && state.sharedFolder) {
+      const parent = stripBackEl.dataset.stripTarget || '';
+      if (parent) state.sharedFolder = { groupId: stripBackEl.dataset.sharedGroup, folder: parent };
+      else state.sharedFolder = null;
+      renderSharedView();
+      renderStripItems();
+      updateBreadcrumbs();
+      updateFoldToggle();
+      return;
+    }
     const sectionId = stripBackEl.dataset.stripSection;
     if (!sectionId) return;
     const target = stripBackEl.dataset.stripTarget;
@@ -1643,6 +1653,10 @@ if (BUILD_NOTE_OK) {
     const input = document.getElementById('section-tags-input');
     if (input) { sectionTagAdd(input.value); input.value = ''; input.focus(); }
   });
+  document.getElementById('section-invite-btn').addEventListener('click', sectionInviteMember);
+  document.getElementById('section-invite-input').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); sectionInviteMember(); }
+  });
   document.getElementById('section-tags-input').addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ',') {
       event.preventDefault();
@@ -1813,9 +1827,17 @@ if (BUILD_NOTE_OK) {
     });
   }
 
+  let searchDebounce = null;
+  let lastSearchQuery = '';
   document.getElementById('search-input').addEventListener('input', (event) => {
-    state.searchQuery = String(event.target.value || '').slice(0, 200);
-    renderNoteList();
+    const q = String(event.target.value || '').slice(0, 200);
+    if (q === lastSearchQuery) return;
+    lastSearchQuery = q;
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => {
+      state.searchQuery = q;
+      renderNoteList();
+    }, 150);
   });
 
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.addEventListener('click', () => {
@@ -1880,6 +1902,7 @@ if (BUILD_NOTE_OK) {
     document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav === item));
     clearSectionSelection();
     state.activeView = view;
+    state.sharedFolder = state.activeView === 'shared' ? state.sharedFolder : null;
     state.searchQuery = '';
     document.getElementById('search-input').value = '';
     // Pick the chip filter, then let updateListHeading() own the heading text so
@@ -2024,18 +2047,47 @@ if (BUILD_NOTE_OK) {
         const ext = /\.json$/i.test(file.name) ? 'json'
           : (/\.(yaml|yml)$/i.test(file.name) ? 'yaml'
           : (/\.(txt|text)$/i.test(file.name) ? 'txt' : 'md'));
+        // F-41: recognize our own .json backup export and restore it (tags,
+        // recipe structures, etc. round-trip via migrateNote) instead of
+        // importing the backup as one opaque text note.
+        if (ext === 'json' && text.trim().startsWith('{') && text.length < MAX_IMPORT_BYTES_PER_FILE) {
+          try {
+            const parsed = JSON.parse(text);
+            if (parsed && parsed.app === 'Notely' && Array.isArray(parsed.notes)) {
+              await adoptNotesEnvelope({
+                v: 2,
+                notes: parsed.notes.filter((note) => note && !note.deleted).slice(0, 2000),
+                vault: [],
+                vaultFolders: [],
+              });
+              state.currentId = state.notes.length ? state.notes[0].id : state.currentId;
+              imported += 1;
+              continue;
+            }
+          } catch (error) { /* not a Notely backup: import as note below */ }
+        }
+        // F-41: .md/.txt imports round-trip front-matter (title + tags).
+        let importBody = text || (ext === 'md' ? `# ${base}\n` : '');
+        let importTags = [];
+        if (ext === 'md' || ext === 'txt') {
+          const fm = parseMarkdownFrontMatter(importBody);
+          if (fm.meta) {
+            importTags = fm.meta.tags;
+            importBody = fm.body;
+          }
+        }
         const note = {
           id: newNoteId(),
           title: uniqueTitle(base),
           date: 'Now',
           updatedAt: Date.now(),
-          tags: [],
+          tags: importTags,
           favorite: false,
           archived: false,
           deleted: false,
           ext,
           sections: (state.activeCustom && state.activeCustom.folder) ? { [state.activeCustom.section]: state.activeCustom.folder } : {},
-          body: (text || (ext === 'md' ? `# ${base}\n` : '')).slice(0, 500000)
+          body: importBody.slice(0, 500000)
         };
         ensureNoteFiled(note);
         state.notes.unshift(note);
@@ -2051,9 +2103,78 @@ if (BUILD_NOTE_OK) {
       renderCustomSections();
       selectNote(state.currentId);
       persistNotes();
+      try { import('./data/sync.js').then((m) => { try { m.syncNow().catch(() => {}); } catch (error) {} }); } catch (error) {}
       showToast(`Imported ${imported} file${imported === 1 ? '' : 's'}`);
     }
   });
+
+  const importJsonBtn = document.getElementById('import-json-btn');
+  const importJsonInput = document.getElementById('import-json-input');
+  if (importJsonBtn && importJsonInput) {
+    importJsonBtn.addEventListener('click', () => importJsonInput.click());
+    importJsonInput.addEventListener('change', async (event) => {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      if (!file) return;
+      if (!/\.json$/i.test(file.name || '')) { showToast('Choose a .json file'); return; }
+      try {
+        const text = await file.text();
+        if (text.length > 5 * 1024 * 1024) { showToast('JSON too large (5 MB max)'); return; }
+        let data;
+        try { data = JSON.parse(text); } catch (e) { showToast('Invalid JSON'); return; }
+        // Support envelope {v, notes, ui} (bulk seed), raw array, and single note object
+        let notesToImport = [];
+        let incomingSections = null;
+        if (Array.isArray(data)) notesToImport = data;
+        else if (data && Array.isArray(data.notes)) { notesToImport = data.notes; incomingSections = data.ui && Array.isArray(data.ui.customSections) ? data.ui.customSections : null; }
+        else if (data && typeof data === 'object' && data.id && data.title !== undefined) notesToImport = [data];
+        else { showToast('JSON must contain notes array or a note object'); return; }
+        // Adopt the bundle's folders/sections so seeded notes have homes.
+        if (incomingSections && typeof applyUiSnapshot === 'function') {
+          try { applyUiSnapshot({ customSections: incomingSections, collapsed: [], deletedCustomSections: [] }); } catch (error) {}
+        }
+        let imported = 0;
+        for (const raw of notesToImport) {
+          try {
+            const base = String(raw.title || raw.name || 'Untitled note').slice(0, 180) || 'Untitled note';
+            const note = {
+              id: newNoteId(),
+              title: uniqueTitle(base),
+              date: 'Now',
+              updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now(),
+              tags: Array.isArray(raw.tags) ? raw.tags.slice(0,20) : [],
+              favorite: !!raw.favorite,
+              archived: !!raw.archived,
+              deleted: !!raw.deleted,
+              deletedAt: typeof raw.deletedAt === 'number' ? raw.deletedAt : undefined,
+              ext: normalizeExt(raw.ext || 'md'),
+              sections: raw.sections && typeof raw.sections === 'object' ? raw.sections : (state.activeCustom && state.activeCustom.folder ? { [state.activeCustom.section]: state.activeCustom.folder } : {}),
+              body: String(raw.body || raw.content || raw.text || '').slice(0, 500000)
+            };
+            ensureNoteFiled(note);
+            state.notes.unshift(note);
+            if (imported === 0) state.currentId = note.id;
+            imported += 1;
+            if (state.notes.length > 2000) break;
+          } catch (e) {}
+        }
+        if (imported) {
+          state.activeFilter = 'all';
+          document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
+          syncCustomSections();
+          renderCustomSections();
+          selectNote(state.currentId);
+          persistNotes();
+          // Phase 2: sync is automatic but also trigger an immediate push so
+          // imported notes land on the cloud before any refresh/logout.
+          try { import('./data/sync.js').then((m) => { try { m.syncNow().catch(() => {}); } catch (error) {} }); } catch (error) {}
+          showToast(`Imported ${imported} note${imported===1?'':'s'} from JSON — syncing…`);
+        } else {
+          showToast('No notes found in JSON');
+        }
+      } catch (e) { showToast('Could not read JSON'); }
+    });
+  }
 
   document.getElementById('focus-editor').addEventListener('click', () => {
     document.querySelector('.editor-panel').classList.toggle('focus-mode');
@@ -2452,11 +2573,30 @@ if (BUILD_NOTE_OK) {
         if (data && typeof data.message === 'string' && data.message) message = data.message;
       } catch (error) {}
       if (errorEl) errorEl.hidden = true;
-      showToast(message);
-      setAuthTab('login');
-      document.getElementById('login-username').value = username;
-      document.getElementById('register-password').value = '';
-      document.getElementById('register-confirm').value = '';
+      // Show Account Created popup before redirecting to login
+      const createdOverlay = document.getElementById('account-created-overlay');
+      if (createdOverlay) {
+        createdOverlay.hidden = false;
+        const okBtn = document.getElementById('account-created-ok');
+        const closeBtn = document.getElementById('close-account-created');
+        const goLogin = () => {
+          createdOverlay.hidden = true;
+          setAuthTab('login');
+          document.getElementById('login-username').value = username;
+          document.getElementById('register-password').value = '';
+          document.getElementById('register-confirm').value = '';
+          showToast('Please log in with your new account');
+        };
+        if (okBtn) okBtn.onclick = goLogin;
+        if (closeBtn) closeBtn.onclick = goLogin;
+        createdOverlay.onclick = (e) => { if (e.target === createdOverlay) goLogin(); };
+      } else {
+        showToast(message);
+        setAuthTab('login');
+        document.getElementById('login-username').value = username;
+        document.getElementById('register-password').value = '';
+        document.getElementById('register-confirm').value = '';
+      }
     } else if (response.status === 429) {
       fail('Too many attempts — try again in a few minutes.');
     } else {
@@ -3294,6 +3434,9 @@ if (BUILD_NOTE_OK) {
   // backup file in the browser's download folder — the "desktop copy".
 
   document.getElementById('export-all-btn').addEventListener('click', exportAllNotes);
+  document.getElementById('export-md-btn').addEventListener('click', exportAllNotesMdZip);
+  const clipBtn = document.getElementById('import-clipboard-btn');
+  if (clipBtn) clipBtn.addEventListener('click', importFromClipboard);
   // Turning sync OFF is single-click (toast warns). Turning it back ON opens
   // the resync dialog so the local copy is uploaded or discarded deliberately.
   deviceOnlyBox.addEventListener('change', (event) => {
@@ -3453,19 +3596,28 @@ if (BUILD_NOTE_OK) {
   bindFolderContextMenu();
   bindSectionContextMenu();
   bindFolderDragDrop();
-  // Best-effort flush so closing/reloading mid-debounce never strands the last
-  // edits (or sidebar changes) on this device. visibilitychange fires early
-  // enough to complete; pagehide is a final fire-and-forget attempt.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden' && typeof isUnlocked === 'function' && isUnlocked()) {
-      try { persistNotes(); } catch (error) {}
-    }
+  // --- Ground-up sync (automatic) ------------------------------------------
+  // No button. Changing anything (editor typing, tags, folders, sections)
+  // auto-syncs after a short settle; plus a startup sync and a best-effort
+  // flush on pagehide/logout so nothing is ever stranded.
+  import('./data/sync.js').then((mod) => {
+    mod.paintStoragePicker();
+    // Don't auto-sync until we're actually unlocked — otherwise the first
+    // call paints 'Locked' gray AFTER the boot sync's green.
+    const bootTimer = setInterval(() => {
+      const ready = (() => { try { return Boolean(state.cachedProfile && e2ee.masterKey); } catch (e) { return false; } })();
+      if (ready) { clearInterval(bootTimer); mod.syncNow().catch(() => {}); }
+    }, 300);
+    // Debounced auto-sync: every persistNotes() marks dirty; a single timer
+    // pushes it soon after the last change stops.
+    setInterval(() => { if (mod.isDirty()) mod.syncNow(); }, 1200);
   });
   window.addEventListener('pagehide', () => {
-    if (state.cachedProfile && e2ee.masterKey) {
-      try { syncNotesToServer(); } catch (error) {}
-      try { writeUiVaultLocal(); } catch (error) {}
-    }
+    try {
+      if (state.cachedProfile && e2ee.masterKey) {
+        import('./data/sync.js').then((m) => { try { m.syncNow(); } catch (error) {} });
+      }
+    } catch (error) {}
   });
   boot();
   // --- Email-link password reset (?emailToken=...) ---
@@ -3527,7 +3679,15 @@ if (BUILD_NOTE_OK) {
     const unlocked = await restoreSessionUnlock();
     if (unlocked) {
       hideLogin();
-      try { await enterWorkspace(); }
+      try {
+        await enterWorkspace();
+        // Ground-up autosync: one pull+push right after the workspace restores
+        // so the light flips off 'Not synced yet' within a second of boot.
+        try {
+          const mod = await import('./data/sync.js');
+          if (typeof mod.syncNow === 'function') mod.syncNow().catch(() => {});
+        } catch (error) {}
+      }
       catch (error) { e2eeLock(); clearSessionUnlock(); state.notes = []; clearEditor(); showLogin(); }
     } else {
       state.notes = [];
@@ -3546,6 +3706,9 @@ if (BUILD_NOTE_OK) {
         openRecoverModal('token');
       }
     } catch {}
+    // Session/workspace state is rendered — reveal the real page (boot gate).
+    document.documentElement.classList.remove('app-boot');
+    document.querySelectorAll('.sync-dot,.save-dot').forEach((d) => d.classList.remove('is-error','is-offline'));
   }
   setInterval(() => {
     const hadBin = state.notes.some((note) => note.deleted);
