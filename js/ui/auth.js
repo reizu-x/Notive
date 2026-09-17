@@ -529,6 +529,12 @@ export async function logout() {
   state.vault.blobs = [];
   state.vault.folders = [];
   state.vault.meta = null;
+  state.vaultMetas = [];
+  state.vaultList = [];
+  state.vaultKeys = {};
+  state.vaultBlobMap = {};
+  state.vaultFolderMap = {};
+  state.vaultId = 1;
   state.activeView = 'notes';
   state.activeFilter = 'all';
   state.activeCustom = null;

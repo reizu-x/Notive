@@ -51,7 +51,7 @@ import { applyUiSnapshot, decryptUiVaultRaw, openVaultModal, openVaultNoteDelete
 import { acceptInvite, collabDeleteNote, confirmCollabNew, createSharedNoteWithTemplate, declineInvite, moveSharedNote, openCollabNote, openSharedNewNote, renderSharedView } from './data/collab-crypto.js';
 import { refreshPasskeys } from './ui/auth.js';
 import { applyBeautify, exitCoverRepos, handleCoverFile, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
-import { bindNoteContextMenu, clearEditor, createNoteFromTemplate, goAllNotes, goAllNotesKeepNote, loadNotesFromServer, onNewNoteClick, persistNotes, purgeExpiredBin, renderNoteList, requestDeleteNoteById, saveCurrentNote, selectNote, syncNotesToServer } from './ui/notes.js';
+import { bindNoteContextMenu, clearEditor, createNoteFromTemplate, goAllNotes, goAllNotesKeepNote, loadNotesFromServer, onNewNoteClick, persistNotes, purgeExpiredBin, renderNoteList, requestDeleteNoteById, saveCurrentNote, selectNote, stepListBack, syncNotesToServer } from './ui/notes.js';
 import { addSharedFolder, addSubfolder, applyStripFolderFilter, bindCustomSectionsEvents, bindFolderContextMenu, bindFolderDragDrop, bindSectionContextMenu, bindSectionHeaderEvents, chooseSectionIcon, deleteCustomSection, isFavoritesView, leaveSharedSection, moveSharedNoteToFolder, persistCollapsedFolders, renameSharedFolder, reparentSharedFolder, selectCustomFolder, selectCustomSection, syncCustomSections } from './ui/sections.js';
 import { applyTheme, enterWorkspace, handleAvatarFile } from './ui/shell.js';
 import { closeTab, renderTabs } from './ui/tabs.js';
@@ -1869,6 +1869,9 @@ if (BUILD_NOTE_OK) {
 
 
 
+  const listBackBtn = document.getElementById('list-back');
+  if (listBackBtn) listBackBtn.addEventListener('click', () => stepListBack());
+
   if (foldToggle) {
     foldToggle.addEventListener('click', () => {
       if (state.activeView === 'shared') {
@@ -1917,6 +1920,8 @@ if (BUILD_NOTE_OK) {
     clearSectionSelection();
     state.activeView = view;
     state.sharedFolder = state.activeView === 'shared' ? state.sharedFolder : null;
+    if (state.activeView !== 'shared') state.sharedPerson = null;
+    if (state.activeView !== 'vault') state.vaultFolder = null;
     state.searchQuery = '';
     document.getElementById('search-input').value = '';
     // Pick the chip filter, then let updateListHeading() own the heading text so
@@ -1926,6 +1931,7 @@ if (BUILD_NOTE_OK) {
     state.activeFilter = view === 'favorites' ? 'favorites' : 'all';
     updateListHeading();
     document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === state.activeFilter));
+    renderCustomSections();
     renderNoteList();
   }));
 
@@ -1935,10 +1941,10 @@ if (BUILD_NOTE_OK) {
   });
 
   preview.addEventListener('click', () => {
-    if (state.writeMode === 'preview') setWriteMode('edit', { focus: true });
+    if (state.writeMode === 'preview' && activeEditorNote()) setWriteMode('edit', { focus: true });
   });
   preview.addEventListener('focus', () => {
-    if (state.writeMode === 'preview') setWriteMode('edit', { focus: true });
+    if (state.writeMode === 'preview' && activeEditorNote()) setWriteMode('edit', { focus: true });
   });
   if (modeToggle) modeToggle.addEventListener('click', () => {
     const note = activeEditorNote();
@@ -3459,10 +3465,39 @@ if (BUILD_NOTE_OK) {
   // Export every plainWorkspace note (and unlocked Vault notes) as one JSON
   // backup file in the browser's download folder — the "desktop copy".
 
-  document.getElementById('export-all-btn').addEventListener('click', exportAllNotes);
-  document.getElementById('export-md-btn').addEventListener('click', exportAllNotesMdZip);
+  // Export buttons were removed from Settings (section redo) — bindings kept
+  // guarded so a re-added button wires up without code changes.
+  const exportAllBtn = document.getElementById('export-all-btn');
+  if (exportAllBtn) exportAllBtn.addEventListener('click', exportAllNotes);
+  const exportMdBtn = document.getElementById('export-md-btn');
+  if (exportMdBtn) exportMdBtn.addEventListener('click', exportAllNotesMdZip);
   const clipBtn = document.getElementById('import-clipboard-btn');
   if (clipBtn) clipBtn.addEventListener('click', importFromClipboard);
+  // Import/Export section: one format picker driving export; import
+  // auto-detects Markdown/JSON/YAML/TXT from the file extension.
+  const exchangeFormatEl = document.getElementById('exchange-format');
+  const exchangeExportBtn = document.getElementById('exchange-export-btn');
+  if (exchangeExportBtn) exchangeExportBtn.addEventListener('click', async () => {
+    const fmt = exchangeFormatEl ? exchangeFormatEl.value : 'json';
+    try {
+      const exchange = await import('./data/exchange.js');
+      await exchange.exportWorkspace(fmt);
+    } catch (error) { showToast('Export failed'); }
+  });
+  const exchangeImportBtn = document.getElementById('exchange-import-btn');
+  const exchangeImportInput = document.getElementById('exchange-import-input');
+  if (exchangeImportBtn && exchangeImportInput) {
+    exchangeImportBtn.addEventListener('click', () => exchangeImportInput.click());
+    exchangeImportInput.addEventListener('change', async (event) => {
+      const files = [...(event.target.files || [])];
+      event.target.value = '';
+      if (!files.length) return;
+      try {
+        const exchange = await import('./data/exchange.js');
+        await exchange.importExchangeFiles(files);
+      } catch (error) { showToast('Import failed'); }
+    });
+  }
   // Turning sync OFF is single-click (toast warns). Turning it back ON opens
   // the resync dialog so the local copy is uploaded or discarded deliberately.
   deviceOnlyBox.addEventListener('change', (event) => {

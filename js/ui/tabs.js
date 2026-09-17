@@ -6,10 +6,10 @@ import { icon } from '../core/icons.js';
 import { isValidNoteId } from '../core/ids.js';
 import { folderDepth, folderIconForDepth, folderLeaf, folderParent, isFolderOrSub } from '../core/paths.js';
 import { escapeHtml } from '../core/strings.js';
-import { MAX_OPEN_TABS, NOTE_TEMPLATES, sharedGroupFolders, sharedGroupOwners, sharedNoteMeta } from '../domain/constants.js';
+import { MAX_OPEN_TABS, NOTE_TEMPLATES, sharedGroupFolders, sharedGroupOwners, sharedGroupsCache, sharedNoteMeta } from '../domain/constants.js';
 import { state } from '../domain/state.js';
 import { canEditCoverNote, moveCoverOnNote } from './editor.js';
-import { clearTabDropMarks, noteGlyphFor, updateStripScrollButton, viewLabel } from './feedback.js';
+import { clearTabDropMarks, noteGlyphFor, updateSettingsScrollButtons, updateStripScrollButton, viewLabel } from './feedback.js';
 import { visibleNotes } from './notes.js';
 import { customFolderColor, customNoteFolder, isFavoritesView, sectionDisplayName } from './sections.js';
 import { renderSettingsTags } from './tags.js';
@@ -27,6 +27,7 @@ export function setSettingsTab(name) {
     pane.hidden = pane.dataset.settingsPane !== name;
   });
   if (name === 'tags') { try { renderSettingsTags(); } catch (error) {} }
+  try { updateSettingsScrollButtons(); } catch (error) {}
 }
 
 // Reposition by dragging the banner on the note itself (buttons opt out).
@@ -138,7 +139,7 @@ function collectStripFolders(section, parent, levels, rel, keep, pool) {
   if (levels > 0 && section) {
     (section.folders || []).filter((fl) => folderParent(fl) === parent && (!keep || keep.has(fl))).forEach((kid) => {
       const leaf = folderLeaf(kid);
-      f += `<button type="button" class="strip-btn" data-strip-section="${escapeHtml(section.id)}" data-strip-folder="${escapeHtml(kid)}" title="Open folder ${escapeHtml(leaf)}" aria-label="Open folder ${escapeHtml(leaf)}"><span class="strip-folder-glyph strip-lvl${rel} ${customFolderColor(section, kid)}">${icon(folderIconForDepth(folderDepth(kid)))}</span></button>`;
+      f += `<button type="button" class="strip-btn" data-strip-section="${escapeHtml(section.id)}" data-strip-folder="${escapeHtml(kid)}" title="${escapeHtml(leaf)}" aria-label="${escapeHtml(leaf)}"><span class="strip-folder-glyph strip-lvl${rel} ${customFolderColor(section, kid)}">${icon(folderIconForDepth(folderDepth(kid)))}</span></button>`;
       if (pool) {
         const notes = pool.filter((note) => customNoteFolder(note, section.id) === kid);
         if (notes.length) groups.push(notes.map(stripNoteBtn).join(''));
@@ -202,7 +203,14 @@ export function renderStripItems() {
     // folders), plus the direct notes of the selected folder after a real
     // separator, mirroring the All Notes strip.
     const sel = state.sharedFolder;
-    const entries = [...sharedGroupFolders.entries()];
+    const personFilter = state.sharedPerson ? String(state.sharedPerson).toLowerCase() : '';
+    const entries = [...sharedGroupFolders.entries()].filter(([groupId]) => {
+      if (!personFilter) return true;
+      const cached = sharedGroupsCache.find((grp) => String(grp.id) === String(groupId));
+      if (!cached) return true;
+      if (String(cached.owner || '').toLowerCase() === personFilter) return true;
+      return (Array.isArray(cached.members) ? cached.members : []).some((m) => String(m || '').toLowerCase() === personFilter);
+    });
     let html = '';
     entries.forEach(([groupId, folders]) => {
       const owner = sharedGroupOwners.get(groupId) || '?';

@@ -846,6 +846,11 @@ html[data-theme="dark"] mark, html[data-theme="dracula"] mark, html[data-theme="
 .nav-item { display: flex; align-items: center; gap: 11px; padding: 10px 11px; border-radius: 8px; color: var(--side-ink); font-size: 12px; transition: color .18s ease, background .18s ease; }
 .nav-item:hover { color: var(--side-bright); background: rgba(255,255,255,.06); }
 .nav-item.active { color: var(--side-pure); background: var(--side-active-bg); box-shadow: inset 3px 0 0 var(--side-active-bar); }
+/* Group label over the Main Section nav items (All Notes, Shared, Starred, Archive, Vault, Bin). */
+.nav-section-label { padding: 10px 11px 3px; color: var(--side-faint); font-family: 'DM Mono', monospace; font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+/* Group labels hidden for now (Main Section / Main Sub Sections). */
+.sidebar .nav-section-label { display: none; }
+.sidebar.collapsed .nav-section-label { display: none; }
 .nav-icon { display: grid; width: 17px; height: 17px; place-items: center; }
 .nav-icon svg { width: 16px; height: 16px; stroke: currentColor; }
 .nav-count { margin-left: auto; color: var(--side-dim); font-family: 'DM Mono', monospace; font-size: 10px; }
@@ -860,6 +865,10 @@ html[data-theme="dark"] mark, html[data-theme="dracula"] mark, html[data-theme="
 .sidebar-section.is-empty .section-label-text { cursor: default; }
 .sidebar-section.is-empty .section-label-text:hover { color: var(--side-faint); }
 .sidebar-section.active-section .section-label-text { color: var(--side-bright); }
+/* Vault header block (rendered instead of custom sections while Vault is
+   marked): always carries the marked look. */
+.sidebar-section.vault-section .section-icon,
+.sidebar-section.vault-section .section-label-text { color: var(--side-bright); }
 .add-section-wrap { margin-top: 12px; }
 .add-section-button { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; padding: 7px 10px; border: 1px dashed rgba(255, 255, 255, .18); border-radius: 8px; color: var(--side-faint-2); background: transparent; font-size: 11px; transition: color .18s ease, border-color .18s ease; }
 .add-section-button:hover { color: var(--side-pure); border-color: rgba(255, 255, 255, .35); }
@@ -897,6 +906,11 @@ sidebar — they live in the workspace strip / note list instead. */
 .collection-dot.violet { background: #bd93f9; }
 .collection-dot.rose { background: #f28ba8; }
 .collection-label { overflow: hidden; flex: 1; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+/* Connected-person rows (Shared view sidebar): always visible, same active
+   language as marked rows. */
+.person-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; color: var(--side-dim); text-decoration: none; cursor: pointer; }
+.person-row:hover { color: var(--side-bright); }
+.person-row.active { color: var(--side-bright); background: rgba(255, 255, 255, .06); box-shadow: inset 3px 0 0 var(--side-active-bar); }
 .collection-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .18s ease, visibility .18s ease; }
 .collection-item:hover .collection-actions { opacity: 1; visibility: visible; pointer-events: auto; }
 .collection-action { display: grid; width: 22px; height: 22px; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--side-dim); background: transparent; transition: color .18s ease, background .18s ease; }
@@ -953,7 +967,6 @@ at the bottom, only the nav + folder lists scroll. */
   .sidebar.collapsed .profile-card { justify-content: center; margin: 6px 0 4px; padding-right: 0; padding-left: 0; border-color: transparent; background: transparent; }
   .sidebar.collapsed .profile-copy, .sidebar.collapsed .profile-card .tiny { display: none; }
   .sidebar.collapsed .nav-item { justify-content: center; padding-right: 0; padding-left: 0; gap: 0; }
-  .sidebar.collapsed .nav-item.active { box-shadow: none; }
   .sidebar.collapsed .nav-label, .sidebar.collapsed .nav-count { display: none; }
   .sidebar.collapsed .sidebar-section { margin-top: 16px; }
   .sidebar.collapsed .section-label { justify-content: center; margin: 0 0 8px; padding: 0; }
@@ -1121,7 +1134,9 @@ body.is-panel-resizing { cursor: col-resize; user-select: none; }
 .search-box input::placeholder { color: var(--input-placeholder); }
 .search-box kbd { padding: 2px 5px; border: 1px solid var(--kbd-border); border-radius: 4px; color: var(--kbd-ink); background: var(--kbd-bg); font-family: 'DM Mono', monospace; font-size: 9px; }
 .filter-row { display: flex; align-items: center; gap: 6px; margin-top: 15px; }
-.fold-toggle { margin-left: auto; width: 28px; height: 28px; color: var(--ink-muted); }
+/* Back + collapse travel as one right-aligned pair (back left of collapse). */
+.filter-row .filter-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.fold-toggle { width: 28px; height: 28px; color: var(--ink-muted); }
 .fold-toggle svg { transition: transform .2s ease; }
 .fold-toggle.is-expanded svg { transform: rotate(180deg); }
 .view-refresh { width: 28px; height: 28px; color: var(--ink-muted); }
@@ -1605,7 +1620,17 @@ html[data-font="verdana"] body :not(pre):not(code):not(kbd) { font-family: Verda
 .password-policy { margin: 0 0 12px; padding-left: 18px; color: var(--ink-muted); font-size: 11px; line-height: 1.6; }
 .settings-security { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .settings-security h3 { margin: 0 0 6px; font-size: 14px; }
-.modal-wide { width: min(760px, 96vw); height: min(680px, 94vh); max-height: 94vh; display: flex; flex-direction: column; }
+.modal-wide { width: min(760px, 96vw); height: min(680px, 94vh); max-height: 94vh; display: flex; flex-direction: column; position: relative; }
+/* Settings panes scroll via arrow buttons (workspace-strip style) instead of
+   a native scrollbar. */
+.settings-pane { scrollbar-width: none; }
+.settings-pane::-webkit-scrollbar { display: none; }
+.settings-scroll-btn { display: none; position: absolute; right: 12px; z-index: 5; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--panel-bg); color: var(--ink); cursor: pointer; box-shadow: 0 1px 4px rgba(0, 0, 0, .22); transition: color .15s ease, border-color .15s ease, transform .15s ease, background .15s ease; }
+.settings-scroll-btn:hover { color: var(--ink); background: var(--paper); border-color: var(--side-active-bar); transform: scale(1.1); }
+.settings-scroll-btn svg { width: 18px; height: 18px; stroke-width: 2.2; }
+.settings-scroll-btn.is-visible { display: grid; }
+.settings-scroll-up { top: 76px; }
+.settings-scroll-down { bottom: 14px; }
 .settings-layout { display: flex; gap: 18px; margin-top: 12px; flex: 1; min-height: 0; }
 .settings-nav { display: flex; flex: 0 0 150px; flex-direction: column; gap: 4px; }
 .settings-nav-item { padding: 9px 11px; border: 0; border-radius: 8px; color: var(--ink-muted); background: transparent; font-size: 12px; font-weight: 600; text-align: left; transition: color .18s ease, background .18s ease; }
@@ -1614,6 +1639,12 @@ html[data-font="verdana"] body :not(pre):not(code):not(kbd) { font-family: Verda
 .settings-nav-header { padding: 10px 11px 3px; color: var(--ink-faint); font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .settings-pane { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; }
 .settings-pane-title { margin: 0 0 6px; font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
+/* Expanded-list back button (left of Collapse all): chevron points back. */
+.list-back svg { transform: rotate(180deg); }
+/* Right-aligned settings buttons (Profile save actions). */
+.settings-btn-right { display: block; margin-left: auto; }
+/* Global spacing for every divider inside Settings panes. */
+.settings-pane hr { margin: 18px 0; border: 0; border-top: 1px solid var(--line); }
 .setting-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-bg); cursor: pointer; }
 .setting-row input { width: 16px; height: 16px; margin-top: 2px; accent-color: var(--mint-dark); }
 .setting-row-text { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }

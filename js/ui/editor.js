@@ -426,6 +426,7 @@ export function renderPreview(note) {
              body: state.collab.body.toString(), ext: 'md', tags: [], favorite: false,
              archived: false, deleted: false };
   }
+  if (!note) return;
   const bottomHint = document.querySelector('.editor-bottom-fixed span:first-child');
   const isMd = note.ext === 'md';
   const plainLabel = note.ext === 'txt' ? 'Plain text' : (EXT_LABELS[note.ext] || 'MD');

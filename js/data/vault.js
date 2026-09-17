@@ -37,7 +37,7 @@ export async function vaultEncryptNote(note) {
       ext: normalizeExt(note.ext),
       date: note.date, favorite: !!note.favorite, folder,
     })));
-  return { id: note.id, payload: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) } };
+  return { id: note.id, vault: state.vaultId || 1, payload: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) } };
 }
 
 export async function vaultDecryptItem(item) {
@@ -59,10 +59,14 @@ export async function vaultDecryptItem(item) {
 }
 
 export async function decryptAllVaultBlobs() {
+  const current = String(state.vaultId || 1);
   const out = [];
   for (const item of state.vault.blobs) {
-    try { out.push(await vaultDecryptItem(item)); }
-    catch (error) { /* skip corrupt items */ }
+    try {
+      // Legacy (pre-multivault) blobs carry no tag and belong to vault 1.
+      if (String(item.vault == null ? 1 : item.vault) !== current) continue;
+      out.push(await vaultDecryptItem(item));
+    } catch (error) { /* skip corrupt items */ }
   }
   return out;
 }
@@ -71,7 +75,44 @@ export async function currentVaultBlobs() {
   if (!state.vault.unlocked) return state.vault.blobs;
   const out = [];
   for (const note of state.vault.notes) out.push(await vaultEncryptNote(note));
-  state.vault.blobs = out;
+  // In-place replace: state.vault.blobs is shared by reference with the
+  // per-vault map entry, so other vaults' stored blobs are preserved.
+  state.vault.blobs.length = 0;
+  for (const item of out) state.vault.blobs.push(item);
+  return state.vault.blobs;
+}
+
+// Every vault's stored blobs, staging the current working set first so no
+// vault's notes are ever stranded by a sync.
+export async function allVaultBlobs() {
+  const current = state.vaultId || 1;
+  const map = state.vaultBlobMap && typeof state.vaultBlobMap === 'object' ? state.vaultBlobMap : {};
+  if (state.vault.unlocked) {
+    try { await currentVaultBlobs(); } catch (error) {}
+    map[current] = state.vault.blobs;
+  }
+  const flat = [];
+  const perVault = {};
+  for (const key of Object.keys(map)) {
+    const list = Array.isArray(map[key]) ? map[key] : [];
+    perVault[key] = list.length;
+    for (const item of list) {
+      if (validVaultBlob(item)) flat.push(item);
+      if (flat.length >= 6000) return flat;
+    }
+  }
+  return flat;
+}
+
+// Every vault's folder lists, with the current working set staged first.
+export function allVaultFolders() {
+  const current = state.vaultId || 1;
+  const map = state.vaultFolderMap && typeof state.vaultFolderMap === 'object' ? state.vaultFolderMap : {};
+  if (state.vault.unlocked && Array.isArray(state.vault.folders)) map[current] = state.vault.folders;
+  const out = {};
+  for (const key of Object.keys(map)) {
+    if (Array.isArray(map[key])) out[key] = cleanVaultFolders(map[key]);
+  }
   return out;
 }
 

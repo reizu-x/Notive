@@ -5,7 +5,7 @@ import { isRecentNote } from '../core/dates.js';
 import { isFolderOrSub } from '../core/paths.js';
 import { EXT_MIME, migrateNote, sanitizeFilename } from '../core/schema.js';
 import { e2ee, e2eeEncryptNotes } from '../data/crypto.js';
-import { currentVaultBlobs } from '../data/vault.js';
+import { allVaultBlobs, allVaultFolders, currentVaultBlobs } from '../data/vault.js';
 import { IMPORTANT_TAG, WELCOME_FOLDERS, WELCOME_SECTION_ID } from '../domain/constants.js';
 import { state } from '../domain/state.js';
 import { accountScopeKey } from './auth.js';
@@ -26,7 +26,7 @@ import { cleanVaultFolders, decryptAllVaultBlobs, validVaultBlob } from '../data
 import { NOTE_TEMPLATES } from '../domain/constants.js';
 import { exitCoverRepos, renderCover, renderPreview, renderRecipeHero, resetIdleTimer } from './editor.js';
 import { binRemainingText, noteGlyphFor } from './feedback.js';
-import { addFolderToSection, clearSectionSelection, openFolderPicker, persistCollapsedFolders, persistDeletedCustomSections, pruneDeletedCustomSections, renderCustomSections, reviveSectionsForNote, sectionDisplayName, selectCustomSection, startSectionRename, syncCustomSections, updateFoldToggle } from './sections.js';
+import { addFolderToSection, applyStripFolderFilter, clearSectionSelection, openFolderPicker, persistCollapsedFolders, persistDeletedCustomSections, pruneDeletedCustomSections, renderCustomSections, reviveSectionsForNote, sectionDisplayName, selectCustomFolder, selectCustomSection, startSectionRename, syncCustomSections, updateFoldToggle } from './sections.js';
 import { seedFromTemplate, welcomeSeedNotes, welcomeSeedUi } from './shell.js';
 
 // Search-as-you-type highlight (local copy, no cross-module dep)
@@ -494,7 +494,7 @@ export async function saveNotesToDevice() {
 // Build the outgoing workspace envelope (notes + vault ciphertext + UI state)
 // shared by server sync and device-only saves.
 export async function buildNotesEnvelope() {
-  const envelope = { v: 2, notes: state.notes, vault: await currentVaultBlobs(), vaultFolders: [...state.vault.folders] };
+  const envelope = { v: 2, notes: state.notes, vault: await allVaultBlobs(), vaultFolders: allVaultFolders() };
   try {
     if (typeof uiSnapshot === 'function') envelope.ui = uiSnapshot();
   } catch (error) {}
@@ -585,7 +585,7 @@ export function createNoteFromTemplate(templateKey) {
   const template = NOTE_TEMPLATES[templateKey] || NOTE_TEMPLATES.standard;
   if (state.activeView === 'bin') {
     state.activeView = 'notes';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
     updateListHeading();
   }
   const id = newNoteId();
@@ -986,6 +986,38 @@ export function selectNote(id) {
   refreshEditorLock();
 }
 
+// Expanded-list back button (left of Collapse all folders): visible only
+// while a section is marked in the main sidebar. Steps back without closing
+// notes.
+export function updateListBackButton() {
+  const btn = document.getElementById('list-back');
+  if (!btn) return;
+  const marked = !!(state.activeCustom && state.activeCustom.section);
+  btn.hidden = !marked;
+  if (btn.hidden) return;
+  const inFolder = !!state.activeCustom.folder;
+  let label = 'Back to All Notes';
+  if (inFolder) {
+    const parent = folderParent(state.activeCustom.folder);
+    label = parent ? `Back to ${folderLeaf(parent)}` : 'Back to section';
+  }
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+}
+
+export function stepListBack() {
+  const inView = isFavoritesView() || state.activeView === 'archive' || state.activeView === 'bin';
+  if (state.activeCustom && state.activeCustom.folder) {
+    const parent = folderParent(state.activeCustom.folder);
+    const sec = state.activeCustom.section;
+    if (inView) { applyStripFolderFilter(sec, parent); return; }
+    if (parent) { selectCustomFolder(sec, parent); return; }
+    selectCustomSection(sec);
+    return;
+  }
+  goAllNotesKeepNote();
+}
+
 // Render the grouped note tree: folder ordering, collapse, Bin actions vs rename pencil, scoped counters, and per-row event wiring.
 export function renderNoteList() {
   const sharedNewBtn = document.getElementById('shared-new');
@@ -1175,6 +1207,15 @@ export function renderNoteList() {
   updateVaultUI();
   updateBreadcrumbs();
   updateFoldToggle();
+  updateListBackButton();
+  // Single-mark invariant: while a section is marked, the All Notes nav item
+  // is never highlighted — enforced on every render so no stray path (ghost
+  // clicks, double-fires, extension overlays) can leave both marks on.
+  if (state.activeCustom) {
+    document.querySelectorAll('.nav-item').forEach((nav) => {
+      if (nav.dataset.view === 'notes') nav.classList.remove('active');
+    });
+  }
   noteList.querySelectorAll('[data-note-id]').forEach((item) => item.addEventListener('click', () => selectNote(item.dataset.noteId)));
   enableNoteDragDrop();
   noteList.querySelectorAll('[data-folder]').forEach((item) => item.addEventListener('click', () => {
@@ -1231,7 +1272,7 @@ export function goAllNotes() {
   clearSectionSelection();
   state.activeView = 'notes';
   state.activeFilter = 'all';
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   clearSearch();
   updateListHeading();
@@ -1249,7 +1290,7 @@ export function goAllNotesKeepNote() {
   clearSectionSelection();
   state.activeView = 'notes';
   state.activeFilter = 'all';
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   clearSearch();
   updateListHeading();
@@ -1460,12 +1501,42 @@ export async function adoptNotesEnvelope(envelope) {
     : (envelope && Array.isArray(envelope.notes) ? envelope.notes : null);
   if (!list) throw new Error('bad payload');
   state.notes = list.map(migrateNote).slice(0, 2000);
+  // Vault ciphertext: flat tagged blobs grouped per vault ({vaultId: [...]});
+  // legacy untagged blobs belong to vault 1. Folder lists ride as a map too
+  // (legacy array form belongs to vault 1). The working set points at the
+  // current vault's entries by reference.
   const incomingBlobs = (!Array.isArray(envelope) && Array.isArray(envelope.vault))
-    ? envelope.vault.filter(validVaultBlob).slice(0, 2000)
+    ? envelope.vault.filter(validVaultBlob).slice(0, 6000)
     : [];
-  state.vault.blobs = incomingBlobs;
+  const blobMap = {};
+  for (const item of incomingBlobs) {
+    const vid = item.vault == null ? 1 : item.vault;
+    if (!blobMap[vid]) blobMap[vid] = [];
+    if (blobMap[vid].length < 2000) blobMap[vid].push(item);
+  }
+  state.vaultBlobMap = blobMap;
   try {
-    state.vault.folders = (!Array.isArray(envelope) && envelope) ? cleanVaultFolders(envelope.vaultFolders) : [];
+    const sizes = {};
+    for (const key of Object.keys(blobMap)) sizes[key] = blobMap[key].length;
+  } catch (e) {}
+  try {
+    const sizes = {};
+    for (const key of Object.keys(blobMap)) sizes[key] = blobMap[key].length;
+  } catch (e) {}
+  const folderMap = {};
+  try {
+    const rawFolders = (!Array.isArray(envelope) && envelope) ? envelope.vaultFolders : null;
+    if (rawFolders && typeof rawFolders === 'object' && !Array.isArray(rawFolders)) {
+      for (const key of Object.keys(rawFolders)) folderMap[key] = cleanVaultFolders(rawFolders[key]);
+    } else {
+      folderMap[1] = cleanVaultFolders(rawFolders);
+    }
+  } catch (error) {}
+  state.vaultFolderMap = folderMap;
+  const current = state.vaultId || 1;
+  state.vault.blobs = blobMap[current] || (blobMap[current] = []);
+  try {
+    state.vault.folders = folderMap[current] || (folderMap[current] = []);
   } catch (error) { state.vault.folders = []; }
   if (state.vault.unlocked) {
     try { state.vault.notes = await decryptAllVaultBlobs(); }

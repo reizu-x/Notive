@@ -82,6 +82,25 @@ export function updateStripScrollButton() {
   if (stripScrollDown) stripScrollDown.classList.toggle('is-visible', Boolean(collapsible && canDown));
 }
 
+// Settings scroll arrows (workspace-strip style): the visible settings pane
+// scrolls via up/down buttons instead of a native scrollbar.
+export function updateSettingsScrollButtons() {
+  const overlay = document.getElementById('settings-overlay');
+  const pane = overlay && !overlay.hidden ? overlay.querySelector('.settings-pane:not([hidden])') : null;
+  const canUp = !!pane && pane.scrollTop > 1;
+  const canDown = !!pane && pane.scrollTop + pane.clientHeight < pane.scrollHeight - 1;
+  if (settingsScrollUp) settingsScrollUp.classList.toggle('is-visible', canUp);
+  if (settingsScrollDown) settingsScrollDown.classList.toggle('is-visible', canDown);
+}
+
+function scrollSettingsPane(dir) {
+  const overlay = document.getElementById('settings-overlay');
+  const pane = overlay && !overlay.hidden ? overlay.querySelector('.settings-pane:not([hidden])') : null;
+  if (!pane) return;
+  pane.scrollBy({ top: dir * Math.max(120, pane.clientHeight - 40), behavior: 'smooth' });
+  setTimeout(updateSettingsScrollButtons, 250);
+}
+
 export function clearTabDropMarks() {
   if (!tabBarEl) return;
   tabBarEl.querySelectorAll('.tab-drop-before, .tab-drop-after').forEach((el) => el.classList.remove('tab-drop-before', 'tab-drop-after'));
@@ -98,5 +117,24 @@ if (stripBoxEl && stripBoxEl.parentElement) {
   });
   stripScrollDown.addEventListener('click', () => {
     stripBoxEl.scrollBy({ top: stripBoxEl.clientHeight, behavior: 'smooth' });
+  });
+}
+
+// Settings scroll buttons: created once inside the settings modal; the
+// visible pane scrolls beneath them. Scroll position refreshes the arrows.
+const settingsScrollUp = makeStripScrollButton('settings-scroll-up', 'up', 'chevron-up', 'Scroll up');
+const settingsScrollDown = makeStripScrollButton('settings-scroll-down', 'down', 'chevron-down', 'Scroll down');
+settingsScrollUp.className = 'settings-scroll-btn settings-scroll-up';
+settingsScrollDown.className = 'settings-scroll-btn settings-scroll-down';
+{
+  const settingsModal = document.querySelector('#settings-overlay .modal-wide');
+  if (settingsModal) {
+    settingsModal.appendChild(settingsScrollUp);
+    settingsModal.appendChild(settingsScrollDown);
+  }
+  settingsScrollUp.addEventListener('click', () => scrollSettingsPane(-1));
+  settingsScrollDown.addEventListener('click', () => scrollSettingsPane(1));
+  document.querySelectorAll('#settings-overlay .settings-pane').forEach((pane) => {
+    pane.addEventListener('scroll', () => updateSettingsScrollButtons(), { passive: true });
   });
 }

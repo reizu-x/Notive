@@ -6,13 +6,13 @@ import { state } from '../domain/state.js';
 import { apiFetch } from '../data/api.js';
 import { e2ee, e2eeB64ToBytes, e2eeBytesToB64, e2eeRandomBytes } from '../data/crypto.js';
 import { COLLAPSED_FOLDERS_KEY, UI_VAULT_KEY } from '../domain/constants.js';
-import { showToast } from './modal.js';
+import { askInput, showToast } from './modal.js';
 import { setDeleteDialog } from './notes.js';
 import { THEMES } from './theme.js';
 import { isRecentNote } from '../core/dates.js';
 import { allCount, breadcrumbTitle, listEmpty, markdownInput, noteList, recentCountEl, starredCountEl, titleInput, totalCount } from '../core/elements.js';
 import { newNoteId } from '../core/ids.js';
-import { folderDepth, folderIconForDepth } from '../core/paths.js';
+import { folderDepth, folderIconForDepth, isFolderOrSub } from '../core/paths.js';
 import { normalizeExt } from '../core/schema.js';
 import { escapeHtml } from '../core/strings.js';
 import { argon2id32 } from '../data/crypto.js';
@@ -35,9 +35,63 @@ import { openTemplatePicker } from './editor.js';
 import { updateListHeading, updateMeta } from './notes.js';
 
 
+// Which account the cached vault metadata belongs to (per-session unlimited
+// opens reuse it; creation/deletion/reset clear it back to null).
+let vaultMetasUser = null;
+// When the cache was taken: entries older than this revalidate once, so a
+// vault created in another tab appears within minutes (worst-case fetch rate
+// stays far under the server throttle).
+let vaultMetasAt = 0;
+const VAULT_METAS_TTL_MS = 30 * 60 * 1000;
 
-export function updateVaultUI() {
-  const inVault = state.activeView === 'vault';
+// sessionStorage twin of the memory cache: survives reloads within the tab
+// (hard-refreshes no longer cost fetches). Same sensitivity as the session
+// cookie already stored there — tab-scoped, dies with the tab.
+function vaultMetasCacheKey(user) {
+  return 'notely-vault-meta:' + String(user || '').toLowerCase();
+}
+
+function readCachedVaultMetas(user) {
+  const fresh = (at) => Date.now() - at < VAULT_METAS_TTL_MS;
+  if (vaultMetasUser === user && Array.isArray(state.vaultMetas) && fresh(vaultMetasAt)) {
+    return state.vaultMetas;
+  }
+  try {
+    const raw = sessionStorage.getItem(vaultMetasCacheKey(user));
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    const rows = Array.isArray(obj) ? obj : obj.rows;
+    const at = Array.isArray(obj) ? 0 : Number(obj.at) || 0;
+    if (!Array.isArray(rows) || !fresh(at)) return null;
+    state.vaultMetas = rows;
+    vaultMetasUser = user;
+    vaultMetasAt = at;
+    return rows;
+  } catch (error) { return null; }
+}
+
+function writeCachedVaultMetas(user, rows) {
+  state.vaultMetas = rows;
+  vaultMetasUser = user;
+  vaultMetasAt = Date.now();
+  try { sessionStorage.setItem(vaultMetasCacheKey(user), JSON.stringify({ rows, at: vaultMetasAt })); } catch (error) {}
+}
+
+function clearCachedVaultMetas() {
+  vaultMetasUser = null;
+  vaultMetasAt = 0;
+  state.vaultMetas = [];
+  try {
+    const keys = [];
+    for (let i = 0; i < sessionStorage.length; i += 1) {
+      const key = sessionStorage.key(i);
+      if (key && key.startsWith('notely-vault-meta:')) keys.push(key);
+    }
+    keys.forEach((key) => sessionStorage.removeItem(key));
+  } catch (error) {}
+}
+
+export function updateVaultUI() {  const inVault = state.activeView === 'vault';
   const showVaultTools = inVault && state.vault.unlocked;
   const newVaultBtn = document.getElementById('new-vault-note');
   const lockVaultBtn = document.getElementById('lock-vault');
@@ -90,8 +144,7 @@ export function closeVaultModal() {
   });
 }
 
-export function vaultFail(message) {
-  const errorEl = document.getElementById('vault-error');
+export function vaultFail(message) {  const errorEl = document.getElementById('vault-error');
   const card = document.querySelector('#vault-overlay .modal');
   if (errorEl) { errorEl.textContent = message; errorEl.hidden = false; }
   if (card) {
@@ -101,21 +154,99 @@ export function vaultFail(message) {
   }
 }
 
+// Wrong-vault-password throttle: 3 consecutive misses lock the vault UI for
+// 15 minutes; a correct password restarts the counter to 3. Per account,
+// persisted so refreshes don't reset it (the server throttle stays as the
+// network-side backstop).
+const VAULT_MAX_TRIES = 3;
+const VAULT_LOCKOUT_MS = 15 * 60 * 1000;
+const VAULT_FAILS_PREFIX = 'notely-vault-fails:';
+
+function vaultFailKey() {
+  try {
+    const name = state.cachedProfile && state.cachedProfile.username
+      ? String(state.cachedProfile.username).toLowerCase() : '';
+    return name ? VAULT_FAILS_KEY_PREFIX + name : null;
+  } catch (error) { return null; }
+}
+
+function vaultFailState() {
+  try {
+    const raw = vaultFailKey() ? localStorage.getItem(vaultFailKey()) : null;
+    if (!raw) return { fails: 0, lockedUntil: 0 };
+    const obj = JSON.parse(raw);
+    return { fails: Number(obj.fails) || 0, lockedUntil: Number(obj.lockedUntil) || 0 };
+  } catch (error) { return { fails: 0, lockedUntil: 0 }; }
+}
+
+// Record one wrong password. Returns {locked, triesLeft, retryMs}.
+function vaultFailRecord() {
+  const cur = vaultFailState();
+  const fails = cur.fails + 1;
+  let lockedUntil = cur.lockedUntil;
+  if (fails >= VAULT_MAX_TRIES) lockedUntil = Date.now() + VAULT_LOCKOUT_MS;
+  try {
+    const key = vaultFailKey();
+    if (key) localStorage.setItem(key, JSON.stringify({ fails, lockedUntil }));
+  } catch (error) {}
+  return { locked: lockedUntil > Date.now(), triesLeft: Math.max(0, VAULT_MAX_TRIES - fails), retryMs: Math.max(0, lockedUntil - Date.now()) };
+}
+
+function vaultFailClear() {
+  try {
+    const key = vaultFailKey();
+    if (key) localStorage.removeItem(key);
+  } catch (error) {}
+}
+
+function vaultLockMessage(retryMs) {
+  const mins = Math.max(1, Math.ceil(retryMs / 60000));
+  return `Vault locked — too many wrong passwords. Try again in ${mins} minute${mins === 1 ? '' : 's'}.`;
+}
+
 
 export async function openVaultModal() {
   if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to open the Vault'); return; }
+  // Unlock as often as wanted without re-fetching: reuse this session's
+  // metadata for the same account (server fetches stay throttled for
+  // brute-force protection). Creation/deletion/reset clear the cache below.
+  const me = state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
   let meta = null;
-  try {
-    const response = await apiFetch('/api/vault-meta');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    meta = await response.json();
-  } catch (error) {
-    showToast('Cannot reach the Notely server');
-    return;
+  const cached = readCachedVaultMetas(me);
+  if (cached) {
+    meta = { exists: cached.length > 0, vaults: cached };
+  } else {
+    try {
+      const response = await apiFetch('/api/vault-meta');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      meta = await response.json();
+    } catch (error) {
+      showToast('Cannot reach the Notely server');
+      return;
+    }
+    writeCachedVaultMetas(me, meta && Array.isArray(meta.vaults) ? meta.vaults : []);
   }
-  state.vault.meta = meta;
-  setVaultModal(meta && meta.exists ? 'unlock' : 'setup');
+  // Multi-vault shape: {exists, vaults: [{id, name, ...}]}. Keep the rows for
+  // unlock-all plus the current vault's row where the old code expects it.
+  // The name list is stored too so the sidebar shows every vault locked or not.
+  const rows = meta && Array.isArray(meta.vaults) ? meta.vaults : [];
+  state.vaultMetas = rows;
+  if (rows.length) {
+    state.vaultList = rows.map((row) => ({ id: row.id == null ? 1 : row.id, name: row.name || `Vault ${row.id}` }));
+  }
+  if (rows.length) {
+    state.vaultList = rows.map((row) => ({ id: row.id == null ? 1 : row.id, name: row.name || `Vault ${row.id}` }));
+  }
+  if (rows.length) {
+    const current = rows.find((row) => String(row.id) === String(state.vaultId || 1)) || rows[0];
+    state.vault.meta = current;
+    if (!state.vaultId) state.vaultId = current.id;
+  } else {
+    state.vault.meta = meta;
+  }
+  setVaultModal(meta && meta.exists && rows.length ? 'unlock' : 'setup');
   document.getElementById('vault-overlay').hidden = false;
+  try { renderCustomSections(); } catch (error) {}
   const focusInput = document.querySelector(state.vaultModalMode === 'setup' ? '#vault-new-password' : '#vault-password');
   if (focusInput) focusInput.focus();
 }
@@ -233,18 +364,28 @@ export async function resetVault() {
   state.vault.blobs = [];
   state.vault.folders = [];
   state.vault.meta = null;
+  state.vaultMetas = [];
+  state.vaultList = [];
+  state.vaultKeys = {};
+  state.vaultBlobMap = {};
+  state.vaultFolderMap = {};
+  state.vaultId = 1;
   state.currentVaultId = null;
   persistNotes();
   closeVaultModal();
   goAllNotes();
   renderNoteList();
+  clearCachedVaultMetas();
   showToast('Vault reset');
 }
 
 export async function unlockVaultFromModal() {
   const password = String(document.getElementById('vault-password').value || '');
   const meta = state.vault.meta;
-  if (!meta || !meta.exists) { setVaultModal('setup'); return; }
+  // Usable meta is either the envelope ({exists:true}) or a vault row
+  // ({verifier, saltAuth, ...}) — rows carry no `exists` flag.
+  const usable = meta && (meta.exists || (meta.verifier && meta.saltAuth));
+  if (!usable) { setVaultModal('setup'); return; }
   if (state.vault.unlocking) return;
   state.vault.unlocking = true;
   try {
@@ -255,23 +396,199 @@ export async function unlockVaultFromModal() {
 }
 async function unlockVaultInner(password, meta) {
   try {
-    const verifier = await argon2id32(password, e2eeB64ToBytes(meta.saltAuth));
-    if (!timingSafeEqualStr(e2eeBytesToB64(verifier), meta.verifier)) {
-      vaultFail('Incorrect vault password.');
+    // Unwrap from the FULL vault list, never the single current row:
+    // unlocking must not clobber the other vaults out of the sidebar.
+    const rows = Array.isArray(state.vaultMetas) && state.vaultMetas.length
+      ? state.vaultMetas
+      : (meta && Array.isArray(meta.vaults) && meta.vaults.length ? meta.vaults : [meta]);
+    const first = rows[0];
+    const lock = vaultFailState();
+    if (lock.lockedUntil > Date.now()) {
+      vaultFail(vaultLockMessage(lock.lockedUntil - Date.now()));
       return;
     }
-    const kekRaw = await argon2id32(password, e2eeB64ToBytes(meta.saltEnc));
+    const verifier = await argon2id32(password, e2eeB64ToBytes(first.saltAuth));
+    if (!timingSafeEqualStr(e2eeBytesToB64(verifier), first.verifier)) {
+      const rec = vaultFailRecord();
+      vaultFail(rec.locked ? vaultLockMessage(rec.retryMs)
+        : `Incorrect vault password (${rec.triesLeft} ${rec.triesLeft === 1 ? 'try' : 'tries'} left).`);
+      return;
+    }
+    // One shared password: a single KEK unwraps every vault's DEK.
+    const kekRaw = await argon2id32(password, e2eeB64ToBytes(first.saltEnc));
     const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-    const dekRaw = await window.crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: e2eeB64ToBytes(meta.encDek.iv) }, kek, e2eeB64ToBytes(meta.encDek.data));
-    state.vault.dek = await window.crypto.subtle.importKey('raw', dekRaw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+    state.vaultKeys = {};
+    state.vaultList = [];
+    for (const row of rows) {
+      try {
+        const dekRaw = await window.crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: e2eeB64ToBytes(row.encDek.iv) }, kek, e2eeB64ToBytes(row.encDek.data));
+        const id = row.id == null ? 1 : row.id;
+        state.vaultKeys[id] = await window.crypto.subtle.importKey('raw', dekRaw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+        state.vaultList.push({ id, name: row.name || `Vault ${id}` });
+      } catch (error) { /* skip unreadable vault rows */ }
+    }
+    if (!state.vaultList.length) {
+      const rec = vaultFailRecord();
+      vaultFail(rec.locked ? vaultLockMessage(rec.retryMs) : 'Incorrect vault password.');
+      return;
+    }
+    if (!state.vaultList.some((entry) => String(entry.id) === String(state.vaultId || 1))) {
+      state.vaultId = state.vaultList[0].id;
+    }
+    loadVaultWorkingSet();
     state.vault.notes = await decryptAllVaultBlobs();
     state.vault.unlocked = true;
+    vaultFailClear();
     closeVaultModal();
     enterVaultView();
+    try { renderCustomSections(); } catch (error) {}
     showToast('Vault unlocked');
   } catch (error) {
-    vaultFail('Incorrect vault password.');
+    const rec = vaultFailRecord();
+    vaultFail(rec.locked ? vaultLockMessage(rec.retryMs) : 'Incorrect vault password.');
+  }
+}
+
+// Point the working set (dek/notes/blobs/folders) at one vault. Blob and
+// folder maps hold every vault; the working arrays reference the current
+// vault's entries so other vaults are never disturbed.
+export function loadVaultWorkingSet() {
+  const current = state.vaultId || 1;
+  if (!state.vaultBlobMap || typeof state.vaultBlobMap !== 'object') state.vaultBlobMap = {};
+  if (!state.vaultFolderMap || typeof state.vaultFolderMap !== 'object') state.vaultFolderMap = {};
+  if (!Array.isArray(state.vaultBlobMap[current])) state.vaultBlobMap[current] = [];
+  if (!Array.isArray(state.vaultFolderMap[current])) state.vaultFolderMap[current] = [];
+  state.vault.blobs = state.vaultBlobMap[current];
+  state.vault.folders = state.vaultFolderMap[current];
+  state.vault.dek = (state.vaultKeys && state.vaultKeys[current]) || null;
+  const metas = Array.isArray(state.vaultMetas) ? state.vaultMetas : [];
+  state.vault.meta = metas.find((row) => String(row.id) === String(current)) || metas[0] || null;
+}
+
+// Switch to another unlocked vault, flushing the current one's edits first.
+// Serialized: rapid back-and-forth clicks queue behind the in-flight switch
+// instead of interleaving mid-await (which once encrypted one vault's notes
+// with another vault's key into the wrong slot, destroying both).
+export async function switchVault(id) {
+  const target = id == null ? 1 : id;
+  if (!state.vault.unlocked) { openVaultModal(); return; }
+  if (!state.vaultList.some((entry) => String(entry.id) === String(target))) return;
+  if (state.vaultSwitching) {
+    try { await state.vaultSwitching; } catch (error) {}
+    if (String(state.vaultId || 1) === String(target)) return;
+    return switchVault(target);
+  }
+  state.vaultSwitching = (async () => {
+    try { saveVaultNote(); } catch (error) {}
+    try { await currentVaultBlobs(); } catch (error) {}
+    state.vaultId = target;
+    state.currentVaultId = null;
+    state.vaultFolder = null;
+    loadVaultWorkingSet();
+    try { state.vault.notes = await decryptAllVaultBlobs(); } catch (error) { state.vault.notes = []; }
+    persistNotes();
+    renderNoteList();
+    try { renderCustomSections(); } catch (error) {}
+    try { renderStripItems(); } catch (error) {}
+  })();
+  try { await state.vaultSwitching; } finally { state.vaultSwitching = null; }
+}
+
+// Create an additional vault (max 3) under the shared password: prove the
+// current password, wrap a fresh DEK with its KEK, and store only the wrap
+// (salts/verifier are copied server-side from vault 1).
+export async function createAdditionalVault() {
+  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in first'); return; }
+  const existing = Array.isArray(state.vaultList) ? state.vaultList : [];
+  if (existing.length >= 3) { showToast('Maximum of 3 vaults'); return; }
+  // Salts come from the cached rows when present (the modal just fetched
+  // them) — a fresh GET only when the cache is empty.
+  let rows = Array.isArray(state.vaultMetas) && state.vaultMetas.length ? state.vaultMetas : null;
+  if (!rows) {
+    let meta = null;
+    try {
+      const response = await apiFetch('/api/vault-meta');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      meta = await response.json();
+    } catch (error) {
+      showToast('Cannot reach the Notely server');
+      return;
+    }
+    rows = meta && Array.isArray(meta.vaults) ? meta.vaults : [];
+    state.vaultMetas = rows;
+  }
+  if (!rows.length) { openVaultModal(); return; }
+  const preLock = vaultFailState();
+  if (preLock.lockedUntil > Date.now()) { showToast(vaultLockMessage(preLock.lockedUntil - Date.now())); return; }
+  const password = await askInput({ eyebrow: 'Vault', title: `New vault (${existing.length + 1} of 3)`, desc: 'Enter your vault password — the new vault shares it.', label: 'Vault password', password: true, placeholder: '', okText: 'Create vault' });
+  if (password == null || !String(password)) return;
+  try {
+    const first = rows[0];
+    const verifier = await argon2id32(String(password), e2eeB64ToBytes(first.saltAuth));
+    const kekRaw = await argon2id32(String(password), e2eeB64ToBytes(first.saltEnc));
+    const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
+    const dekRaw = e2eeRandomBytes(32);
+    const iv = e2eeRandomBytes(12);
+    const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, dekRaw);
+    const response = await apiFetch('/api/vault-meta', {
+      method: 'POST',
+      body: JSON.stringify({
+        currentVaultAuth: e2eeBytesToB64(verifier),
+        encDek: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) },
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 409) { showToast('Maximum of 3 vaults'); return; }
+    if (response.status === 401) {
+      const rec = vaultFailRecord();
+      showToast(rec.locked ? vaultLockMessage(rec.retryMs) : 'Wrong vault password.');
+      return;
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    vaultFailClear();
+    const newId = data && data.id != null ? data.id : (existing.length + 1);
+    state.vaultKeys[newId] = await window.crypto.subtle.importKey('raw', dekRaw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+    try {
+      await openVaultModalRefresh(newId, {
+        id: newId,
+        name: `Vault ${newId}`,
+        saltAuth: first.saltAuth,
+        verifier: first.verifier,
+        saltEnc: first.saltEnc,
+        encDek: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) },
+      });
+    } catch (error) {}
+    clearCachedVaultMetas();
+    showToast('Vault created — syncing…');
+    persistNotes();
+    try { const syncMod = await import('../data/sync.js'); syncMod.syncNow().catch(() => {}); } catch (error) {}
+  } catch (error) {
+    showToast('Could not create the vault. Wrong password?');
+  }
+}
+
+// Refresh the vault list after creating one, then switch to it.
+async function openVaultModalRefresh(newId, fullRow) {
+  // No fetch: the id comes from the create response; salts/verifier match
+  // vault 1 and the wrap was just created locally. A salts-less placeholder
+  // row would silently fail to unwrap at the next unlock, hiding the vault.
+  try {
+    const entry = fullRow && fullRow.saltAuth ? fullRow : { id: newId, name: `Vault ${newId}` };
+    const list = Array.isArray(state.vaultMetas) ? state.vaultMetas : [];
+    if (!list.some((row) => String(row.id) === String(newId))) list.push(entry);
+    state.vaultMetas = list;
+    state.vaultList = list.map((row) => ({ id: row.id == null ? 1 : row.id, name: row.name || `Vault ${row.id}` }));
+    try {
+      const me = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
+      writeCachedVaultMetas(me, list);
+    } catch (error) {}
+  } catch (error) {}
+  if (state.vault.unlocked) {
+    await switchVault(newId);
+  } else {
+    state.vaultId = newId;
+    openVaultModal();
   }
 }
 
@@ -281,6 +598,9 @@ export async function setupVaultFromModal() {
   if (password !== confirm) { vaultFail('Passwords do not match.'); return; }
   const missing = passwordPolicyCheck(password);
   if (missing.length) { vaultFail(`Vault password needs ${missing.join(', ')}.`); return; }
+  // Note: no pre-POST existence check here — the POST itself is the check
+  // (saves a fetch every setup). A 401 below means a vault appeared since
+  // the modal opened; flip to unlock with the typed password carried over.
   try {
     const saltAuthBytes = e2eeRandomBytes(16);
     const saltEncBytes = e2eeRandomBytes(16);
@@ -299,12 +619,44 @@ export async function setupVaultFromModal() {
         encDek: { iv: e2eeBytesToB64(iv), data: e2eeBytesToB64(ct) },
       }),
     });
+    if (response.status === 401) {
+      try {
+        const refresh = await apiFetch('/api/vault-meta');
+        if (refresh.ok) {
+          const fresh = await refresh.json();
+          const rows = fresh && Array.isArray(fresh.vaults) ? fresh.vaults : [];
+          if (fresh && fresh.exists && rows.length) {
+            state.vaultMetas = rows;
+            const current = rows.find((row) => String(row.id) === String(state.vaultId || 1)) || rows[0];
+            state.vault.meta = current;
+            if (!state.vaultId) state.vaultId = current.id;
+            try {
+              const typed = document.getElementById('vault-new-password');
+              const unlockInput = document.getElementById('vault-password');
+              if (typed && unlockInput) unlockInput.value = typed.value || '';
+            } catch (error) {}
+            setVaultModal('unlock');
+            unlockVaultFromModal();
+            return;
+          }
+        }
+      } catch (error) { /* fall through to the generic failure below */ }
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    state.vault.dek = await window.crypto.subtle.importKey('raw', dekRaw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+    state.vaultId = 1;
+    state.vaultList = [{ id: 1, name: 'Vault' }];
+    state.vaultKeys = { 1: await window.crypto.subtle.importKey('raw', dekRaw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']) };
+    state.vault.dek = state.vaultKeys[1];
+    state.vaultBlobMap = { 1: [] };
+    state.vaultFolderMap = { 1: [] };
+    state.vault.blobs = state.vaultBlobMap[1];
+    state.vault.folders = state.vaultFolderMap[1];
     state.vault.notes = [];
     state.vault.unlocked = true;
     closeVaultModal();
     enterVaultView();
+    try { renderCustomSections(); } catch (error) {}
+    clearCachedVaultMetas();
     showToast('Vault ready');
   } catch (error) {
     vaultFail('Could not set up the vault. Try again.');
@@ -321,10 +673,12 @@ export async function lockVault() {
   state.vault.unlocked = false;
   state.vault.dek = null;
   state.vault.notes = [];
+  state.vaultKeys = {};
   state.vault.meta = null;
   state.currentVaultId = null;
   goAllNotes();
   renderNoteList();
+  try { renderCustomSections(); } catch (error) {}
   showToast('Vault locked');
 }
 
@@ -343,6 +697,17 @@ export function enterVaultView() {
 
 // Render the Vault view: lock notice when locked, otherwise one Vault folder
 // with the decrypted notes. Counts/footer mirror the normal list shape.
+// Toggle the sidebar vault-folder filter: narrows the Vault view to one
+// folder subtree (clears the selection when toggled off).
+export function toggleVaultFolderFilter(folder) {
+  const f = String(folder || '');
+  state.vaultFolder = (f && state.vaultFolder !== f && state.vault.folders.includes(f)) ? f : null;
+  renderVaultList();
+  try { renderStripItems(); } catch (error) {}
+  try { updateBreadcrumbs(); } catch (error) {}
+  try { renderCustomSections(); } catch (error) {}
+}
+
 export function renderVaultList() {
   updateBinUI(); // Vault never shows Empty Bin; this also clears stale visibility.
   updateVaultUI();
@@ -381,7 +746,11 @@ export function renderVaultList() {
     listEmpty.hidden = true;
     noteList.hidden = false;
     const knownVaultFolders = new Set(state.vault.folders);
-    const rootNotes = state.vault.notes.filter((note) => !note.folder || !knownVaultFolders.has(note.folder));
+    // Sidebar folder filter: narrow to one subtree (a deleted folder clears it).
+    if (state.vaultFolder && !state.vault.folders.includes(state.vaultFolder)) state.vaultFolder = null;
+    const vaultFilter = state.vaultFolder || null;
+    const inFilter = (folder) => !vaultFilter || folder === vaultFilter || isFolderOrSub(folder, vaultFilter);
+    const rootNotes = state.vault.notes.filter((note) => (!note.folder || !knownVaultFolders.has(note.folder)) && !vaultFilter);
     const renderVaultNoteRow = (note) => `
         <button class="tree-file${note.id === state.currentVaultId ? ' selected' : ''}" data-vault-id="${escapeHtml(note.id)}" title="${escapeHtml(note.title || 'Untitled note')}" draggable="true">
           <span class="tree-file-icon tree-file-icon-md">${icon('file')}</span>
@@ -400,7 +769,7 @@ export function renderVaultList() {
         <button type="button" class="strip-btn" data-vault-folder-add title="New vault folder" aria-label="New vault folder">${icon('folder-plus')}</button>
       </div>
       <div class="tree-children">
-        ${state.vault.folders.map((folder) => {
+        ${state.vault.folders.filter(inFilter).map((folder) => {
           const files = state.vault.notes.filter((note) => note.folder === folder);
           const isCollapsed = state.collapsedFolders.has(folder);
           return `

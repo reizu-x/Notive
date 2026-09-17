@@ -1,5 +1,6 @@
 // js/data/sync.js — ground-up sync engine (Phase 2.1: storage choice + warn state).
 import { e2ee, e2eeEncryptNotes, e2eeDecryptPayload } from './crypto.js';
+import { allVaultBlobs, allVaultFolders } from './vault.js';
 import { apiFetch } from './api.js';
 import { state } from '../domain/state.js';
 import { escapeHtml } from '../core/strings.js';
@@ -113,8 +114,8 @@ export async function syncNow() {
     const envelope = {
       v: 2,
       notes: state.notes,
-      vault: await currentVaultOrEmpty(),
-      vaultFolders: [...(state.vault && state.vault.folders ? state.vault.folders : [])],
+      vault: await allVaultBlobs(),
+      vaultFolders: allVaultFolders(),
       ui: uiSnapshot(),
     };
     const put = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload: await e2eeEncryptNotes(envelope, syncAadContext()), baseVersion: base }) });
@@ -145,11 +146,6 @@ export async function syncNow() {
     return false;
   } finally {
     syncBusy = false;
-  }
-
-  async function currentVaultOrEmpty() {
-    try { return state.vault && state.vault.blobs ? state.vault.blobs.slice(0) : []; }
-    catch (error) { return []; }
   }
   function uiSnapshot() {
     try {

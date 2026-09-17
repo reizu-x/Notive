@@ -8,7 +8,7 @@ import { escapeHtml } from '../core/strings.js';
 import { apiFetch } from '../data/api.js';
 import { collabDecrypt, collabDecryptGroupMeta, collabDecryptMeta, collabEncrypt, collabEncryptGroupMeta, collabEncryptMeta, collabKeyFor, loadYjs, sharedGroupOwnerOf, sharedNoteRow, sharingRecipientPublicKey, signWrap, wrapRawKeyFor } from '../data/collab-crypto.js';
 import { e2eeRandomBytes } from '../data/crypto.js';
-import { COLLECTION_COLORS, SECTION_ICONS, sharedCollapsed, sharedGroupFolders, sharedGroupKeys, sharedGroupTags, sharedNoteMeta } from '../domain/constants.js';
+import { COLLECTION_COLORS, SECTION_ICONS, sharedCollapsed, sharedGroupFolders, sharedGroupKeys, sharedGroupTags, sharedGroupsCache, sharedNoteMeta } from '../domain/constants.js';
 import { state } from '../domain/state.js';
 import { showToast } from './modal.js';
 import { setDeleteDialog } from './notes.js';
@@ -725,6 +725,59 @@ export function isSectionEmpty(kind, id) {
   return true;
 }
 
+// Vault entries for the Vault view (see renderCustomSections): one row per
+// known vault, locked or not (names only — contents stay encrypted until
+// unlock). Clicking a locked row opens the unlock modal; unlocked switches.
+function renderVaultFolderRows(container) {
+  const unlocked = !!(state.vault && state.vault.unlocked);
+  const known = Array.isArray(state.vaultList) && state.vaultList.length
+    ? state.vaultList
+    : [{ id: state.vaultId || 1, name: 'Vault' }];
+  container.innerHTML = `<div><div class="collection-list">`
+    + known.map((entry) => {
+      const active = unlocked && String(state.vaultId || 1) === String(entry.id);
+      return `
+        <a href="#" class="person-row${active ? ' active' : ''}" data-vault-row="${escapeHtml(String(entry.id))}" title="${escapeHtml(entry.name || 'Vault')}">
+          <span class="collection-dot mint"></span>
+          <span class="collection-label">${escapeHtml(entry.name || 'Vault')}</span>
+        </a>`;
+    }).join('')
+    + `</div></div>`;
+}
+
+// Connected-person rows for the Shared view (see renderCustomSections).
+// Local derivation (no collab-crypto import: that module imports this one).
+function sharedPersonNames() {
+  const me = state.cachedProfile && state.cachedProfile.username
+    ? String(state.cachedProfile.username).toLowerCase() : '';
+  const out = [];
+  const seen = new Set();
+  for (const grp of sharedGroupsCache) {
+    const candidates = [grp.owner, ...(Array.isArray(grp.members) ? grp.members : [])];
+    for (const name of candidates) {
+      const clean = String(name || '').trim();
+      if (!clean || clean.toLowerCase() === me || seen.has(clean.toLowerCase())) continue;
+      seen.add(clean.toLowerCase());
+      out.push(clean);
+    }
+  }
+  return out;
+}
+
+function renderSharedPersonRows(container) {
+  const persons = sharedPersonNames();
+  container.innerHTML = persons.length
+    ? `<div class="sidebar-section" data-shared-persons>`
+      + `<div class="collection-list">`
+      + persons.map((name) => `
+        <a href="#" class="person-row${state.sharedPerson === name ? ' active' : ''}" data-shared-person="${escapeHtml(name)}" title="${escapeHtml(name)}">
+          <span class="collection-dot violet"></span>
+          <span class="collection-label">${escapeHtml(name)}</span>
+        </a>`).join('')
+      + `</div></div>`
+    : `<p class="modal-desc shared-pad">No connections yet.</p>`;
+}
+
 // Paint section headers (all sections share the same custom implementation).
 export function updateSectionHeaders() {
   document.querySelectorAll('#custom-sections .sidebar-section').forEach((wrap) => {
@@ -749,6 +802,31 @@ export function customFolderColor(section, name) {
 export function renderCustomSections() {
   const container = document.getElementById('custom-sections');
   if (!container) return;
+  // The add button reads "+ Add Vault" inside the Vault view, "+ Add section"
+  // everywhere else (it creates a vault there — max 3, shared password).
+  try {
+    const addBtn = document.getElementById('new-section');
+    if (addBtn) {
+      const inVault = state.activeView === 'vault';
+      addBtn.innerHTML = inVault ? '<span>+</span> Add Vault' : '<span>+</span> Add section';
+      addBtn.title = inVault ? 'Add vault (max 3)' : 'Add section';
+      addBtn.setAttribute('aria-label', inVault ? 'Add vault' : 'Add section');
+    }
+  } catch (error) {}
+  // Shared view: Main Sub Sections mirrors the connected accounts instead
+  // of your own sections (click a person to filter their sections).
+  if (state.activeView === 'shared') {
+    renderSharedPersonRows(container);
+    updateSectionHeaders();
+    return;
+  }
+  // Vault view: Main Sub Sections mirrors the vault list (names only when
+  // locked — contents stay encrypted until unlock).
+  if (state.activeView === 'vault') {
+    renderVaultFolderRows(container);
+    updateSectionHeaders();
+    return;
+  }
   container.innerHTML = state.customSections.map((section) => `
     <div class="sidebar-section" data-custom-section="${escapeHtml(section.id)}" data-section="custom">
       <div class="section-label">
@@ -807,7 +885,7 @@ export function selectCustomFolder(sectionId, folder) {
     persistCustomSections();
     renderCustomSections();
   }
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   state.activeView = 'notes';
   state.activeFilter = 'all';
@@ -825,7 +903,7 @@ export function selectCustomFolder(sectionId, folder) {
 export function selectCustomSection(sectionId) {
   const section = state.customSections.find((entry) => entry.id === sectionId);
   if (!section) return;
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   state.activeView = 'notes';
   state.activeFilter = 'all';
@@ -964,6 +1042,7 @@ export function addVaultFolder() {
     state.vault.folders.push(checked.name);
     persistNotes();
     renderNoteList();
+    renderCustomSections();
     showToast('Vault folder added');
   });
 }
@@ -1500,6 +1579,32 @@ export function bindCustomSectionsEvents() {
   const container = document.getElementById('custom-sections');
   if (container) {
     container.addEventListener('click', (event) => {
+      // Shared-view person rows: filter the Shared view to that account.
+      const person = event.target.closest('[data-shared-person]');
+      if (person && state.activeView === 'shared') {
+        event.preventDefault();
+        try {
+          import('../data/collab-crypto.js').then((m) => {
+            try { m.toggleSharedPersonFilter(person.dataset.sharedPerson); } catch (error) {}
+          });
+        } catch (error) {}
+        return;
+      }
+      // Vault-view rows: locked vault opens the unlock modal, unlocked
+      // switches between vaults.
+      const vaultRow = event.target.closest('[data-vault-row]');
+      if (vaultRow && state.activeView === 'vault') {
+        event.preventDefault();
+        try {
+          import('./vault.js').then((m) => {
+            try {
+              if (state.vault.unlocked) m.switchVault(vaultRow.dataset.vaultRow);
+              else if (typeof m.openVaultModal === 'function') m.openVaultModal();
+            } catch (error) {}
+          });
+        } catch (error) {}
+        return;
+      }
       if (event.target.closest('.collection-rename-input') || event.target.closest('.section-rename-input')) return;
       const addBtn = event.target.closest('[data-custom-add]');
       if (addBtn) {
@@ -1615,14 +1720,14 @@ export function deleteCustomFolder(sectionId, folder) {
   if (state.activeCustom && state.activeCustom.section === sectionId && state.activeCustom.folder && isFolderOrSub(state.activeCustom.folder, folder)) {
     state.activeCustom = null;
     state.activeFilter = 'all';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
     document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
     updateListHeading();
   }
   const current = state.currentId ? state.notes.find((item) => item.id === state.currentId) : null;
   if (!current || current.deleted) {
     state.activeView = 'notes';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
     const live = state.notes.filter((item) => !item.deleted && !item.archived);
     if (live.length) selectNote(live[0].id);
     else clearEditor();
@@ -1769,7 +1874,7 @@ export function addCustomFolder(sectionId) {
       state.activeView = 'notes';
       state.activeCustom = null;
       state.activeFilter = 'all';
-      document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+      document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
       document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
       clearSearch();
       updateListHeading();
@@ -1785,7 +1890,7 @@ export function addCustomFolder(sectionId) {
   state.activeView = 'notes';
   state.activeCustom = null;
   state.activeFilter = 'all';
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   clearSearch();
   updateListHeading();
@@ -1823,14 +1928,14 @@ export function deleteCustomSection(id) {
   if (state.activeCustom && state.activeCustom.section === id) {
     state.activeCustom = null;
     state.activeFilter = 'all';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
     document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
     updateListHeading();
   }
   const current = state.currentId ? state.notes.find((item) => item.id === state.currentId) : null;
   if (!current || current.deleted) {
     state.activeView = 'notes';
-    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+    document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
     const live = state.notes.filter((item) => !item.deleted && !item.archived);
     if (live.length) selectNote(live[0].id);
     else clearEditor();
@@ -1948,13 +2053,23 @@ export function startSectionRename(target, anchorEl) {
 
 export function addCustomSection() {
   if (!e2ee.masterKey) { showToast('Log in to manage sections'); return; }
+  // Inside the Vault, "+ Add section" creates another vault (max 3) under
+  // the shared password — and stays in context.
+  if (state.activeView === 'vault') {
+    try {
+      import('./vault.js').then((m) => {
+        try { m.createAdditionalVault(); } catch (error) {}
+      });
+    } catch (error) {}
+    return;
+  }
   const section = { id: uniqueSectionId(), name: uniqueSectionName(), folders: [], icon: SECTION_ICONS[0] };
   state.customSections.push(section);
   persistCustomSections();
   state.activeView = 'notes';
   state.activeFilter = 'all';
   state.activeCustom = null;
-  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes' && !state.activeCustom));
   document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
   clearSearch();
   updateListHeading();

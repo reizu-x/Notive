@@ -12,6 +12,11 @@ export const state = {
   collab: {},
   vault: {},
   sharing: {},
+  vaultId: 1, // currently selected vault (1-3)
+  vaultList: [], // [{id, name}] from the server — shown in the sidebar
+  vaultKeys: {}, // {vaultId: CryptoKey} — unwrapped on unlock (shared password)
+  vaultBlobMap: {}, // {vaultId: [ciphertext blobs]} — all vaults' stored notes
+  vaultFolderMap: {}, // {vaultId: [folder paths]} — all vaults' folder lists
   cachedProfile: null,
   customSections: [],
   deletedCustomSections: [],
@@ -43,7 +48,10 @@ export const state = {
   activeCustom: null, // { section: id, folder: path | null } | null — section/folder filter,
   lastMarkedSectionId: (() => { try { return localStorage.getItem('notely-last-section') || null; } catch (error) { return null; } })(), // last section the user marked — survives view switches and reloads so the strip keeps reflecting it,
   sharedFolder: null, // { groupId, folder } | null — folder filter inside the Shared view (folder '' = section root),
+  sharedPerson: null, // username — person filter inside the Shared view (sidebar person rows),
+  vaultFolder: null, // folder path — folder filter inside the Vault view (sidebar vault rows),
   syncInFlight: null, // promise while a PUT is running — serializes syncs so no baseVersion race
+  vaultSwitching: null, // promise while a vault switch runs — serializes rapid switches
   sectionMenuTarget: null, // section id,
   sectionIconTarget: null,
   folderMenuTarget: null, // { ns: 'custom', path, section },

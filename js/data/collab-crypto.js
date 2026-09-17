@@ -13,7 +13,7 @@ import { renderMarkdown } from '../core/markdown.js';
 import { folderDepth } from '../core/paths.js';
 import { cleanCoverSrc } from '../core/schema.js';
 import { escapeHtml } from '../core/strings.js';
-import { COLLAB_PRESENCE_TTL_MS, NOTE_TEMPLATES, sharedBodyCache, sharedGroupOwners, sharedNoteMeta } from '../domain/constants.js';
+import { COLLAB_PRESENCE_TTL_MS, NOTE_TEMPLATES, sharedBodyCache, sharedGroupOwners, sharedGroupsCache, sharedNoteMeta } from '../domain/constants.js';
 import { renderRecipeHero } from '../ui/editor.js';
 import { askInput, showToast } from '../ui/modal.js';
 import { collabRotateSectionKey } from '../ui/sections.js';
@@ -23,7 +23,7 @@ import { sanitizeIngredients, sanitizeSteps } from '../core/schema.js';
 import { sharedGroupFolders, sharedGroupKeys, sharedGroupTags } from '../domain/constants.js';
 import { renderPreview, renderRecipeBody } from '../ui/editor.js';
 import { updateBinUI } from '../ui/notes.js';
-import { collabCreateSection, sharedFolderTree, updateFoldToggle } from '../ui/sections.js';
+import { collabCreateSection, renderCustomSections, sharedFolderTree, updateFoldToggle } from '../ui/sections.js';
 import { seedFromTemplate } from '../ui/shell.js';
 import { renderStripItems, renderTabs, trackTab, updateBreadcrumbs } from '../ui/tabs.js';
 import { renderSharedTags } from '../ui/tags.js';
@@ -873,6 +873,46 @@ export async function moveSharedNote(noteId, groupId) {
   } catch (error) { showToast('Could not move the note'); }
 }
 
+// True when a username owns a group or is an accepted member of it.
+export function groupInvolvesPerson(group, person) {
+  const want = String(person || '').trim().toLowerCase();
+  if (!want) return true;
+  if (String((group && group.owner) || '').toLowerCase() === want) return true;
+  const members = group && Array.isArray(group.members) ? group.members : [];
+  return members.some((m) => String(m || '').toLowerCase() === want);
+}
+
+// Connected accounts for the sidebar person list: every owner/member across
+// cached groups except yourself, in first-seen order.
+export function sharedPersonList() {
+  const me = state.cachedProfile && state.cachedProfile.username
+    ? String(state.cachedProfile.username).toLowerCase() : '';
+  const out = [];
+  const seen = new Set();
+  for (const grp of sharedGroupsCache) {
+    for (const name of [grp.owner, ...(Array.isArray(grp.members) ? grp.members : [])]) {
+      const clean = String(name || '').trim();
+      if (!clean || clean.toLowerCase() === me || seen.has(clean.toLowerCase())) continue;
+      seen.add(clean.toLowerCase());
+      out.push(clean);
+    }
+  }
+  return out;
+}
+
+// Toggle the sidebar person filter: narrows the Shared view to one account's
+// sections (clears the folder filter so whole sections show).
+export function toggleSharedPersonFilter(person) {
+  const name = String(person || '').trim();
+  state.sharedPerson = (name && state.sharedPerson !== name) ? name : null;
+  if (state.sharedPerson) state.sharedFolder = null;
+  renderSharedView();
+  try { renderStripItems(); } catch (error) {}
+  try { updateBreadcrumbs(); } catch (error) {}
+  try { updateFoldToggle(); } catch (error) {}
+  try { renderCustomSections(); } catch (error) {}
+}
+
 export async function renderSharedView() {
   updateBinUI();
   updateVaultUI();
@@ -903,6 +943,17 @@ export async function renderSharedView() {
   const data = await res.json();
   const groups = Array.isArray(data.groups) ? data.groups : [];
   const invites = Array.isArray(data.invites) ? data.invites : [];
+  // Snapshot for the sidebar person list (Main Sub Sections mirrors the
+  // connected accounts while Shared is marked).
+  sharedGroupsCache.length = 0;
+  for (const grp of groups) {
+    sharedGroupsCache.push({
+      id: grp.id,
+      owner: grp.owner,
+      name: grp.name,
+      members: Array.isArray(grp.members) ? grp.members.map((m) => String(m || '')) : [],
+    });
+  }
   setSharedNavCount(groups.length + invites.length);
   const me = state.cachedProfile && state.cachedProfile.username;
   const query = state.searchQuery.trim();
@@ -935,8 +986,15 @@ export async function renderSharedView() {
   const groupBlocks = [];
   let totalMatches = 0;
   for (const g of groups) {
+    if (state.sharedPerson && !groupInvolvesPerson(g, state.sharedPerson)) continue;
     const isOwner = g.owner === me;
-    const displayName = isOwner ? (g.name || 'Shared') : g.owner;
+    // Sections are named after the connected person: the other member(s),
+    // whether you own the section or they do. Falls back to the group name
+    // (owned) or owner name when alone.
+    const others = (Array.isArray(g.members) ? g.members : [])
+      .map((m) => String(m || ''))
+      .filter((m) => m && m.toLowerCase() !== String(me || '').toLowerCase());
+    const displayName = others.length ? others.join(', ') : (isOwner ? (g.name || 'Shared') : g.owner);
     let key = null;
     try { key = (await collabGroupKey(g.id)).key; sharedGroupKeys.set(g.id, key); }
     catch (error) { /* cannot decrypt (rare) */ }
@@ -996,6 +1054,7 @@ export async function renderSharedView() {
   }
   let html = invitesHtml + groupBlocks.join('');
   if (searching && totalMatches === 0) html = `<p class="modal-desc shared-search-empty">No shared notes match “${escapeHtml(query)}”.</p>`;
+  if (!searching && state.sharedPerson && !groupBlocks.length) html = invitesHtml + `<p class="modal-desc shared-pad">No shared notes with ${escapeHtml(state.sharedPerson)}.</p>`;
   box.innerHTML = html;
   updateFoldToggle();
   try { renderTabs(); } catch (error) {}

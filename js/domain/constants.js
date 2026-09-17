@@ -52,6 +52,9 @@ export const sharedGroupTags = new Map();
 
 export const sharedGroupFolders = new Map();
 
+// Snapshot of fetched groups for the sidebar person list: [{id, owner, name, members}].
+export const sharedGroupsCache = [];
+
 // The Shared view: one section per person, each holding automatically-shared notes.
 export const sharedGroupKeys = new Map();
 

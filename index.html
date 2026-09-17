@@ -46,6 +46,7 @@
         <!-- Scrollable middle: folders scroll; brand/profile, nav and footer stay pinned -->
         <nav class="primary-nav" aria-label="Main navigation">
           <div class="nav-separator" aria-hidden="true"></div>
+          <div class="nav-section-label" aria-hidden="true">Main Section</div>
           <a href="#" class="nav-item active" data-view="notes" title="All Notes">
             <span class="nav-icon" data-icon="inbox"></span><span class="nav-label">All Notes</span><span class="nav-count" id="nav-all-count">12</span>
           </a>
@@ -69,6 +70,7 @@
 
         <div class="sidebar-scroll">
         <!-- Custom sections, rendered by renderCustomSections -->
+        <div class="nav-section-label" aria-hidden="true">Main Sub Sections</div>
         <div id="custom-sections"></div>
         <div class="sidebar-section add-section-wrap">
           <button class="add-section-button" id="new-section" title="Add section"><span>+</span> Add section</button>
@@ -117,7 +119,10 @@
           <div class="filter-row" aria-label="Note filters">
             <button class="filter-chip active" data-filter="all">All <span id="all-count">12</span></button>
             <button class="filter-chip" data-filter="recent">Recent <span id="recent-count"></span></button>
-            <button class="icon-button fold-toggle" id="toggle-folders" aria-label="Collapse all folders" title="Collapse all folders" data-icon="chevron-down"></button>
+            <span class="filter-actions">
+              <button class="icon-button list-back" id="list-back" aria-label="Back" title="Back" data-icon="chevron-right" hidden></button>
+              <button class="icon-button fold-toggle" id="toggle-folders" aria-label="Collapse all folders" title="Collapse all folders" data-icon="chevron-down"></button>
+            </span>
             <button class="icon-button view-refresh" id="refresh-view" aria-label="Refresh" title="Refresh" data-icon="refresh"></button>
           </div>
         </div>
@@ -404,12 +409,12 @@
             <label class="login-field"><span>Username</span><input id="account-username" type="text" readonly autocomplete="username" /></label>
             <label class="login-field"><span>First name</span><input id="account-first" type="text" autocomplete="given-name" maxlength="60" placeholder="First name" /></label>
             <label class="login-field"><span>Last name</span><input id="account-last" type="text" autocomplete="family-name" maxlength="60" placeholder="Last name" /></label>
-            <button class="btn btn-secondary" id="account-save-name-btn" type="button">Save name</button>
+            <button class="btn btn-secondary settings-btn-right" id="account-save-name-btn" type="button">Save name</button>
             <hr />
             <h3 class="settings-pane-title">Recovery email</h3>
             <label class="login-field"><span>Email</span><input id="account-email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" /></label>
             <p class="login-error" id="account-error" hidden></p>
-            <button class="btn btn-secondary" id="account-save-btn" type="button">Save email</button>
+            <button class="btn btn-secondary settings-btn-right" id="account-save-btn" type="button">Save email</button>
             <hr />
             <h3 class="settings-pane-title">Delete account</h3>
             <p class="modal-desc">Permanently deletes your account, notes, vault, keys and sessions. This cannot be undone.</p>
@@ -452,18 +457,21 @@
             <h3 class="settings-pane-title">Notes on this device</h3>
             <p class="modal-desc">Keep a copy of your notes on this desktop, or take them off the cloud entirely.</p>
             <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Notely server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
-            <button class="btn btn-secondary" id="export-all-btn" type="button">Export all notes to this device</button>
-            <button class="btn btn-secondary" id="export-md-btn" type="button">Export as markdown ZIP (.md)</button>
-            <button class="btn btn-secondary" id="import-clipboard-btn" type="button">Import from clipboard (new note)</button>
-            <button class="btn btn-secondary" id="import-notes" type="button">Import notes from this device</button>
-            <input type="file" id="import-json-input" accept=".json" hidden />
-            <button class="btn btn-secondary" id="import-json-btn" type="button">Upload JSON for notes</button>
+            <hr />
+            <h3 class="settings-pane-title">Import/Export</h3>
+            <p class="modal-desc">Back up or restore notes as a single file. Export uses the format below; import detects it from the file. Folders travel with the notes, and imports land in their own section for sorting.</p>
             <div class="storage-picker-row">
-              <span class="setting-row-text"><strong>Save to</strong></span>
-              <button type="button" id="storage-picker" class="storage-btn-group" title="Save location — cloud sync">
-                <button type="button" data-storage="cloud">☁ Cloud</button>
-              </button>
+              <span class="setting-row-text"><strong>Format</strong></span>
+              <select id="exchange-format" title="Export format">
+                <option value="json" selected>JSON</option>
+                <option value="yaml">YAML</option>
+                <option value="md">Markdown</option>
+                <option value="txt">TXT</option>
+              </select>
             </div>
+            <button class="btn btn-secondary" id="exchange-export-btn" type="button">Export notes</button>
+            <button class="btn btn-secondary" id="exchange-import-btn" type="button">Import notes</button>
+            <input type="file" id="exchange-import-input" accept=".md,.markdown,.txt,.text,.json,.yaml,.yml" multiple hidden />
           </div>
           <div class="settings-pane" data-settings-pane="tags" hidden>
             <div class="settings-pane-head">

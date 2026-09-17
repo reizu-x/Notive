@@ -915,9 +915,32 @@ def init_db():
     )
     conn.execute(
         'CREATE TABLE IF NOT EXISTS vault_meta ('
-        'username TEXT PRIMARY KEY, salt_auth BYTEA NOT NULL, verifier BYTEA NOT NULL, '
-        'salt_enc BYTEA NOT NULL, enc_dek BYTEA NOT NULL, created_at INTEGER NOT NULL)'
+        'username TEXT NOT NULL, vault_id INTEGER NOT NULL DEFAULT 1, '
+        'vault_name TEXT NOT NULL DEFAULT \'Vault\', '
+        'salt_auth BYTEA NOT NULL, verifier BYTEA NOT NULL, '
+        'salt_enc BYTEA NOT NULL, enc_dek BYTEA NOT NULL, created_at INTEGER NOT NULL, '
+        'PRIMARY KEY (username, vault_id))'
     )
+    # Multi-vault migration (max 3 per user, shared password): older single-key
+    # tables carry one row per user with no vault_id/vault_name.
+    try:
+        vm_cols = _pg_columns(conn, 'vault_meta')
+        if 'vault_id' not in vm_cols:
+            conn.execute('ALTER TABLE vault_meta ADD COLUMN vault_id INTEGER NOT NULL DEFAULT 1')
+        if 'vault_name' not in vm_cols:
+            conn.execute('ALTER TABLE vault_meta ADD COLUMN vault_name TEXT NOT NULL DEFAULT \'Vault\'')
+        # Widen a legacy single-column primary key to (username, vault_id).
+        pk_cols = [row['column_name'] for row in conn.execute(
+            "SELECT kcu.column_name FROM information_schema.table_constraints tc"
+            " JOIN information_schema.key_column_usage kcu"
+            " ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema"
+            " WHERE tc.table_name = 'vault_meta' AND tc.constraint_type = 'PRIMARY KEY'"
+            " ORDER BY kcu.ordinal_position")]
+        if pk_cols == ['username']:
+            conn.execute('ALTER TABLE vault_meta DROP CONSTRAINT vault_meta_pkey')
+            conn.execute('ALTER TABLE vault_meta ADD PRIMARY KEY (username, vault_id)')
+    except Exception as error:
+        print(f'NOTELY MIGRATION: vault multi-key skipped: {error}', flush=True)
     # E2EE migration: add columns if missing.
     user_cols = _pg_columns(conn, 'users')
     for col, coltype in (('salt_auth', 'BYTEA'), ('salt_enc', 'BYTEA'), ('auth_hash', 'BYTEA'),
@@ -2391,9 +2414,26 @@ def vault_proof_ok(conn, username, data, vault_verifier):
     return False
 
 
+VAULT_MAX_PER_USER = 3
+
+
+def _vault_row_payload(row):
+    return {
+        'id': row['vault_id'],
+        'name': row['vault_name'] or 'Vault',
+        'saltAuth': base64.b64encode(bytes(row['salt_auth'])).decode('ascii'),
+        'verifier': base64.b64encode(bytes(row['verifier'])).decode('ascii'),
+        'saltEnc': base64.b64encode(bytes(row['salt_enc'])).decode('ascii'),
+        'encDek': {
+            'iv': base64.b64encode(bytes(row['enc_dek'])[:12]).decode('ascii'),
+            'data': base64.b64encode(bytes(row['enc_dek'])[12:]).decode('ascii'),
+        },
+    }
+
+
 @app.route('/api/vault-meta', methods=['GET'])
 def api_vault_meta_get():
-    """Return the vault verifier material (salts + wrapped key) for unlocking.
+    """Return every vault's verifier material (salts + wrapped key) for unlocking.
     Verification itself happens client-side, so unlocking costs the server
     nothing and reveals nothing beyond what the session already proves.
     Rate-limited to slow offline brute-force against the vault password."""
@@ -2410,30 +2450,24 @@ def api_vault_meta_get():
         return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
     rate_hit(conn, ip_bucket('vault'))
     rate_hit(conn, 'vault:' + user['username'].lower())
-    row = conn.execute('SELECT salt_auth, verifier, salt_enc, enc_dek FROM vault_meta WHERE username = ?',
-                       (user['username'],)).fetchone()
+    rows = conn.execute('SELECT vault_id, vault_name, salt_auth, verifier, salt_enc, enc_dek'
+                        ' FROM vault_meta WHERE username = ? ORDER BY vault_id',
+                        (user['username'],)).fetchall()
     conn.close()
-    if not row:
-        return jsonify({'exists': False})
-    return jsonify({
-        'exists': True,
-        'saltAuth': base64.b64encode(bytes(row['salt_auth'])).decode('ascii'),
-        'verifier': base64.b64encode(bytes(row['verifier'])).decode('ascii'),
-        'saltEnc': base64.b64encode(bytes(row['salt_enc'])).decode('ascii'),
-        'encDek': {
-            'iv': base64.b64encode(bytes(row['enc_dek'])[:12]).decode('ascii'),
-            'data': base64.b64encode(bytes(row['enc_dek'])[12:]).decode('ascii'),
-        },
-    })
+    if not rows:
+        return jsonify({'exists': False, 'vaults': []})
+    return jsonify({'exists': True, 'vaults': [_vault_row_payload(row) for row in rows]})
 
 
 @app.route('/api/vault-meta', methods=['POST'])
 def api_vault_meta_set():
-    """Create (or re-create after a reset) the vault verifier + wrapped key.
-    Sizes are strictly validated; the password itself never arrives.
-    Overwrite requires proof: currentVaultAuth (old vault verifier) OR
-    currentAccountAuth (login verifier) so a stolen cookie alone cannot
-    destroy/replace the vault. Initial creation needs no proof."""
+    """Create vaults (up to VAULT_MAX_PER_USER sharing one password).
+    First vault: full verifier material, no proof needed (weak-screened).
+    Additional vaults: the client reuses the existing salts and proves the
+    shared password (currentVaultAuth) or the login (currentAccountAuth);
+    only a fresh wrapped DEK is stored — salts/verifier are copied from vault 1
+    so the password stays single. Overwriting vault 1 keeps the old proof rule.
+    Sizes are strictly validated; the password itself never arrives."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
@@ -2443,49 +2477,72 @@ def api_vault_meta_set():
         return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
     data = request.get_json(silent=True) or {}
     try:
-        verifier = b64decode_strict(data.get('verifier'), 32)
-        salt_auth = b64decode_strict(data.get('saltAuth'), 16)
-        salt_enc = b64decode_strict(data.get('saltEnc'), 16)
         wrap = data.get('encDek') or {}
         wrap_iv = b64decode_strict(wrap.get('iv'), 12)
         wrap_ct = b64decode_strict(wrap.get('data'), 48)
     except (ValueError, AttributeError):
         conn.close()
         return jsonify({'error': 'Invalid vault payload.'}), 400
-    # Server-side weak-password screen for the vault verifier. The vault
-    # password never reaches the server, but a trivially weak one can be
-    # rejected here (same tiny-dictionary check as account registration).
-    if is_weak_vault_verifier(verifier, salt_auth):
-        rate_hit(conn, ip_bucket('vault'))
-        rate_hit(conn, 'vault:' + user['username'].lower())
-        conn.close()
-        return jsonify({'error': 'Vault password too weak: choose a longer, less common password.'}), 400
-    existing = conn.execute('SELECT verifier FROM vault_meta WHERE username = ?',
-                            (user['username'],)).fetchone()
-    if existing and not vault_proof_ok(conn, user['username'], data, existing['verifier']):
-        rate_hit(conn, ip_bucket('vault'))
-        rate_hit(conn, 'vault:' + user['username'].lower())
-        conn.close()
-        return jsonify({'error': 'Vault overwrite requires current vault or account password proof.'}), 401
+    existing = conn.execute('SELECT vault_id, verifier, salt_auth, salt_enc FROM vault_meta'
+                            ' WHERE username = ? ORDER BY vault_id',
+                            (user['username'],)).fetchall()
     now = int(time.time())
+    if not existing:
+        # First vault: full verifier material required.
+        try:
+            verifier = b64decode_strict(data.get('verifier'), 32)
+            salt_auth = b64decode_strict(data.get('saltAuth'), 16)
+            salt_enc = b64decode_strict(data.get('saltEnc'), 16)
+        except (ValueError, AttributeError):
+            conn.close()
+            return jsonify({'error': 'Invalid vault payload.'}), 400
+        # Server-side weak-password screen for the vault verifier. The vault
+        # password never reaches the server, but a trivially weak one can be
+        # rejected here (same tiny-dictionary check as account registration).
+        if is_weak_vault_verifier(verifier, salt_auth):
+            rate_hit(conn, ip_bucket('vault'))
+            rate_hit(conn, 'vault:' + user['username'].lower())
+            conn.close()
+            return jsonify({'error': 'Vault password too weak: choose a longer, less common password.'}), 400
+        name = str(data.get('name') or 'Vault').strip()[:40] or 'Vault'
+        conn.execute(
+            'INSERT INTO vault_meta (username, vault_id, vault_name, salt_auth, verifier, salt_enc, enc_dek, created_at)'
+            ' VALUES (?, 1, ?, ?, ?, ?, ?, ?)',
+            (user['username'], name, salt_auth, verifier, salt_enc, wrap_iv + wrap_ct, now),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'id': 1})
+    # Additional vault (shared password): proof required, max enforced.
+    if len(existing) >= VAULT_MAX_PER_USER:
+        conn.close()
+        return jsonify({'error': f'Maximum of {VAULT_MAX_PER_USER} vaults.'}), 409
+    if not vault_proof_ok(conn, user['username'], data, existing[0]['verifier']):
+        rate_hit(conn, ip_bucket('vault'))
+        rate_hit(conn, 'vault:' + user['username'].lower())
+        conn.close()
+        return jsonify({'error': 'Vault creation requires current vault or account password proof.'}), 401
+    first = existing[0]
+    new_id = max(int(row['vault_id']) for row in existing) + 1
+    name = str(data.get('name') or f'Vault {new_id}').strip()[:40] or f'Vault {new_id}'
     conn.execute(
-        'INSERT INTO vault_meta (username, salt_auth, verifier, salt_enc, enc_dek, created_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?)'
-        ' ON CONFLICT(username) DO UPDATE SET salt_auth = excluded.salt_auth,'
-        ' verifier = excluded.verifier, salt_enc = excluded.salt_enc,'
-        ' enc_dek = excluded.enc_dek, created_at = excluded.created_at',
-        (user['username'], salt_auth, verifier, salt_enc, wrap_iv + wrap_ct, now),
+        'INSERT INTO vault_meta (username, vault_id, vault_name, salt_auth, verifier, salt_enc, enc_dek, created_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        (user['username'], new_id, name,
+         bytes(first['salt_auth']), bytes(first['verifier']), bytes(first['salt_enc']),
+         wrap_iv + wrap_ct, now),
     )
     conn.commit()
     conn.close()
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'id': new_id})
 
 
 @app.route('/api/vault-meta', methods=['DELETE'])
 def api_vault_meta_delete():
-    """Reset the vault: drops the verifier so contents become unreadable.
-    Requires current vault OR account password proof (stolen-cookie DoS fix).
-    Forgot-password reset uses currentAccountAuth + explicit confirm."""
+    """Reset vaults: without vaultId drops every vault (full reset, existing
+    behavior); with vaultId drops just that one. Requires current vault OR
+    account password proof (stolen-cookie DoS fix). Forgot-password reset
+    uses currentAccountAuth + explicit confirm."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
@@ -2494,18 +2551,26 @@ def api_vault_meta_delete():
     if rate_exceeded(conn, [ip_bucket('vault'), 'vault:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
         conn.close()
         return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
-    existing = conn.execute('SELECT verifier FROM vault_meta WHERE username = ?',
-                            (user['username'],)).fetchone()
+    existing = conn.execute('SELECT vault_id, verifier FROM vault_meta WHERE username = ? ORDER BY vault_id',
+                            (user['username'],)).fetchall()
     if not existing:
         conn.close()
         return jsonify({'ok': True})
     data = request.get_json(silent=True) or {}
-    if not vault_proof_ok(conn, user['username'], data, existing['verifier']):
+    if not vault_proof_ok(conn, user['username'], data, existing[0]['verifier']):
         rate_hit(conn, ip_bucket('vault'))
         rate_hit(conn, 'vault:' + user['username'].lower())
         conn.close()
         return jsonify({'error': 'Vault reset requires current vault or account password proof.'}), 401
-    conn.execute('DELETE FROM vault_meta WHERE username = ?', (user['username'],))
+    try:
+        vault_id = int(data.get('vaultId')) if data.get('vaultId') is not None else None
+    except (TypeError, ValueError):
+        vault_id = None
+    if vault_id is not None:
+        conn.execute('DELETE FROM vault_meta WHERE username = ? AND vault_id = ?',
+                     (user['username'], vault_id))
+    else:
+        conn.execute('DELETE FROM vault_meta WHERE username = ?', (user['username'],))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
