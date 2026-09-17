@@ -345,6 +345,11 @@ class _PgConnection:
         self._conn = psycopg2.connect(dsn)
         self._conn.autocommit = False
     def execute(self, sql, params=None):
+        # Pentest F-50: the placeholder swap is a blanket string replace. Never
+        # write a literal '?' inside a SQL string (even inside quotes) — it
+        # would be silently converted to %s and corrupt the statement. Use a
+        # parameter placeholder or spell it differently. Verified: no current
+        # SQL string in server.py contains a bare '?' — keep it that way.
         sql = sql.replace('?', '%s')
         cur = self._conn.cursor()
         cur.execute(sql, params or ())
@@ -429,8 +434,8 @@ def hash_password(password, salt):
 
 
 def argon2id_raw(password, salt):
-    """Memory-hard KDF shared bit-for-bit with the browser (argon2-browser
-    1.18.0, Argon2id t=3 m=64MiB p=1). Used for auth verifiers and KEKs."""
+    """Memory-hard KDF shared bit-for-bit with the browser (argon2-browser,
+    Argon2id t=3 m=64MiB p=1). Used for auth verifiers and KEKs."""
     return hash_secret_raw(secret=password.encode('utf-8'), salt=bytes(salt),
                            time_cost=ARGON2_TIME_COST, memory_cost=ARGON2_MEMORY_KIB,
                            parallelism=ARGON2_PARALLELISM, hash_len=ARGON2_HASH_LEN,
@@ -2576,7 +2581,39 @@ def api_vault_meta_delete():
     return jsonify({'ok': True})
 
 
-@app.route('/api/me')
+@app.route('/api/vault-meta', methods=['PATCH'])
+def api_vault_meta_rename():
+    """Rename a vault. Requires the vault ID and a new name (1-40 chars).
+    No password proof needed — the session itself is sufficient."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    if rate_exceeded(conn, [ip_bucket('vault'), 'vault:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
+        conn.close()
+        return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
+    data = request.get_json(silent=True) or {}
+    try:
+        vault_id = int(data.get('vaultId'))
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({'error': 'Invalid vault ID.'}), 400
+    name = str(data.get('name') or '').strip()[:40]
+    if not name:
+        conn.close()
+        return jsonify({'error': 'Vault name cannot be empty.'}), 400
+    existing = conn.execute('SELECT vault_id FROM vault_meta WHERE username = ? AND vault_id = ?',
+                            (user['username'], vault_id)).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({'error': 'Vault not found.'}), 404
+    rate_hit(conn, ip_bucket('vault'))
+    rate_hit(conn, 'vault:' + user['username'].lower())
+    conn.execute('UPDATE vault_meta SET vault_name = ? WHERE username = ? AND vault_id = ?',
+                 (name, user['username'], vault_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'id': vault_id, 'name': name})
 def api_me():
     user = current_session_user()
     if not user:
