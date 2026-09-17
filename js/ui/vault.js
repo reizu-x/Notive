@@ -379,6 +379,72 @@ export async function resetVault() {
   showToast('Vault reset');
 }
 
+// Delete a single vault immediately: calls the server, clears local state,
+// switches to another vault or locks if none remain. No password prompt —
+// the session itself is the proof.
+export async function deleteVault(vaultId) {
+  const id = vaultId == null ? 1 : vaultId;
+  // Pentest F-52 password pixels: the server now requires a password proof on
+  // every vault DELETE (not just full reset). Ask the user for the vault or
+  // login password and prove with the current verifier. Falls back to
+  // 'could not delete' on cancellation (no silent wipe).
+  let proof = {};
+  try {
+    const challenge = await askInput({
+      eyebrow: 'Confirm delete', title: 'Enter your vault password',
+      desc: 'Deleting a vault requires password confirmation. This cannot be undone.',
+      label: 'Password', password: true, placeholder: '•••••', okText: 'Delete',
+    });
+    if (!challenge) { showToast('Delete cancelled'); return; }
+    proof.currentVaultAuth = challenge;
+  } catch (err) { showToast('Delete cancelled'); return; }
+  try {
+    // Prove with the vault password using vault 1's salt_auth (shared).
+    const existing = (state.vaultList && state.vaultList.length) ? state.vaultList : [];
+    const first = existing.length ? existing[0] : (state.vaultMetas || [])[0];
+    if (!first || !first.saltAuth) {
+      showToast('Open the vault first, then delete it');
+      return;
+    }
+    const verifier = await argon2id32(proof.currentVaultAuth, e2eeB64ToBytes(first.saltAuth));
+    const proofPayload = { currentVaultAuth: e2eeBytesToB64(verifier) };
+    const res = await apiFetch('/api/vault-meta', {
+      method: 'DELETE',
+      body: JSON.stringify({ vaultId: id, ...proofPayload }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.error || 'Could not delete vault.');
+      return;
+    }
+  } catch (error) {
+    showToast('Could not delete vault.');
+    return;
+  }
+  // Remove from local state
+  state.vaultList = (state.vaultList || []).filter((v) => String(v.id) !== String(id));
+  state.vaultMetas = (state.vaultMetas || []).filter((r) => String(r.id) !== String(id));
+  delete state.vaultKeys[id];
+  delete state.vaultBlobMap[id];
+  delete state.vaultFolderMap[id];
+  clearCachedVaultMetas();
+  // If we deleted the active vault, switch to another or lock
+  if (String(state.vaultId || 1) === String(id)) {
+    if (state.vaultList.length) {
+      const nextId = state.vaultList[0].id;
+      try {
+        await switchVault(nextId);
+      } catch (error) {
+        lockVault();
+      }
+    } else {
+      lockVault();
+    }
+  }
+  renderCustomSections();
+  showToast('Vault deleted');
+}
+
 export async function unlockVaultFromModal() {
   const password = String(document.getElementById('vault-password').value || '');
   const meta = state.vault.meta;
@@ -589,6 +655,49 @@ async function openVaultModalRefresh(newId, fullRow) {
   } else {
     state.vaultId = newId;
     openVaultModal();
+  }
+}
+
+// Rename a vault: prompts for the new name, validates, and persists to server.
+export async function renameVault(vaultId) {
+  const id = vaultId == null ? 1 : vaultId;
+  const entry = (state.vaultList || []).find((v) => String(v.id) === String(id));
+  const currentName = (entry && entry.name) || 'Vault';
+  const name = await askInput({
+    eyebrow: 'Vault',
+    title: 'Rename vault',
+    desc: '',
+    label: 'Vault name',
+    password: false,
+    placeholder: currentName,
+    okText: 'Rename',
+  });
+  if (name == null) return;
+  const clean = String(name).trim().slice(0, 40);
+  if (!clean) { showToast('Vault name cannot be empty.'); return; }
+  if (clean === currentName) return;
+  try {
+    const res = await apiFetch('/api/vault-meta', {
+      method: 'PATCH',
+      body: JSON.stringify({ vaultId: id, name: clean }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showToast(err.error || 'Could not rename vault.');
+      return;
+    }
+    // Update local state
+    if (entry) entry.name = clean;
+    // Update vaultMetas cache
+    const metaEntry = (state.vaultMetas || []).find((r) => String(r.id) === String(id));
+    if (metaEntry) metaEntry.name = clean;
+    // Update vaultFolderMap key name if stored
+    clearCachedVaultMetas();
+    renderCustomSections();
+    renderStripItems();
+    showToast('Vault renamed');
+  } catch (error) {
+    showToast('Could not rename vault.');
   }
 }
 

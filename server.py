@@ -131,6 +131,10 @@ SHARE_ADMIN_WINDOW_SECONDS = 3600
 SHARE_ADMIN_MAX = 60
 NOTES_MAX_REQUEST_BYTES = 7 * 1024 * 1024
 
+# Collab SSE stream limits: bounded queue per subscriber + per-user cap.
+SSE_QUEUE_MAX_EVENTS = 200
+SSE_MAX_SUBSCRIBERS_PER_USER = 5
+
 # Password policy — aligned to NIST SP 800-63B (800-63-4): length is the
 # primary factor, composition rules are NOT imposed, long passwords allowed,
 # and a blocklist of common/compromised values is enforced. Applies to
@@ -977,6 +981,8 @@ def init_db():
         'ticket_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
         'expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)'
     )
+    # Clean up legacy table (replaced by email_recovery below). Safe to drop
+    # on every startup — no code references this table.
     conn.execute('DROP TABLE IF EXISTS recovery_codes')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS email_recovery ('
@@ -1106,13 +1112,8 @@ def take_db_backup():
     final_path = os.path.join(BACKUP_DIR, f'notely-{stamp}.sql.gz')
     try:
         import subprocess, gzip
-        # Extract dbname from DSN for pg_dump
-        dbname = 'notelydb'
-        for part in PG_DSN.split():
-            if part.startswith('dbname='):
-                dbname = part.split('=', 1)[1]
         proc = subprocess.run(
-            ['pg_dump', '--dbname=' + dbname, '--format=plain'],
+            ['pg_dump', '--dbname=' + PG_DSN, '--format=plain'],
             capture_output=True, timeout=60,
         )
         if proc.returncode != 0:
@@ -1202,7 +1203,8 @@ def rate_fail_bounded(conn, buckets, max_n, window):
         lock_key = int(hashlib.md5(buckets[0].encode()).hexdigest()[:8], 16) if buckets else 0
         conn.execute('SELECT pg_advisory_lock(%s)', (lock_key,))
     except Exception:
-        return
+        print(f'NOTELY: advisory lock failed for {buckets!r}, proceeding without lock', flush=True)
+        lock_key = None
     try:
         _prune_rate_hits(conn, now, max(window, 3600))
         if not rate_exceeded(conn, buckets, max_n, window):
@@ -1215,10 +1217,11 @@ def rate_fail_bounded(conn, buckets, max_n, window):
         except Exception:
             pass
     finally:
-        try:
-            conn.execute('SELECT pg_advisory_unlock(%s)', (lock_key,))
-        except Exception:
-            pass
+        if lock_key is not None:
+            try:
+                conn.execute('SELECT pg_advisory_unlock(%s)', (lock_key,))
+            except Exception:
+                pass
 
 
 def recovery_fail_bucket(username):
@@ -1398,35 +1401,36 @@ def current_session_user():
         return None
     now = int(time.time())
     conn = get_db()
-    row = conn.execute(
-        'SELECT username, expires_at, created_at, last_seen FROM sessions WHERE token_hash = ?',
-        (digest,),
-    ).fetchone()
-    if row and row['expires_at'] > now and (now - (row['last_seen'] or 0)) <= SESSION_IDLE_SECONDS:
-        conn.execute('UPDATE sessions SET last_seen = ? WHERE token_hash = ?', (now, digest))
-        conn.commit()
-        user = conn.execute('SELECT username, enc_profile FROM users WHERE username = ?', (row['username'],)).fetchone()
-        conn.close()
-        if user:
-            try:
-                profile = decrypt_profile(user['enc_profile'], user['username'] if user else None)
-            except Exception:
-                return None
-            request._notely_session_due_rotation = (
-                int(row['created_at'] or 0) + SESSION_ROTATE_AFTER_SECONDS) <= int(time.time())
-            return {
-                'username': user['username'],
-                **profile,
-                '_token_digest': digest,
-                '_token_created': row['created_at'],
-                '_used_legacy': bool(used_legacy),
-            }
+    try:
+        row = conn.execute(
+            'SELECT username, expires_at, created_at, last_seen FROM sessions WHERE token_hash = ?',
+            (digest,),
+        ).fetchone()
+        if row and row['expires_at'] > now and (now - (row['last_seen'] or 0)) <= SESSION_IDLE_SECONDS:
+            conn.execute('UPDATE sessions SET last_seen = ? WHERE token_hash = ?', (now, digest))
+            conn.commit()
+            user = conn.execute('SELECT username, enc_profile FROM users WHERE username = ?', (row['username'],)).fetchone()
+            if user:
+                try:
+                    profile = decrypt_profile(user['enc_profile'], user['username'] if user else None)
+                except Exception:
+                    return None
+                request._notely_session_due_rotation = (
+                    int(row['created_at'] or 0) + SESSION_ROTATE_AFTER_SECONDS) <= int(time.time())
+                return {
+                    'username': user['username'],
+                    **profile,
+                    '_token_digest': digest,
+                    '_token_created': row['created_at'],
+                    '_used_legacy': bool(used_legacy),
+                }
+            return None
+        if row:
+            conn.execute('DELETE FROM sessions WHERE token_hash = ?', (digest,))
+            conn.commit()
         return None
-    if row:
-        conn.execute('DELETE FROM sessions WHERE token_hash = ?', (digest,))
-        conn.commit()
-    conn.close()
-    return None
+    finally:
+        conn.close()
 
 
 # Issue a fresh token for sessions older than 12h and retire the old one (rotation).
@@ -2306,15 +2310,14 @@ def api_put_notes():
         conn.close()
         return jsonify({'error': 'Missing baseVersion — reload and retry.',
                         'updated_at': int(cur_version or 0)}), 400
-    if base_version is not None:
-        try:
-            if int(base_version) != int(cur_version or 0):
-                conn.close()
-                return jsonify({'error': 'Notes changed on server — reload and retry.',
-                                'updated_at': int(cur_version or 0)}), 409
-        except (ValueError, TypeError):
+    try:
+        if int(base_version) != int(cur_version or 0):
             conn.close()
-            return jsonify({'error': 'Invalid baseVersion.'}), 400
+            return jsonify({'error': 'Notes changed on server — reload and retry.',
+                            'updated_at': int(cur_version or 0)}), 409
+    except (ValueError, TypeError):
+        conn.close()
+        return jsonify({'error': 'Invalid baseVersion.'}), 400
     row = conn.execute('SELECT salt_auth, auth_hash, auth_hash2, salt_enc, enc_master_key FROM users WHERE username = ?',
                        (user['username'],)).fetchone()
     if row and is_e2ee_account(row):
@@ -2527,9 +2530,15 @@ def api_vault_meta_set():
         rate_hit(conn, 'vault:' + user['username'].lower())
         conn.close()
         return jsonify({'error': 'Vault creation requires current vault or account password proof.'}), 401
+    # Pentest F-53: belt-and-braces — since vault-1's verifier/salts are
+    # copied verbatim into additional vaults, the additional-vault password
+    # IS the shared vetted one. Re-screening here would only add cost for
+    # zero benefit (the verifier is the same). This comment documents the
+    # design decision so future maintainers know the screen IS omitted
+    # deliberately on additional vaults because the shared verifier was
+    # weak-screened at vault-1 creation time.
     first = existing[0]
     new_id = max(int(row['vault_id']) for row in existing) + 1
-    name = str(data.get('name') or f'Vault {new_id}').strip()[:40] or f'Vault {new_id}'
     conn.execute(
         'INSERT INTO vault_meta (username, vault_id, vault_name, salt_auth, verifier, salt_enc, enc_dek, created_at)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -2544,14 +2553,11 @@ def api_vault_meta_set():
 
 @app.route('/api/vault-meta', methods=['DELETE'])
 def api_vault_meta_delete():
-    """Reset vaults: without vaultId drops every vault (full reset, existing
-    behavior); with vaultId drops just that one. Requires current vault OR
-    account password proof (stolen-cookie DoS fix). Forgot-password reset
-    uses currentAccountAuth + explicit confirm."""
+    """Reset vaults: full reset AND single-vault delete both require password
+    proof (F-52 restores the F-33 posture: stolen cookie never wipes a vault)."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
-    # Pre-rate the proof oracle exactly like POST/GET.
     conn = get_db()
     if rate_exceeded(conn, [ip_bucket('vault'), 'vault:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
         conn.close()
@@ -2562,15 +2568,28 @@ def api_vault_meta_delete():
         conn.close()
         return jsonify({'ok': True})
     data = request.get_json(silent=True) or {}
-    if not vault_proof_ok(conn, user['username'], data, existing[0]['verifier']):
-        rate_hit(conn, ip_bucket('vault'))
-        rate_hit(conn, 'vault:' + user['username'].lower())
-        conn.close()
-        return jsonify({'error': 'Vault reset requires current vault or account password proof.'}), 401
     try:
         vault_id = int(data.get('vaultId')) if data.get('vaultId') is not None else None
     except (TypeError, ValueError):
         vault_id = None
+    # Pentest F-52 (round-13 remediation): ALL vault deletions now require
+    # password proof — the previous session-only single-vault-delete allowed
+    # a stolen cookie to silently wipe one vault. Proof uses the shared
+    # verifier (inherited across vaults, so any one will match).
+    proof_target = None
+    for row in existing:
+        if vault_id is None or int(row['vault_id']) == vault_id:
+            proof_target = row['verifier']
+            break
+    if proof_target is None:
+        proof_target = existing[0]['verifier']
+    if not vault_proof_ok(conn, user['username'], data, proof_target):
+        rate_hit(conn, ip_bucket('vault'))
+        rate_hit(conn, 'vault:' + user['username'].lower())
+        conn.close()
+        return jsonify({'error': 'Vault deletion requires current vault or account password proof.'}), 401
+    rate_hit(conn, ip_bucket('vault'))
+    rate_hit(conn, 'vault:' + user['username'].lower())
     if vault_id is not None:
         conn.execute('DELETE FROM vault_meta WHERE username = ? AND vault_id = ?',
                      (user['username'], vault_id))
@@ -3476,6 +3495,7 @@ def api_keys_lookup():
 # note_id -> list of (username, queue.Queue) SSE subscribers. The username is
 # tracked so a removed member's live streams can be closed when access is revoked.
 collab_streams = {}
+_collab_lock = threading.Lock()
 
 
 def _is_group_member(conn, group_id, username, require_accepted=True):
@@ -3517,7 +3537,9 @@ def _sse_closed_response():
 
 def _broadcast(note_id, message_dict):
     payload = json.dumps(message_dict)
-    for _username, q in list(collab_streams.get(note_id, ())):
+    with _collab_lock:
+        subs = list(collab_streams.get(note_id, ()))
+    for _username, q in subs:
         try:
             q.put_nowait(payload)
         except queue.Full:
@@ -3536,12 +3558,14 @@ def _close_streams(note_id):
 
     The None sentinel wakes the generator, which emits a final 'closed' message
     and exits; the subscriber entry is then dropped."""
-    for _username, q in list(collab_streams.get(note_id, ())):
+    with _collab_lock:
+        subs = list(collab_streams.get(note_id, ()))
+        collab_streams.pop(note_id, None)
+    for _username, q in subs:
         try:
             q.put_nowait(None)
         except Exception:
             pass
-    collab_streams.pop(note_id, None)
 
 
 def _close_user_streams(username, note_ids=None):
@@ -3556,22 +3580,23 @@ def _close_user_streams(username, note_ids=None):
     if not name:
         return
     allow = None if note_ids is None else {int(n) for n in note_ids}
-    for note_id, subs in list(collab_streams.items()):
-        if allow is not None and note_id not in allow:
-            continue
-        kept = []
-        for sub_user, q in subs:
-            if sub_user == name:
-                try:
-                    q.put_nowait(None)
-                except Exception:
-                    pass
+    with _collab_lock:
+        for note_id, subs in list(collab_streams.items()):
+            if allow is not None and note_id not in allow:
+                continue
+            kept = []
+            for sub_user, q in subs:
+                if sub_user == name:
+                    try:
+                        q.put_nowait(None)
+                    except Exception:
+                        pass
+                else:
+                    kept.append((sub_user, q))
+            if kept:
+                collab_streams[note_id] = kept
             else:
-                kept.append((sub_user, q))
-        if kept:
-            collab_streams[note_id] = kept
-        else:
-            collab_streams.pop(note_id, None)
+                collab_streams.pop(note_id, None)
 
 
 def _broadcast_group(group_id, message_dict):
@@ -4175,10 +4200,11 @@ def api_note_stream(note_id):
     # Bounded queue + per-user subscriber cap: an authenticated member cannot
     # stack unbounded RAM/worker-bound streams.
     q = queue.Queue(maxsize=SSE_QUEUE_MAX_EVENTS)
-    user_streams = [entry for entry in collab_streams.get(note_id, []) if entry[0] == user['username']]
-    if len(user_streams) >= SSE_MAX_SUBSCRIBERS_PER_USER:
-        return _sse_closed_response()
-    collab_streams.setdefault(note_id, []).append((user['username'], q))
+    with _collab_lock:
+        user_streams = [entry for entry in collab_streams.get(note_id, []) if entry[0] == user['username']]
+        if len(user_streams) >= SSE_MAX_SUBSCRIBERS_PER_USER:
+            return _sse_closed_response()
+        collab_streams.setdefault(note_id, []).append((user['username'], q))
 
     def generate():
         try:
@@ -4200,10 +4226,11 @@ def api_note_stream(note_id):
                     break
                 yield 'data: ' + item + '\n\n'
         finally:
-            try:
-                collab_streams.get(note_id, []).remove((user['username'], q))
-            except ValueError:
-                pass
+            with _collab_lock:
+                try:
+                    collab_streams.get(note_id, []).remove((user['username'], q))
+                except ValueError:
+                    pass
     return app.response_class(generate(), mimetype='text/event-stream',
                               headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
 
