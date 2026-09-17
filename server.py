@@ -238,8 +238,6 @@ def generate_policy_password(length=20):
 # fresh database, any bootstrap user without an env password gets a random
 # policy-compliant one printed ONCE to the server log; rotate it immediately.
 BOOTSTRAP_PROFILES = {
-    'admin': ('Admin', 'Nimda', 'Notely User'),
-    'reizu': ('Anthony', 'Samson', 'Notely User'),
 }
 
 
@@ -504,7 +502,7 @@ def dummy_kdf_salt_for(username):
 # NOT a complete policy: a determined API client can still register a weak
 # password the list misses. The definitive fix is OPAQUE/PAKE (server never
 # sees the password yet can still bind policy at the protocol level).
-WEAK_SCREEN_MAX = max(1, int(os.environ.get('NOTELY_WEAK_SCREEN_MAX', '96')))
+WEAK_SCREEN_MAX = max(1, int(os.environ.get('NOTELY_WEAK_SCREEN_MAX', '40')))
 IDENTITY_SCREEN_MAX = max(0, int(os.environ.get('NOTELY_IDENTITY_SCREEN_MAX', '12')))
 
 # Top leaked / trivial passwords, including the common capitalised variants a
@@ -1421,7 +1419,7 @@ def rotate_session_if_due(conn, user, now):
 # optional NOTELY_ALERT_WEBHOOK receives a POST for events at or above
 # NOTELY_ALERT_MIN_SEVERITY (default 'high'). Callers pass identifiers only —
 # never passwords, verifiers or key material.
-AUDIT_LOG_PATH = os.environ.get('NOTELY_AUDIT_LOG', os.path.join(BASE_DIR, 'audit.log'))
+AUDIT_LOG_PATH = os.environ.get('NOTELY_AUDIT_LOG', '/home/r3izu/Documents/audit/audit.log')
 AUDIT_ENABLED = os.environ.get('NOTELY_AUDIT', '1').lower() != '0'
 ALERT_WEBHOOK = os.environ.get('NOTELY_ALERT_WEBHOOK', '').strip()
 try:

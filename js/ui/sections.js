@@ -43,6 +43,13 @@ export function sectionDisplayName(kind, id) {
 }
 
 // Display name of a sidebar section.
+// True in Starred view, whether reached via the nav item (activeView) or
+// the Starred chip (notes view + favorites filter).
+export function isFavoritesView() {
+  return state.activeView === 'favorites'
+    || (state.activeView === 'notes' && state.activeFilter === 'favorites');
+}
+
 // Display folder of a note inside one custom section (null when unassigned).
 export function customNoteFolder(note, sectionId) {
   if (!note || !note.sections || typeof note.sections !== 'object') return null;
@@ -805,6 +812,8 @@ export function selectCustomFolder(sectionId, folder) {
   state.activeView = 'notes';
   state.activeFilter = 'all';
   state.activeCustom = { section: sectionId, folder };
+  state.lastMarkedSectionId = sectionId;
+  try { localStorage.setItem('notely-last-section', sectionId); } catch (error) {}
   clearSearch();
   updateListHeading();
   renderCustomSections();
@@ -821,6 +830,30 @@ export function selectCustomSection(sectionId) {
   state.activeView = 'notes';
   state.activeFilter = 'all';
   state.activeCustom = { section: sectionId, folder: null };
+  state.lastMarkedSectionId = sectionId;
+  try { localStorage.setItem('notely-last-section', sectionId); } catch (error) {}
+  clearSearch();
+  updateListHeading();
+  renderCustomSections();
+  renderNoteList();
+}
+
+// Strip-only folder filter: narrows the CURRENT view (Starred/Archive/Bin)
+// to a section/folder without hopping back to All Notes. Null folder =
+// whole section.
+export function applyStripFolderFilter(sectionId, folder) {
+  const section = state.customSections.find((entry) => entry.id === sectionId);
+  if (!section) return;
+  if (folder && !section.folders.includes(folder)) {
+    const isAncestor = section.folders.some((entry) => isFolderOrSub(entry, folder));
+    if (!isAncestor) return;
+    section.folders.push(folder);
+    persistCustomSections();
+    renderCustomSections();
+  }
+  state.activeCustom = { section: sectionId, folder: folder || null };
+  state.lastMarkedSectionId = sectionId;
+  try { localStorage.setItem('notely-last-section', sectionId); } catch (error) {}
   clearSearch();
   updateListHeading();
   renderCustomSections();

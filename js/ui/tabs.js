@@ -11,7 +11,7 @@ import { state } from '../domain/state.js';
 import { canEditCoverNote, moveCoverOnNote } from './editor.js';
 import { clearTabDropMarks, noteGlyphFor, updateStripScrollButton, viewLabel } from './feedback.js';
 import { visibleNotes } from './notes.js';
-import { customFolderColor, customNoteFolder, sectionDisplayName } from './sections.js';
+import { customFolderColor, customNoteFolder, isFavoritesView, sectionDisplayName } from './sections.js';
 import { renderSettingsTags } from './tags.js';
 import { closeCollabNote, openCollabNote } from '../data/collab-crypto.js';
 import { e2ee } from '../data/crypto.js';
@@ -104,6 +104,59 @@ export function updateBreadcrumbs() {
 // strip becomes the folder navigator: every folder of the active section (or
 // of all sections when no section is selected) renders as its colored dot;
 // clicking one opens it. Gold folder glyphs stay distinct from note glyphs.
+// Strip note-icon button shared by direct notes and subfolder notes.
+function stripNoteBtn(note) {
+  return `<button type="button" class="strip-btn${note.id === state.currentId ? ' is-note-active' : ''}" data-strip-note="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}" aria-label="Open ${escapeHtml(note.title || 'Untitled note')}">${icon(noteGlyphFor(note))}</button>`;
+}
+
+// Set of folders holding visible notes, plus their ancestors — reflective
+// views (Starred/Archive/Bin) show only these, hiding empty folders.
+function stripFolderKeepSet(section, pool) {
+  const set = new Set();
+  (pool || []).forEach((note) => {
+    const f = customNoteFolder(note, section.id);
+    let cur = (typeof f === 'string' && f.trim()) ? f : null;
+    while (cur) {
+      set.add(cur);
+      cur = folderParent(cur);
+    }
+  });
+  return set;
+}
+
+// Collect a folder subtree into navigation buttons, level by level.
+// `rel` tracks nesting for icon sizing (parent 18px, sub 14px, sub-sub 10px).
+// `keep` (null = show all): folders outside the set are skipped.
+// Notes are never included here: a folder's notes appear only once that
+// folder itself is marked, never before.
+function collectStripFolders(section, parent, levels, rel, keep) {
+  let f = '';
+  if (levels > 0 && section) {
+    (section.folders || []).filter((fl) => folderParent(fl) === parent && (!keep || keep.has(fl))).forEach((kid) => {
+      const leaf = folderLeaf(kid);
+      f += `<button type="button" class="strip-btn" data-strip-section="${escapeHtml(section.id)}" data-strip-folder="${escapeHtml(kid)}" title="Open folder ${escapeHtml(leaf)}" aria-label="Open folder ${escapeHtml(leaf)}"><span class="strip-folder-glyph strip-lvl${rel} ${customFolderColor(section, kid)}">${icon(folderIconForDepth(folderDepth(kid)))}</span></button>`;
+      f += collectStripFolders(section, kid, levels - 1, rel + 1, keep);
+    });
+  }
+  return f;
+}
+
+// Render child subfolders of `parent` (up to `levels` deep) into the strip
+// as navigation buttons, then — only for the currently marked folder — its
+// own direct notes (`ownNotesHtml`) under a separator.
+// Folder buttons reuse the strip navigation (click + right-click menu) via
+// data-strip-section/data-strip-folder.
+function renderStripSubfolders(section, parent, levels, ownNotesHtml) {
+  const sep = `<span class="strip-separator" aria-hidden="true"></span>`;
+  // True in Starred/Archive/Bin: the strip reflects the view by hiding
+  // folders (and sections) with no visible notes under them.
+  const reflectiveStrip = isFavoritesView() || state.activeView === 'archive' || state.activeView === 'bin';
+  const keep = (section && reflectiveStrip) ? stripFolderKeepSet(section, visibleNotes()) : null;
+  const f = collectStripFolders(section, parent, levels, 0, keep);
+  if (!f && !ownNotesHtml) return '';
+  return f + (ownNotesHtml ? sep + ownNotesHtml : '');
+}
+
 export function renderStripItems() {
   const box = document.getElementById('workspace-strip-items');
   if (!box) return;
@@ -112,8 +165,19 @@ export function renderStripItems() {
   // Back button sits under the collapse toggle, over the folder name —
   // visible only inside a subfolder.
   const backBtn = document.getElementById('workspace-strip-back');
+  // The section the strip reflects: the live selection, else the last section
+  // the user marked (view switches clear the selection but not the memory).
+  const markedSectionId = (state.activeCustom && state.activeCustom.section)
+    || state.lastMarkedSectionId || null;
   if (state.activeView === 'vault') {
-    box.innerHTML = '';
+    // Vault keeps its notes out of the strip, but still reflects the marked section.
+    const marked = markedSectionId ? state.customSections.find((entry) => entry.id === markedSectionId) : null;
+    let html = '';
+    if (marked) {
+      html += `<span class="strip-section-tag" data-strip-section="${escapeHtml(marked.id)}" title="${escapeHtml(marked.name)}" aria-hidden="true">${escapeHtml(marked.name.charAt(0).toUpperCase() || '?')}</span>`;
+      html += `<button type="button" class="strip-btn is-section-active" data-strip-section="${escapeHtml(marked.id)}" data-strip-folder="" title="Open section ${escapeHtml(marked.name)}" aria-label="Open section ${escapeHtml(marked.name)}"><span class="strip-folder-glyph ${customFolderColor(marked, '')}">${icon('folder-solid')}</span></button>`;
+    }
+    box.innerHTML = html;
     if (backBtn) {
       backBtn.hidden = true;
       delete backBtn.dataset.stripSection;
@@ -176,21 +240,29 @@ export function renderStripItems() {
     updateStripScrollButton();
     return;
   }
-  // The main strip shows SECTIONS only — never folders under a section.
-  // Clicking a section glyph opens that section; folders live in the note list.
+  // The main strip lists sections like the expanded list does; the marked
+  // section (live selection, else the last one the user marked) is highlighted.
   const sections = section ? [section] : state.customSections.slice();
   let html = '';
   sections.forEach((sec) => {
     if (!sec.folders.length) return;
-    html += `<span class="strip-section-tag" title="${escapeHtml(sec.name)}" aria-hidden="true">${escapeHtml(sec.name.charAt(0).toUpperCase() || '?')}</span>`;
-    html += `<button type="button" class="strip-btn" data-strip-section="${escapeHtml(sec.id)}" data-strip-folder="" title="Open section ${escapeHtml(sec.name)}" aria-label="Open section ${escapeHtml(sec.name)}"><span class="strip-folder-glyph ${customFolderColor(sec, '')}">${icon('folder-solid')}</span></button>`;
+    // Reflective views skip sections with no visible notes (mirrors the list).
+    if ((isFavoritesView() || state.activeView === 'archive' || state.activeView === 'bin')
+      && !visibleNotes().some((n) => customNoteFolder(n, sec.id))) return;
+    const isMarked = markedSectionId != null && sec.id === markedSectionId;
+    html += `<span class="strip-section-tag" data-strip-section="${escapeHtml(sec.id)}" title="${escapeHtml(sec.name)}" aria-hidden="true">${escapeHtml(sec.name.charAt(0).toUpperCase() || '?')}</span>`;
+    html += `<button type="button" class="strip-btn${isMarked ? ' is-section-active' : ''}" data-strip-section="${escapeHtml(sec.id)}" data-strip-folder="" title="Open section ${escapeHtml(sec.name)}" aria-label="Open section ${escapeHtml(sec.name)}"><span class="strip-folder-glyph ${customFolderColor(sec, '')}">${icon('folder-solid')}</span></button>`;
+    if (!section) {
+      html += renderStripSubfolders(sec, null, 3, '');
+    }
   });
-  // Inside a folder: append its direct notes beneath the folder icons.
-  if (section && folder && state.activeView !== 'bin') {
-    const pool = visibleNotes().filter((note) => !note.deleted);
-    const direct = pool.filter((note) => customNoteFolder(note, section.id) === folder);
-    if (direct.length) html += `<span class="strip-separator" aria-hidden="true"></span>`;
-    html += direct.map((note) => `<button type="button" class="strip-btn${note.id === state.currentId ? ' is-note-active' : ''}" data-strip-note="${escapeHtml(String(note.id))}" title="${escapeHtml(note.title || 'Untitled note')}" aria-label="Open ${escapeHtml(note.title || 'Untitled note')}">${icon(noteGlyphFor(note))}</button>`).join('');
+  // Inside a section or folder: the folder tree for navigation plus the
+  // marked folder's own notes under a separator.
+  if (section) {
+    const pool = visibleNotes();
+    const own = folder ? pool.filter((note) => customNoteFolder(note, section.id) === folder) : [];
+    html += renderStripSubfolders(section, folder, folder ? 2 : 3,
+      own.length ? own.map(stripNoteBtn).join('') : '');
   }
   box.innerHTML = html;
   if (backBtn) {
@@ -201,6 +273,7 @@ export function renderStripItems() {
       backBtn.hidden = false;
       backBtn.dataset.stripSection = section.id;
       backBtn.dataset.stripTarget = parent || '';
+      delete backBtn.dataset.stripAll;
       if (parent) {
         backBtn.title = `${parent} — back to parent folder`;
         backBtn.setAttribute('aria-label', `Back to ${folderLeaf(parent)}`);
@@ -208,10 +281,19 @@ export function renderStripItems() {
         backBtn.title = `${section.name} — back to section`;
         backBtn.setAttribute('aria-label', `Back to ${section.name}`);
       }
+    } else if (section && state.activeView !== 'bin') {
+      // Section root (e.g. Work with no folder picked): back returns to All Notes.
+      backBtn.hidden = false;
+      backBtn.dataset.stripSection = section.id;
+      backBtn.dataset.stripTarget = '';
+      backBtn.dataset.stripAll = '1';
+      backBtn.title = 'Back to All Notes';
+      backBtn.setAttribute('aria-label', 'Back to All Notes');
     } else {
       backBtn.hidden = true;
       delete backBtn.dataset.stripSection;
       delete backBtn.dataset.stripTarget;
+      delete backBtn.dataset.stripAll;
     }
   }
   updateStripScrollButton();

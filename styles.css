@@ -1,6 +1,17 @@
 /* Self-hosted fonts removed external Google Fonts import (privacy + supply-chain).
    System stack is used so the app works offline with no third-party requests. */
 
+/* --- Z-INDEX HIERARCHY (keep in sync when adding new layers) ---
+   1–10     Base UI: sidebar (mobile), editor focus-mode, cover labels
+   80       Context menus (right-click note/tab menus)
+   100      Login overlay (fullscreen, opaque background)
+   150      Context menus above login (when login overlay is up)
+   200      Modal overlays (MFA, recovery, prompt, account-created, settings)
+   210      Prompt modal (stacks above other modals)
+   300      Toast notifications (always on top)
+   9999     Boot shimmer (temporary, removed after boot)
+   ---------------------------------------------------------------- */
+
 :root {
   color-scheme: light;
   --ink: #262523;
@@ -1409,9 +1420,9 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .editor-bottom-fixed kbd { padding: 2px 4px; border: 1px solid var(--bottom-kbd-border); border-radius: 3px; color: var(--bottom-kbd-ink); background: var(--bottom-kbd-bg); font-size: 8px; }
 .editor-scroll .editor-bottom { display: none; }
 .editor-bottom kbd { padding: 2px 4px; border: 1px solid var(--bottom-kbd-border); border-radius: 3px; color: var(--bottom-kbd-ink); background: var(--bottom-kbd-bg); font-size: 8px; }
-.toast { position: fixed; right: 25px; bottom: 24px; z-index: 60; padding: 10px 13px; border: 1px solid var(--toast-border); border-radius: 7px; color: var(--toast-ink); background: var(--toast-bg); box-shadow: var(--shadow); font-size: 11px; opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity .2s ease, transform .2s ease; }
+.toast { position: fixed; right: 25px; bottom: 24px; z-index: 300; padding: 10px 13px; border: 1px solid var(--toast-border); border-radius: 7px; color: var(--toast-ink); background: var(--toast-bg); box-shadow: var(--shadow); font-size: 11px; opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity .2s ease, transform .2s ease; }
 .toast.show { opacity: 1; transform: translateY(0); }
-.context-menu { position: fixed; z-index: 80; min-width: 190px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: var(--paper); box-shadow: var(--shadow); }
+.context-menu { position: fixed; z-index: 150; min-width: 190px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: var(--paper); box-shadow: var(--shadow); }
 .context-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; color: var(--ink); background: transparent; font-size: 12px; font-weight: 500; text-align: left; transition: background .15s ease; }
 .context-item:hover { background: var(--tree-hover-bg); }
 .context-item svg { width: 15px; height: 15px; color: var(--ink-muted); }
@@ -1420,15 +1431,14 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 html:not([data-theme="light"]) .context-item.danger, html:not([data-theme="light"]) .context-item.danger svg { color: #f28ba8; }
 .context-separator { height: 1px; margin: 5px 4px; background: var(--line); }
 
-.modal-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(20, 18, 16, 0.5); }
+.modal-overlay { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(20, 18, 16, 0.5); }
 /* Recovery popup must sit above the login overlay (z-100) which stays up behind it. */
-#recover-modal { z-index: 120; }
-/* Generic prompt sits above everything interactive (login 100, recover 120). */
-#prompt-modal { z-index: 130; }
-/* MFA QR popup sits above the settings overlay (z-50) that opens it. */
-#mfa-qr-modal { z-index: 60; }
-/* Recovery-codes popup likewise sits above settings. Codes in neat rows. */
-#acct-rec-modal { z-index: 60; }
+#recover-modal { z-index: 200; }
+/* Generic prompt sits above other modals for stacking. */
+#prompt-modal { z-index: 210; }
+/* MFA QR popup and recovery-codes popup: same as .modal-overlay. */
+#mfa-qr-modal { z-index: 200; }
+#acct-rec-modal { z-index: 200; }
 .recovery-code-list { margin: 0 0 16px; padding-left: 0; list-style: none; display: grid; gap: 6px; }
 .recovery-code-list li { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-bg); font-family: 'DM Mono', monospace; font-size: 13px; letter-spacing: 0.04em; user-select: all; }
 .modal { width: min(430px, 94vw); padding: 22px 22px 18px; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: var(--paper); box-shadow: var(--shadow); }
@@ -1657,6 +1667,12 @@ html[data-font="verdana"] body :not(pre):not(code):not(kbd) { font-family: Verda
 .strip-btn.is-folder.is-dot-active { border-color: var(--side-active-bar, var(--mint-dark, #2d6a4f)); background: var(--paper); box-shadow: var(--tree-selected-shadow, 0 1px 6px rgba(0,0,0,.08)); transform: translateX(1px); }
 .strip-folder-glyph { display: grid; place-items: center; width: 19px; height: 19px; color: var(--ink-muted); }
 .strip-folder-glyph svg { width: 18px; height: 18px; }
+/* Hide the section-root "Open Section <name>" folder buttons in the strip;
+   the section letter tag above each one remains the navigation target. */
+#workspace-strip-items .strip-btn[data-strip-folder=""] { display: none; }
+/* Strip folder icon sizes by nesting level: parent 18px, subfolder 14px, sub-subfolder 10px. */
+.strip-folder-glyph.strip-lvl1 svg { width: 14px; height: 14px; }
+.strip-folder-glyph.strip-lvl2 svg { width: 10px; height: 10px; }
 .strip-folder-glyph.coral { color: var(--coral); }
 .strip-folder-glyph.yellow { color: #e7c36d; }
 .strip-folder-glyph.blue { color: #8baed6; }
@@ -1683,9 +1699,13 @@ html[data-font="verdana"] body :not(pre):not(code):not(kbd) { font-family: Verda
 .storage-picker-row { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; flex-wrap: wrap; }
 .storage-picker-row .setting-row-text { flex: 0 0 auto; }
 .strip-back { display: none; }
-.app-shell.workspace-collapsed:not(.workspace-focus) .strip-back { display: inline-grid; }
-.app-shell.workspace-collapsed:not(.workspace-focus) .strip-back svg { transform: rotate(180deg); }
+/* Back button lives in the collapsed strip only: hidden in the expanded
+   workspace, and hidden in All Notes via the hidden attribute. */
+.app-shell.workspace-collapsed:not(.workspace-focus) .strip-back:not([hidden]) { display: inline-grid; }
+.app-shell.workspace-collapsed:not(.workspace-focus) .strip-back:not([hidden]) svg { transform: rotate(180deg); }
 .strip-btn.is-note-active { color: var(--ink); border-color: var(--line-strong); background: var(--paper); }
+/* Marked section in the collapsed strip: same treatment as the active note. */
+.strip-btn.is-section-active { color: var(--ink); border-color: var(--line-strong); background: var(--paper); }
 .app-shell.workspace-collapsed #toggle-workspace svg { transform: scaleX(-1); }
 @media (max-width: 560px) {
   .settings-layout { flex-direction: column; }

@@ -41,6 +41,7 @@ export const state = {
   knownTags: [],
   uiVaultTimer: null,
   activeCustom: null, // { section: id, folder: path | null } | null — section/folder filter,
+  lastMarkedSectionId: (() => { try { return localStorage.getItem('notely-last-section') || null; } catch (error) { return null; } })(), // last section the user marked — survives view switches and reloads so the strip keeps reflecting it,
   sharedFolder: null, // { groupId, folder } | null — folder filter inside the Shared view (folder '' = section root),
   syncInFlight: null, // promise while a PUT is running — serializes syncs so no baseVersion race
   sectionMenuTarget: null, // section id,

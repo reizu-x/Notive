@@ -11,7 +11,7 @@ import { state } from '../domain/state.js';
 import { accountScopeKey } from './auth.js';
 import { setSaveLabel, syncAgoText } from './feedback.js';
 import { showToast } from './modal.js';
-import { customNoteFolder } from './sections.js';
+import { customNoteFolder, isFavoritesView } from './sections.js';
 import { BIN_RETENTION_MS } from '../core/dates.js';
 import { allCount, breadcrumbTitle, editorToolbar, listEmpty, markdownInput, noteList, preview, recentCountEl, starredCountEl, tagList, titleInput, totalCount, wordCount } from '../core/elements.js';
 import { icon } from '../core/icons.js';
@@ -1089,8 +1089,11 @@ export function renderNoteList() {
     </div>`;
   };
   // Home-like views (no folder/search/chip filter) separate folders by
-  // section to mirror the slide menu; everything else keeps the flat tree.
-  const homeLike = state.activeView === 'notes' && state.activeFilter === 'all' && !searching
+  // section to mirror the slide menu; Starred and Archive get the same
+  // section shells so sections stay visible there too. Everything else
+  // keeps the flat tree.
+  const homeLike = (state.activeView === 'notes' && state.activeFilter === 'all'
+    || state.activeView === 'favorites' || state.activeView === 'archive') && !searching
     && !(state.activeCustom && state.activeCustom.folder);
   if (homeLike) {
     const parts = [];
@@ -1100,8 +1103,11 @@ export function renderNoteList() {
     customTargets.forEach((section) => {
       const sectionGroups = new Map();
       // Seed every folder so newly added (still empty) folders show in the
-      // folder list instead of only folders that already hold notes.
-      section.folders.forEach((folder) => { if (!sectionGroups.has(folder)) sectionGroups.set(folder, []); });
+      // folder list instead of only folders that already hold notes — except
+      // in Starred/Archive views, where empty folders are noise and only
+      // folders with visible notes (plus their ancestors) are shown.
+      const seedEmpty = !(isFavoritesView() || state.activeView === 'archive');
+      if (seedEmpty) section.folders.forEach((folder) => { if (!sectionGroups.has(folder)) sectionGroups.set(folder, []); });
       visible.forEach((note) => {
         const folder = customNoteFolder(note, section.id);
         if (!folder) return;
@@ -1206,6 +1212,20 @@ export function goAllNotes() {
   state.currentVaultId = null;
   clearEditor();
   document.querySelector('.app-shell').classList.add('workspace-focus');
+  renderCustomSections();
+  renderNoteList();
+}
+
+// Like goAllNotes but keeps the currently open note: the strip back button
+// navigates the folder tree without closing what you're reading.
+export function goAllNotesKeepNote() {
+  clearSectionSelection();
+  state.activeView = 'notes';
+  state.activeFilter = 'all';
+  document.querySelectorAll('.nav-item').forEach((nav) => nav.classList.toggle('active', nav.dataset.view === 'notes'));
+  document.querySelectorAll('.filter-chip').forEach((chip) => chip.classList.toggle('active', chip.dataset.filter === 'all'));
+  clearSearch();
+  updateListHeading();
   renderCustomSections();
   renderNoteList();
 }

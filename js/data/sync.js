@@ -9,6 +9,12 @@ let serverVersion = 0;
 let syncBusy = false;
 export function isSyncing() { return syncBusy; }
 
+// AAD context binding for workspace notes encryption (mirrors notes.js).
+function syncAadContext() {
+  const name = state.cachedProfile && state.cachedProfile.username;
+  return 'notely-notes-v1:' + (name ? String(name) : '');
+}
+
 function scope(base) {
   const me = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
   return `${base}:${me}`;
@@ -79,7 +85,7 @@ export async function syncNow() {
       const data = await res.json();
       if (data && typeof data.updated_at === 'number') { base = data.updated_at; serverVersion = base; }
       if (data && data.payload) {
-        const parsed = await e2eeDecryptPayload(data.payload);
+        const parsed = await e2eeDecryptPayload(data.payload, syncAadContext());
         if (parsed && Array.isArray(parsed.notes)) {
           try { const notesMod = await import('../ui/notes.js'); await notesMod.adoptNotesEnvelope(parsed); } catch (error) {}
         }
@@ -92,9 +98,7 @@ export async function syncNow() {
       vaultFolders: [...(state.vault && state.vault.folders ? state.vault.folders : [])],
       ui: uiSnapshot(),
     };
-    const gen = syncGeneration;
-    // ... existing sync logic ...
-    const put = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload: await e2eeEncryptNotes(envelope), baseVersion: base }) });
+    const put = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload: await e2eeEncryptNotes(envelope, syncAadContext()), baseVersion: base }) });
     if (!put.ok) {
       let bodyText = '';
       try { bodyText = (await put.text()).slice(0, 120); } catch (error) {}
@@ -105,10 +109,11 @@ export async function syncNow() {
     if (putData && typeof putData.updated_at === 'number') serverVersion = putData.updated_at;
     lastSyncedAt = Date.now();
     state.syncDirty = false;
-    paint(`🟢 Synced to Server ${syncClock(lastSyncedAt)}`, 'green');
+    paint(`Synced to Server ${syncClock(lastSyncedAt)}`, 'green');
     return true;
   } catch (error) {
     const msg = error && error.message ? error.message : 'unknown error';
+    console.error('syncNow failed:', error);
     paint(`Sync problem — ${msg}`, 'warn');
     scheduleSync(5000); // back off and retry
     return false;

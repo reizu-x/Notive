@@ -51,8 +51,8 @@ import { applyUiSnapshot, decryptUiVaultRaw, openVaultModal, openVaultNoteDelete
 import { acceptInvite, collabDeleteNote, confirmCollabNew, createSharedNoteWithTemplate, declineInvite, moveSharedNote, openCollabNote, openSharedNewNote, renderSharedView } from './data/collab-crypto.js';
 import { refreshPasskeys } from './ui/auth.js';
 import { applyBeautify, exitCoverRepos, handleCoverFile, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
-import { bindNoteContextMenu, clearEditor, createNoteFromTemplate, goAllNotes, loadNotesFromServer, onNewNoteClick, persistNotes, purgeExpiredBin, renderNoteList, requestDeleteNoteById, saveCurrentNote, selectNote, syncNotesToServer } from './ui/notes.js';
-import { addSharedFolder, addSubfolder, bindCustomSectionsEvents, bindFolderContextMenu, bindFolderDragDrop, bindSectionContextMenu, bindSectionHeaderEvents, chooseSectionIcon, deleteCustomSection, leaveSharedSection, moveSharedNoteToFolder, persistCollapsedFolders, renameSharedFolder, reparentSharedFolder, selectCustomFolder, selectCustomSection, syncCustomSections } from './ui/sections.js';
+import { bindNoteContextMenu, clearEditor, createNoteFromTemplate, goAllNotes, goAllNotesKeepNote, loadNotesFromServer, onNewNoteClick, persistNotes, purgeExpiredBin, renderNoteList, requestDeleteNoteById, saveCurrentNote, selectNote, syncNotesToServer } from './ui/notes.js';
+import { addSharedFolder, addSubfolder, applyStripFolderFilter, bindCustomSectionsEvents, bindFolderContextMenu, bindFolderDragDrop, bindSectionContextMenu, bindSectionHeaderEvents, chooseSectionIcon, deleteCustomSection, isFavoritesView, leaveSharedSection, moveSharedNoteToFolder, persistCollapsedFolders, renameSharedFolder, reparentSharedFolder, selectCustomFolder, selectCustomSection, syncCustomSections } from './ui/sections.js';
 import { applyTheme, enterWorkspace, handleAvatarFile } from './ui/shell.js';
 import { closeTab, renderTabs } from './ui/tabs.js';
 import { addKnownTag, renameTagEverywhere, tagEditorAdd, tagEditorRemove } from './ui/tags.js';
@@ -744,9 +744,20 @@ if (BUILD_NOTE_OK) {
       }
       const sub = event.target.closest('[data-strip-folder]');
       if (sub) {
+        // In Starred/Archive/Bin the strip filters within the view instead of
+        // hopping back to All Notes.
+        const inView = isFavoritesView() || state.activeView === 'archive' || state.activeView === 'bin';
+        if (inView) { applyStripFolderFilter(sub.dataset.stripSection, sub.dataset.stripFolder || null); return; }
         // Empty folder path = section glyph → open the whole section.
         if (!sub.dataset.stripFolder) { selectCustomSection(sub.dataset.stripSection); return; }
         selectCustomFolder(sub.dataset.stripSection, sub.dataset.stripFolder); return;
+      }
+      // Section letter tag above the glyph is also clickable → same as the glyph.
+      const tag = event.target.closest('.strip-section-tag[data-strip-section]');
+      if (tag) {
+        const inView = isFavoritesView() || state.activeView === 'archive' || state.activeView === 'bin';
+        if (inView) { applyStripFolderFilter(tag.dataset.stripSection, null); return; }
+        selectCustomSection(tag.dataset.stripSection); return;
       }
       const item = event.target.closest('[data-strip-note]');
       if (item) selectNote(item.dataset.stripNote);
@@ -776,7 +787,10 @@ if (BUILD_NOTE_OK) {
     }
     const sectionId = stripBackEl.dataset.stripSection;
     if (!sectionId) return;
+    if (stripBackEl.dataset.stripAll === '1') { goAllNotesKeepNote(); return; }
     const target = stripBackEl.dataset.stripTarget;
+    const inView = isFavoritesView() || state.activeView === 'archive' || state.activeView === 'bin';
+    if (inView) { applyStripFolderFilter(sectionId, target || null); return; }
     if (target) selectCustomFolder(sectionId, target);
     else selectCustomSection(sectionId);
   });
@@ -2528,6 +2542,15 @@ if (BUILD_NOTE_OK) {
     const missing = passwordPolicyCheck(password);
     if (missing.length) { fail(`Password needs ${missing.join(', ')}.`); return; }
     state.authBusy = true;
+    // Busy state: the server-side weak-password screen can take seconds, so the
+    // button must show it (mirrors the login handler's disabled button).
+    const regBtn = registerForm ? registerForm.querySelector('button[type="submit"]') : null;
+    const regBtnLabel = regBtn ? regBtn.textContent : '';
+    if (regBtn) { regBtn.disabled = true; regBtn.textContent = 'Creating account…'; }
+    const regDone = () => {
+      state.authBusy = false;
+      if (regBtn) { regBtn.disabled = false; regBtn.textContent = regBtnLabel; }
+    };
     let response;
     try {
       // E2EE+Argon2id registration: brand-new random master key, wrapped
@@ -2540,7 +2563,7 @@ if (BUILD_NOTE_OK) {
       const wrapped = await e2eeWrapMasterKeyArgon2id(password, saltEncBytes, masterRaw);
       if (!await e2eeTrialUnwrapArgon2id(password, saltEncBytes, wrapped)) {
         fail('Key setup failed locally — not uploaded. Retry.');
-        state.authBusy = false;
+        regDone();
         return;
       }
       response = await apiFetch('/api/register', {
@@ -2560,10 +2583,10 @@ if (BUILD_NOTE_OK) {
       });
     } catch (error) {
       fail('Cannot reach the Notely server. Is it running?');
-      state.authBusy = false;
+      regDone();
       return;
     }
-    state.authBusy = false;
+    regDone();
     if (response.status === 202) {
       // Uniform response: the server answers identically whether the name was
       // free or taken, so this message must not distinguish the two cases.
@@ -2573,30 +2596,33 @@ if (BUILD_NOTE_OK) {
         if (data && typeof data.message === 'string' && data.message) message = data.message;
       } catch (error) {}
       if (errorEl) errorEl.hidden = true;
-      // Show Account Created popup before redirecting to login
+      // Show Registered Successfully popup before redirecting to login.
+      // Toast + tab switch fire in all cases so feedback is guaranteed even if
+      // extension overlays (e.g. password managers) suppress the modal.
+      showToast('Account created — please log in');
       const createdOverlay = document.getElementById('account-created-overlay');
       if (createdOverlay) {
-        createdOverlay.hidden = false;
-        const okBtn = document.getElementById('account-created-ok');
-        const closeBtn = document.getElementById('close-account-created');
-        const goLogin = () => {
-          createdOverlay.hidden = true;
-          setAuthTab('login');
-          document.getElementById('login-username').value = username;
-          document.getElementById('register-password').value = '';
-          document.getElementById('register-confirm').value = '';
-          showToast('Please log in with your new account');
-        };
-        if (okBtn) okBtn.onclick = goLogin;
-        if (closeBtn) closeBtn.onclick = goLogin;
-        createdOverlay.onclick = (e) => { if (e.target === createdOverlay) goLogin(); };
-      } else {
-        showToast(message);
-        setAuthTab('login');
-        document.getElementById('login-username').value = username;
-        document.getElementById('register-password').value = '';
-        document.getElementById('register-confirm').value = '';
+        try {
+          createdOverlay.hidden = false;
+          const dismiss = () => {
+            createdOverlay.hidden = true;
+            showToast('Please log in with your new account');
+          };
+          const okBtn = document.getElementById('account-created-ok');
+          const closeBtn = document.getElementById('close-account-created');
+          if (okBtn) okBtn.onclick = dismiss;
+          if (closeBtn) closeBtn.onclick = dismiss;
+          createdOverlay.onclick = (e) => { if (e.target === createdOverlay) dismiss(); };
+        } catch (error) {
+          // Extension overlays can break modal wiring; the toast + tab switch
+          // still guarantee visible feedback.
+          console.error('register-complete:', error);
+        }
       }
+      setAuthTab('login');
+      document.getElementById('login-username').value = username;
+      document.getElementById('register-password').value = '';
+      document.getElementById('register-confirm').value = '';
     } else if (response.status === 429) {
       fail('Too many attempts — try again in a few minutes.');
     } else {
