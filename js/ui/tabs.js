@@ -127,18 +127,28 @@ function stripFolderKeepSet(section, pool) {
 // Collect a folder subtree into navigation buttons, level by level.
 // `rel` tracks nesting for icon sizing (parent 18px, sub 14px, sub-sub 10px).
 // `keep` (null = show all): folders outside the set are skipped.
-// Notes are never included here: a folder's notes appear only once that
-// folder itself is marked, never before.
-function collectStripFolders(section, parent, levels, rel, keep) {
+// `pool` (null = folders only): with a pool, each folder's matching notes are
+// collected into groups that render after ALL folder buttons. Used in search
+// mode so `tag:`/`body:`/text results appear in the strip; otherwise the strip
+// stays folders-only. Notes are never included here otherwise: a folder's
+// notes appear only once that folder itself is marked, never before.
+function collectStripFolders(section, parent, levels, rel, keep, pool) {
   let f = '';
+  const groups = [];
   if (levels > 0 && section) {
     (section.folders || []).filter((fl) => folderParent(fl) === parent && (!keep || keep.has(fl))).forEach((kid) => {
       const leaf = folderLeaf(kid);
       f += `<button type="button" class="strip-btn" data-strip-section="${escapeHtml(section.id)}" data-strip-folder="${escapeHtml(kid)}" title="Open folder ${escapeHtml(leaf)}" aria-label="Open folder ${escapeHtml(leaf)}"><span class="strip-folder-glyph strip-lvl${rel} ${customFolderColor(section, kid)}">${icon(folderIconForDepth(folderDepth(kid)))}</span></button>`;
-      f += collectStripFolders(section, kid, levels - 1, rel + 1, keep);
+      if (pool) {
+        const notes = pool.filter((note) => customNoteFolder(note, section.id) === kid);
+        if (notes.length) groups.push(notes.map(stripNoteBtn).join(''));
+      }
+      const sub = collectStripFolders(section, kid, levels - 1, rel + 1, keep, pool);
+      f += sub.f;
+      groups.push(...sub.groups);
     });
   }
-  return f;
+  return { f, groups };
 }
 
 // Render child subfolders of `parent` (up to `levels` deep) into the strip
@@ -146,15 +156,16 @@ function collectStripFolders(section, parent, levels, rel, keep) {
 // own direct notes (`ownNotesHtml`) under a separator.
 // Folder buttons reuse the strip navigation (click + right-click menu) via
 // data-strip-section/data-strip-folder.
-function renderStripSubfolders(section, parent, levels, ownNotesHtml) {
+function renderStripSubfolders(section, parent, levels, ownNotesHtml, pool) {
   const sep = `<span class="strip-separator" aria-hidden="true"></span>`;
   // True in Starred/Archive/Bin: the strip reflects the view by hiding
   // folders (and sections) with no visible notes under them.
   const reflectiveStrip = isFavoritesView() || state.activeView === 'archive' || state.activeView === 'bin';
   const keep = (section && reflectiveStrip) ? stripFolderKeepSet(section, visibleNotes()) : null;
-  const f = collectStripFolders(section, parent, levels, 0, keep);
-  if (!f && !ownNotesHtml) return '';
-  return f + (ownNotesHtml ? sep + ownNotesHtml : '');
+  const { f, groups } = collectStripFolders(section, parent, levels, 0, keep, pool || null);
+  const all = ownNotesHtml ? [ownNotesHtml, ...groups] : groups;
+  if (!f && !all.length) return '';
+  return f + (all.length ? sep + all.join(sep) : '');
 }
 
 export function renderStripItems() {
@@ -243,6 +254,7 @@ export function renderStripItems() {
   // The main strip lists sections like the expanded list does; the marked
   // section (live selection, else the last one the user marked) is highlighted.
   const sections = section ? [section] : state.customSections.slice();
+  const searching = state.searchQuery.trim() !== '';
   let html = '';
   sections.forEach((sec) => {
     if (!sec.folders.length) return;
@@ -253,16 +265,19 @@ export function renderStripItems() {
     html += `<span class="strip-section-tag" data-strip-section="${escapeHtml(sec.id)}" title="${escapeHtml(sec.name)}" aria-hidden="true">${escapeHtml(sec.name.charAt(0).toUpperCase() || '?')}</span>`;
     html += `<button type="button" class="strip-btn${isMarked ? ' is-section-active' : ''}" data-strip-section="${escapeHtml(sec.id)}" data-strip-folder="" title="Open section ${escapeHtml(sec.name)}" aria-label="Open section ${escapeHtml(sec.name)}"><span class="strip-folder-glyph ${customFolderColor(sec, '')}">${icon('folder-solid')}</span></button>`;
     if (!section) {
-      html += renderStripSubfolders(sec, null, 3, '');
+      // Search mode renders matching note icons under the folders so `tag:`,
+      // `body:` and text results appear in the strip; otherwise folders only.
+      html += renderStripSubfolders(sec, null, 3, '', searching ? visibleNotes() : null);
     }
   });
   // Inside a section or folder: the folder tree for navigation plus the
-  // marked folder's own notes under a separator.
+  // marked folder's own notes under a separator. In search mode the pool
+  // covers the whole subtree (own notes included, so own is folded in).
   if (section) {
     const pool = visibleNotes();
-    const own = folder ? pool.filter((note) => customNoteFolder(note, section.id) === folder) : [];
+    const own = (!searching && folder) ? pool.filter((note) => customNoteFolder(note, section.id) === folder) : [];
     html += renderStripSubfolders(section, folder, folder ? 2 : 3,
-      own.length ? own.map(stripNoteBtn).join('') : '');
+      own.length ? own.map(stripNoteBtn).join('') : '', searching ? pool : null);
   }
   box.innerHTML = html;
   if (backBtn) {

@@ -78,18 +78,37 @@ export async function syncNow() {
   paint('Syncing…', 'gray');
   try {
     let base = 0;
-    let serverPayload = null;
     if (choice === 'cloud') {
       const res = await apiFetch('/api/notes');
       if (!res.ok) throw new Error(`GET failed (HTTP ${res.status})`);
       const data = await res.json();
-      if (data && typeof data.updated_at === 'number') { base = data.updated_at; serverVersion = base; }
-      if (data && data.payload) {
+      const serverTs = (data && typeof data.updated_at === 'number') ? data.updated_at : 0;
+      // Adopt the server copy ONLY when it is actually newer (another device
+      // wrote since our last sync). Blindly adopting here destroyed unsynced
+      // local edits: state was reset to the server version and the PUT below
+      // then uploaded that stale copy — typed text never persisted.
+      if (data && data.payload && serverTs > (serverVersion || 0)) {
         const parsed = await e2eeDecryptPayload(data.payload, syncAadContext());
-        if (parsed && Array.isArray(parsed.notes)) {
-          try { const notesMod = await import('../ui/notes.js'); await notesMod.adoptNotesEnvelope(parsed); } catch (error) {}
+        const incoming = Array.isArray(parsed) ? parsed : (parsed && parsed.notes);
+        if (Array.isArray(incoming)) {
+          if (state.syncDirty) {
+            // Local edits pending: merge by id, locally-touched notes win by
+            // updatedAt, so in-flight typing survives a concurrent server write.
+            const merged = new Map();
+            for (const n of incoming) { if (n && n.id) merged.set(n.id, n); }
+            for (const n of state.notes) {
+              if (!n || !n.id) continue;
+              const cur = merged.get(n.id);
+              if (!cur || (n.updatedAt || 0) >= (cur.updatedAt || 0)) merged.set(n.id, n);
+            }
+            state.notes = [...merged.values()].slice(0, 2000);
+          } else {
+            try { const notesMod = await import('../ui/notes.js'); await notesMod.adoptNotesEnvelope(parsed); } catch (error) {}
+          }
         }
       }
+      base = serverTs;
+      serverVersion = serverTs;
     }
     const envelope = {
       v: 2,
@@ -106,8 +125,15 @@ export async function syncNow() {
       throw new Error(`PUT failed (HTTP ${put.status}) ${bodyText}`);
     }
     const putData = await put.json().catch(() => null);
-    if (putData && typeof putData.updated_at === 'number') serverVersion = putData.updated_at;
+    if (putData && typeof putData.updated_at === 'number') {
+      serverVersion = putData.updated_at;
+      // Keep the shared tracker in sync: the notes.js save path uses
+      // state.serverNotesVersion as its baseVersion, and the "Synced X ago"
+      // ticker reads state.lastSyncedAt (not the module locals here).
+      try { state.serverNotesVersion = serverVersion; } catch (error) {}
+    }
     lastSyncedAt = Date.now();
+    try { state.lastSyncedAt = lastSyncedAt; } catch (error) {}
     state.syncDirty = false;
     paint(`Synced to Server ${syncClock(lastSyncedAt)}`, 'green');
     return true;

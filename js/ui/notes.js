@@ -324,20 +324,47 @@ export function scopeNotes() {
 }
 
 // Sidebar search. Plain terms match file text (title + contents) and folder
-// names only — tags are excluded. `tag: <name>` matches tags and `body: <text>`
-// matches the note body. Terms are AND-ed.
+// names only — tags are excluded. `tag:<name>` (or `tag:"multi word"`) matches
+// tags and `body:<text>` (or `body:"multi word"`) matches the note body.
+// Terms are AND-ed.
 export function noteMatchesSearch(note, query) {
   const q = String(query == null ? '' : query).trim().toLowerCase();
   if (!q) return true;
   const title = typeof note.title === 'string' ? note.title : '';
   const body = typeof note.body === 'string' ? note.body : '';
+  // Recipe notes keep content in structured fields (description, ingredients,
+  // steps) instead of the body — include them so `body:` and plain search
+  // can find them.
+  const extraParts = [];
+  if (typeof note.description === 'string' && note.description) extraParts.push(note.description);
+  if (Array.isArray(note.ingredients)) {
+    for (const item of note.ingredients) {
+      const t = item && typeof item === 'object' ? item.t : item;
+      if (typeof t === 'string' && t) extraParts.push(t);
+    }
+  }
+  if (Array.isArray(note.steps)) {
+    for (const step of note.steps) {
+      if (typeof step === 'string' && step) extraParts.push(step);
+    }
+  }
+  const extra = extraParts.join('\n');
   const folders = note.sections && typeof note.sections === 'object'
     ? Object.values(note.sections).filter((value) => typeof value === 'string').join(' ')
     : '';
   const tags = (Array.isArray(note.tags) ? note.tags : []).filter((t) => typeof t === 'string').map((t) => t.toLowerCase());
-  const tokens = q.split(/\s+/).filter(Boolean);
+  // Quoted values first: tag:"my tag" and body:"hello world" match multi-word
+  // values that whitespace tokenizing would otherwise shred. Pulled out before
+  // the bare-token loop below so the quotes never leak into text terms.
   const tagTerms = [];
   const bodyTerms = [];
+  const rest = q.replace(/(tag|body):"([^"]*)"/g, (full, kind, val) => {
+    const v = String(val || '').trim();
+    if (!v) return ' ';
+    (kind === 'tag' ? tagTerms : bodyTerms).push(v);
+    return ' ';
+  });
+  const tokens = rest.split(/\s+/).filter(Boolean);
   const textTerms = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
@@ -360,9 +387,9 @@ export function noteMatchesSearch(note, query) {
     }
   }
   const tagMatch = tagTerms.every((term) => tags.some((tag) => tag.includes(term)));
-  const bodyHay = body.toLowerCase();
+  const bodyHay = `${body}\n${extra}`.toLowerCase();
   const bodyMatch = bodyTerms.every((term) => bodyHay.includes(term));
-  const haystack = `${title} ${body} ${folders}`.toLowerCase();
+  const haystack = `${title} ${body} ${extra} ${folders}`.toLowerCase();
   const textMatch = textTerms.every((term) => haystack.includes(term));
   return tagMatch && bodyMatch && textMatch;
 }
