@@ -183,7 +183,7 @@ export async function shamirParsePublic(shardTexts) {
     const body = match[2].replace(/[^0-9A-Z]/g, '');
     if (body.length < 9) throw new Error('shard too short');
     const raw = base32Decode(body.slice(0, -4));
-    if (!raw.length || raw[0] !== x) throw new Error('shadpoint mismatch');
+    if (!raw.length || raw[0] !== x) throw new Error('shard point mismatch');
     const check = body.slice(-4);
     if ((await shardChecksum(raw)) !== check) throw new Error('shard checksum failed');
     shares.push({ x, y: raw.slice(1) });

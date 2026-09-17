@@ -44,7 +44,7 @@ export function injectVerifiedScript(url, integrity) {
     script.integrity = integrity;
     script.crossOrigin = 'anonymous';
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error('argon2-load'));
+    script.onerror = () => { script.remove(); reject(new Error('argon2-load')); };
     document.head.appendChild(script);
   });
 }
@@ -168,6 +168,7 @@ export async function e2eeEncryptNotes(noteArray, aadContext) {
 }
 
 export async function e2eeDecryptPayload(payload, aadContext) {
+  if (!e2ee.masterKey) throw new Error('locked');
   const key = e2ee.masterKey;
   const raw = e2eeB64ToBytes(payload.data);
   const iv = e2eeB64ToBytes(payload.iv);

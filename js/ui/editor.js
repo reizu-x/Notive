@@ -108,8 +108,26 @@ export function newRecoveryCode() {
   return `${s.slice(0, 5)}-${s.slice(5, 10)}-${s.slice(10, 15)}-${s.slice(15, 20)}`;
 }
 
-export async function prfWrapMasterKey(prfSecretBytes, masterKeyRaw) {
-  const kekRaw = new Uint8Array(await window.crypto.subtle.digest('SHA-256', prfSecretBytes));
+// F-23: KEK from the PRF output via HKDF with a per-credential salt, not a
+// bare SHA-256. Adds domain separation so two credentials of one account no
+// longer share a KEK, and hardens against low-entropy PRF input.
+async function prfKekRawHKDF(prfSecretBytes, credentialIdB64) {
+  const base = await window.crypto.subtle.importKey('raw', prfSecretBytes, 'HKDF', false, ['deriveBits']);
+  const bits = await window.crypto.subtle.deriveBits(
+    {
+      name: 'HKDF', hash: 'SHA-256',
+      salt: new TextEncoder().encode('notely-prf-kek-v1:' + String(credentialIdB64 || '')),
+      info: new TextEncoder().encode('notely master-key KEK'),
+    }, base, 256);
+  return new Uint8Array(bits);
+}
+
+function prfKekRawLegacy(prfSecretBytes) {
+  return window.crypto.subtle.digest('SHA-256', prfSecretBytes);
+}
+
+export async function prfWrapMasterKey(prfSecretBytes, credentialIdB64, masterKeyRaw) {
+  const kekRaw = await prfKekRawHKDF(prfSecretBytes, credentialIdB64);
   const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['encrypt']);
   const iv = e2eeRandomBytes(12);
   const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, masterKeyRaw);
@@ -117,15 +135,20 @@ export async function prfWrapMasterKey(prfSecretBytes, masterKeyRaw) {
 }
 
 // --- Passkeys (option-1 login factor; password still unlocks E2EE notes) ---
-// PRF passwordless unlock: KEK = SHA-256(authenticator PRF output), used to
-// wrap/unwrap the account master key. MUST match on register (wrap) and login
-// (unwrap) — both sides call this one function.
-export async function prfUnwrapMasterKey(prfSecretBytes, wrapped) {
-  const kekRaw = new Uint8Array(await window.crypto.subtle.digest('SHA-256', prfSecretBytes));
-  const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-  const raw = await window.crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: e2eeB64ToBytes(wrapped.iv) }, kek, e2eeB64ToBytes(wrapped.data));
-  return window.crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+// PRF passwordless unlock. Dual-read: try per-credential HKDF first, then
+// fall back to the legacy SHA-256 KEK for wraps created before this change.
+export async function prfUnwrapMasterKey(prfSecretBytes, credentialIdB64, wrapped) {
+  const attempts = [await prfKekRawHKDF(prfSecretBytes, credentialIdB64), await prfKekRawLegacy(prfSecretBytes)];
+  let lastError = null;
+  for (const kekRaw of attempts) {
+    try {
+      const kek = await window.crypto.subtle.importKey('raw', kekRaw, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+      const raw = await window.crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: e2eeB64ToBytes(wrapped.iv) }, kek, e2eeB64ToBytes(wrapped.data));
+      return window.crypto.subtle.importKey('raw', raw, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+    } catch (error) { lastError = error; }
+  }
+  throw (lastError || new Error('prf-unwrap'));
 }
 
 export function moveCoverOnNote(clientY) {

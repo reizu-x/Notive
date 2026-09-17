@@ -42,7 +42,6 @@ export const state = {
   uiVaultTimer: null,
   activeCustom: null, // { section: id, folder: path | null } | null — section/folder filter,
   sharedFolder: null, // { groupId, folder } | null — folder filter inside the Shared view (folder '' = section root),
-  syncTimer: null,
   syncInFlight: null, // promise while a PUT is running — serializes syncs so no baseVersion race
   sectionMenuTarget: null, // section id,
   sectionIconTarget: null,
@@ -80,9 +79,7 @@ export const state = {
   savedFont: 'default',
   emailRecoveryToken: null,
   pendingRewrap: null,
-  syncTimer: null,
   saveTimer: null,
-  idleTimer: null,
   // Timestamp of the last successful server sync (drives the "Synced ago" label).
   lastSyncedAt: 0,
 };

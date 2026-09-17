@@ -43,9 +43,20 @@ export function syncClock(ts) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+let dirtyTimer = null;
 export function markDirty() {
   state.syncDirty = true;
   paint('Unsynced edits', 'warn');
+  scheduleSync();
+}
+
+export function scheduleSync(delay = 1500) {
+  if (dirtyTimer) return;           // already scheduled
+  if (!state.syncDirty) return;     // nothing to push
+  dirtyTimer = setTimeout(async () => {
+    dirtyTimer = null;
+    if (state.syncDirty) await syncNow().catch(() => {});
+  }, delay);
 }
 
 // Legacy shim used by ~80 call sites.
@@ -81,6 +92,8 @@ export async function syncNow() {
       vaultFolders: [...(state.vault && state.vault.folders ? state.vault.folders : [])],
       ui: uiSnapshot(),
     };
+    const gen = syncGeneration;
+    // ... existing sync logic ...
     const put = await apiFetch('/api/notes', { method: 'PUT', body: JSON.stringify({ payload: await e2eeEncryptNotes(envelope), baseVersion: base }) });
     if (!put.ok) {
       let bodyText = '';
@@ -97,6 +110,7 @@ export async function syncNow() {
   } catch (error) {
     const msg = error && error.message ? error.message : 'unknown error';
     paint(`Sync problem — ${msg}`, 'warn');
+    scheduleSync(5000); // back off and retry
     return false;
   } finally {
     syncBusy = false;

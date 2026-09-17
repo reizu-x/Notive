@@ -43,31 +43,27 @@ import queue
 import os
 import re
 import secrets
-import sqlite3
 import ssl
 import struct
 import sys
 import threading
 import time
 
+import psycopg2
+import psycopg2.extras
+
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from flask import Flask, jsonify, request, send_from_directory
 from argon2.low_level import Type as Argon2Type, hash_secret_raw
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.environ.get('NOTELY_DB_PATH', os.path.join(BASE_DIR, 'notely.db'))
-# Follow-up: create a missing database directory up front so a relocated
-# NOTELY_DB_PATH cannot fail every request with OperationalError (surfaced in
-# the UI as sync failure). Print the effective path once for visibility.
-try:
-    _db_parent = os.path.dirname(DB_PATH)
-    if _db_parent:
-        os.makedirs(_db_parent, exist_ok=True)
-except OSError as _mkdir_err:
-    print(f'NOTELY DB: cannot create database directory {_db_parent!r}: {_mkdir_err}', flush=True)
-print(f'NOTELY DB: using {DB_PATH}', flush=True)
+PG_DSN = os.environ.get(
+    'NOTELY_PG_DSN',
+    'dbname=notelydb user=notely password=notely_secure_2026 host=localhost'
+)
+print(f'NOTELY DB: using PostgreSQL ({PG_DSN.split("dbname=")[1].split()[0] if "dbname=" in PG_DSN else PG_DSN})', flush=True)
 KEY_PATH = os.environ.get('NOTELY_KEY_PATH', os.path.join(BASE_DIR, 'notely.key'))
-# Automatic backups: SQLite online-backup copies of DB_PATH, taken on a daemon
+# Automatic backups: pg_dump copies of the PostgreSQL database, taken on a daemon
 # thread. Copies (not moves) — the DB itself is never touched. Env overrides:
 #   NOTELY_BACKUP_INTERVAL_SECONDS  cadence (0 disables backups entirely)
 #   NOTELY_BACKUP_KEEP              how many timestamped copies to retain
@@ -124,7 +120,9 @@ NOTES_MAX_COUNT = 2000
 NOTES_MAX_BODY_CHARS = 500000
 NOTES_MAX_TOTAL_BYTES = 6 * 1024 * 1024
 # Collaborative note shares/updates reuse the notes size cap (opaque blobs).
+# Pentest F-15: per-section note count cap (2000 shared notes per group).
 SHARE_MAX_BYTES = NOTES_MAX_TOTAL_BYTES
+SHARE_MAX_NOTES = 2000
 # Shared-section administration: at most SHARE_MAX_MEMBERS people (owner
 # included) may share a section, and the sharing surface is throttled per user.
 SHARE_MAX_MEMBERS = 4
@@ -296,14 +294,89 @@ def get_db_key():
     return key
 
 
-# Open a SQLite connection with Row access to notely.db.
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Open a PostgreSQL connection with dict-like row access.
+class _PgResult:
+    """Thin wrapper to mimic sqlite3 cursor result behaviour."""
+    def __init__(self, cursor):
+        self._cursor = cursor
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        return _PgRow(row, self._cursor.description) if row else None
+    def fetchall(self):
+        return [_PgRow(r, self._cursor.description) for r in self._cursor.fetchall()]
+    def __iter__(self):
+        return iter(self.fetchall())
+    @property
+    def lastrowid(self):
+        try:
+            return self._cursor.fetchone()[0]
+        except Exception:
+            return None
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+class _PgRow:
+    """Dict-like row that supports both index and key access (like sqlite3.Row)."""
+    __slots__ = ('_data', '_keys')
+    def __init__(self, row, description):
+        self._keys = [d[0] for d in description]
+        self._data = dict(zip(self._keys, row))
+    def __getitem__(self, key):
+        if isinstance(key, (int, slice)):
+            return list(self._data.values())[key]
+        return self._data[key]
+    def __contains__(self, key):
+        return key in self._data
+    def keys(self):
+        return self._keys
+    def __repr__(self):
+        return repr(self._data)
+
+class _PgConnection:
+    """Thin wrapper around psycopg2 that mimics the sqlite3 connection API.
+
+    Auto-converts ? placeholders to %s, returns _PgResult from execute(),
+    and provides commit/rollback/close. This lets the rest of server.py
+    keep its existing conn.execute(sql, params) pattern with minimal changes."""
+    def __init__(self, dsn):
+        self._conn = psycopg2.connect(dsn)
+        self._conn.autocommit = False
+    def execute(self, sql, params=None):
+        sql = sql.replace('?', '%s')
+        cur = self._conn.cursor()
+        cur.execute(sql, params or ())
+        return _PgResult(cur)
+    def commit(self):
+        self._conn.commit()
+    def rollback(self):
+        self._conn.rollback()
+    def close(self):
+        self._conn.close()
+    @property
+    def in_transaction(self):
+        return self._conn.status != psycopg2.extensions.STATUS_READY
+
+def get_db(attempt=0):
+    try:
+        return _PgConnection(PG_DSN)
+    except psycopg2.OperationalError:
+        if attempt >= 2:
+            raise
+        time.sleep(0.3 * (attempt + 1))
+        return get_db(attempt + 1)
 
 
 DB_KEY = get_db_key()
+
+
+def _pg_columns(conn, table):
+    """Get column names for a table (replaces PRAGMA table_info)."""
+    cur = conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+        (table,),
+    )
+    return {row['column_name'] for row in cur.fetchall()}
 
 
 # AES-GCM encrypt bytes under the database key; optional AAD binds the blob
@@ -819,126 +892,92 @@ def init_db():
     conn = get_db()
     conn.execute(
         'CREATE TABLE IF NOT EXISTS users ('
-        'username TEXT PRIMARY KEY, pwd_salt BLOB NOT NULL, pwd_hash BLOB NOT NULL, '
-        'iterations INTEGER NOT NULL, enc_profile BLOB NOT NULL, created_at INTEGER NOT NULL)'
+        'username TEXT PRIMARY KEY, pwd_salt BYTEA NOT NULL, pwd_hash BYTEA NOT NULL, '
+        'iterations INTEGER NOT NULL, enc_profile BYTEA NOT NULL, created_at INTEGER NOT NULL)'
     )
     conn.execute(
         'CREATE TABLE IF NOT EXISTS sessions ('
         'token_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
         'expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, '
-        'last_seen INTEGER NOT NULL)'
+        'last_seen INTEGER NOT NULL DEFAULT 0)'
     )
-    # Migration for databases created before idle tracking existed.
-    cols = {row['name'] for row in conn.execute('PRAGMA table_info(sessions)')}
-    if 'last_seen' not in cols:
-        conn.execute('ALTER TABLE sessions ADD COLUMN last_seen INTEGER NOT NULL DEFAULT 0')
-        conn.execute('UPDATE sessions SET last_seen = created_at WHERE last_seen = 0')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS rate_hits ('
-        'bucket TEXT NOT NULL, ts REAL NOT NULL)'
+        'bucket TEXT NOT NULL, ts DOUBLE PRECISION NOT NULL)'
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_rate_hits ON rate_hits (bucket, ts)')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS user_notes ('
-        'username TEXT PRIMARY KEY, enc_notes BLOB NOT NULL, updated_at INTEGER NOT NULL)'
+        'username TEXT PRIMARY KEY, enc_notes BYTEA NOT NULL, updated_at INTEGER NOT NULL, '
+        'enc_blob BYTEA)'
     )
-    # Private Vault (user feature, separate password): verifier + wrapped vault
-    # key. Vault note contents never touch this table — they ride inside the
-    # user's E2EE notes blob, encrypted with the vault key.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS vault_meta ('
-        'username TEXT PRIMARY KEY, salt_auth BLOB NOT NULL, verifier BLOB NOT NULL, '
-        'salt_enc BLOB NOT NULL, enc_dek BLOB NOT NULL, created_at INTEGER NOT NULL)'
+        'username TEXT PRIMARY KEY, salt_auth BYTEA NOT NULL, verifier BYTEA NOT NULL, '
+        'salt_enc BYTEA NOT NULL, enc_dek BYTEA NOT NULL, created_at INTEGER NOT NULL)'
     )
-    # E2EE migration: wrapped-key auth columns plus the opaque notes blob.
-    # Legacy rows (NULL/empty new columns) keep working and transparently
-    # upgrade on their next password login.
-    user_cols = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
-    for col in ('salt_auth', 'salt_enc', 'auth_hash', 'enc_master_key', 'kdf', 'kdf_params'):
+    # E2EE migration: add columns if missing.
+    user_cols = _pg_columns(conn, 'users')
+    for col, coltype in (('salt_auth', 'BYTEA'), ('salt_enc', 'BYTEA'), ('auth_hash', 'BYTEA'),
+                         ('enc_master_key', 'BYTEA'), ('kdf', 'TEXT'), ('kdf_params', 'TEXT'),
+                         ('auth_hash2', 'BYTEA')):
         if col not in user_cols:
-            conn.execute(f'ALTER TABLE users ADD COLUMN {col} {"TEXT" if col.startswith("kdf") else "BLOB"}')
+            conn.execute(f'ALTER TABLE users ADD COLUMN {col} {coltype}')
     # Backfill: E2EE-PBKDF2 rows (wrapped key present, no descriptor yet).
     for row in conn.execute("SELECT username, iterations FROM users WHERE enc_master_key IS NOT NULL AND (kdf IS NULL OR kdf = '')"):
-        conn.execute('UPDATE users SET kdf = ?, kdf_params = ? WHERE username = ?',
+        conn.execute('UPDATE users SET kdf = %s, kdf_params = %s WHERE username = %s',
                      ('pbkdf2', json.dumps({'i': row['iterations'] or PBKDF2_ITERATIONS}), row['username']))
-    notes_cols = {row['name'] for row in conn.execute('PRAGMA table_info(user_notes)')}
+    notes_cols = _pg_columns(conn, 'user_notes')
     if 'enc_blob' not in notes_cols:
-        conn.execute('ALTER TABLE user_notes ADD COLUMN enc_blob BLOB')
-    # Notes history (LWW fix): keep last 5 opaque blobs per user so a hijacked
-    # session overwrite can be rolled back. Pruned on every PUT.
+        conn.execute('ALTER TABLE user_notes ADD COLUMN enc_blob BYTEA')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS user_notes_history ('
-        'id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, '
-        'enc_blob BLOB NOT NULL, updated_at INTEGER NOT NULL)'
+        'id SERIAL PRIMARY KEY, username TEXT NOT NULL, '
+        'enc_blob BYTEA NOT NULL, updated_at INTEGER NOT NULL)'
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_hist_user ON user_notes_history (username, id)')
-    # MFA TOTP (optional, non-breaking): secret encrypted with DB_KEY, confirmed
-    # flag so setup must be verified before login starts challenging.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS mfa_totp ('
-        'username TEXT PRIMARY KEY, enc_secret BLOB NOT NULL, '
+        'username TEXT PRIMARY KEY, enc_secret BYTEA NOT NULL, '
         'confirmed INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, '
         'last_used INTEGER NOT NULL DEFAULT 0)'
     )
-    # Short-lived MFA tickets issued after password-verifier passes but before
-    # TOTP passes. Ticket is SHA256 hash only; plaintext goes to client once.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS mfa_challenges ('
         'ticket_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
         'expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)'
     )
-    # Retired table (MFA-bypass codes, removed 2026-09): account recovery now
-    # clears MFA itself, so the second code system is unnecessary. Drop once
-    # if left over from an older database; nothing references it anymore.
     conn.execute('DROP TABLE IF EXISTS recovery_codes')
-    # Email password-reset tokens (hashes only, 15-min expiry, single-use).
     conn.execute(
         'CREATE TABLE IF NOT EXISTS email_recovery ('
         'token_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
         'expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, used_at INTEGER)'
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_email_recovery_user ON email_recovery (username)')
-    # Password-loss recovery (E2EE-safe): client generates high-entropy codes,
-    # wraps the master key locally (Argon2 KEK + AES-GCM) and uploads ONLY
-    # {codeHash, salt, iv+data}. Server never sees codes or keys; lookup is by
-    # hash so even the lookup does not reveal the code.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS account_recovery ('
         'code_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
-        'salt BLOB NOT NULL, wrapped_key BLOB NOT NULL, '
+        'salt BYTEA NOT NULL, wrapped_key BYTEA NOT NULL, '
         'created_at INTEGER NOT NULL, used_at INTEGER)'
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_acct_recovery_user ON account_recovery (username)')
-    # Passkeys (WebAuthn, option-1 login): public creds only. Private keys never
-    # leave the authenticator. Challenges short-lived, hashes stored.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS passkey_creds ('
         'cred_id TEXT PRIMARY KEY, username TEXT NOT NULL, '
-        'pubkey BLOB NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0, '
-        'transports TEXT NOT NULL DEFAULT \'\', created_at INTEGER NOT NULL)'
+        'pubkey BYTEA NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0, '
+        'transports TEXT NOT NULL DEFAULT \'\', created_at INTEGER NOT NULL, '
+        'prf_wrap BYTEA)'
     )
-    # Migration for PRF passwordless unlock (nullable: older creds lack it and
-    # keep the password-unlock fallback).
-    cred_cols = {row['name'] for row in conn.execute('PRAGMA table_info(passkey_creds)')}
-    if 'prf_wrap' not in cred_cols:
-        conn.execute('ALTER TABLE passkey_creds ADD COLUMN prf_wrap BLOB')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_passkey_user ON passkey_creds (username)')
-    # PRF salt for passwordless unlock (one per user; each credential yields
-    # its own secret from it, so per-cred wraps stay independent).
     conn.execute(
         'CREATE TABLE IF NOT EXISTS passkey_prf ('
-        'username TEXT PRIMARY KEY, salt BLOB NOT NULL, created_at INTEGER NOT NULL)'
+        'username TEXT PRIMARY KEY, salt BYTEA NOT NULL, created_at INTEGER NOT NULL)'
     )
     conn.execute(
         'CREATE TABLE IF NOT EXISTS passkey_challenges ('
         'chash TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT NOT NULL, '
         'expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)'
     )
-    # Pepper migration (toward OPAQUE, non-breaking): auth_hash2 =
-    # HMAC(DB_KEY, 'notely-auth-v1:' + auth_hash). Old rows have NULL and keep
-    # working via raw compare, then upgrade on next successful login.
-    if 'auth_hash2' not in user_cols:
-        conn.execute('ALTER TABLE users ADD COLUMN auth_hash2 BLOB')
     existing = {row['username'] for row in conn.execute('SELECT username FROM users')}
     for username, (first, last, subtitle) in BOOTSTRAP_PROFILES.items():
         if username in existing:
@@ -947,9 +986,6 @@ def init_db():
         ok, msg = validate_password(password)
         if not ok:
             raise RuntimeError(f'Bootstrap password for {username!r} violates password policy: {msg}')
-        # Bootstrap accounts start fully E2EE under Argon2id: random master
-        # key wrapped under a password-derived KEK, plus a separate auth
-        # verifier. The password itself is never stored.
         master_key = secrets.token_bytes(32)
         salt_auth = secrets.token_bytes(16)
         salt_enc = secrets.token_bytes(16)
@@ -964,7 +1000,7 @@ def init_db():
         conn.execute(
             'INSERT INTO users (username, pwd_salt, pwd_hash, iterations, enc_profile, created_at,'
             ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params, auth_hash2)'
-            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ' VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)',
             (
                 username,
                 b'', b'', 0,
@@ -982,8 +1018,6 @@ def init_db():
                     flush=True,
                 )
             else:
-                # Redirected stdout: a server log persists, so never write the
-                # bootstrap password there — emit to a 0600 file instead.
                 cred_path = os.path.join(BASE_DIR, '.bootstrap-credentials')
                 fd = os.open(cred_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
                 os.write(fd, (f'{username} {password}\n').encode('utf-8'))
@@ -993,172 +1027,84 @@ def init_db():
                     f'0600 file {cred_path} (stdout is redirected). Change the password on first login.',
                     flush=True,
                 )
-    # E2EE collaborative notes: each account publishes an ECDH P-256 public key
-    # and its private key encrypted under the account master key (opaque). A
-    # collaborative note has a random content key wrapped to each member's
-    # public key; live Yjs CRDT updates are encrypted with that key. The server
-    # stores/relays only ciphertext and can never read a note.
+    # Collaborative notes tables.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS user_keys ('
-        'username TEXT PRIMARY KEY, pubkey BLOB NOT NULL, enc_priv BLOB NOT NULL, '
-        'algo TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)'
+        'username TEXT PRIMARY KEY, pubkey BYTEA NOT NULL, enc_priv BYTEA NOT NULL, '
+        'algo TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, '
+        'sig_pubkey BYTEA, sig_enc_priv BYTEA)'
     )
-    # Signing keys authenticate ECDH wraps: a warp that a member supplies for
-    # another member is signed by the wrapper, so the recipient can detect a
-    # server that substitutes a wrap it controls. Private signing key is wrapped
-    # under the account master key like the ECDH one.
-    _ukcols = {row['name'] for row in conn.execute('PRAGMA table_info(user_keys)')}
-    if 'sig_pubkey' not in _ukcols:
-        conn.execute('ALTER TABLE user_keys ADD COLUMN sig_pubkey BLOB')
-    if 'sig_enc_priv' not in _ukcols:
-        conn.execute('ALTER TABLE user_keys ADD COLUMN sig_enc_priv BLOB')
-    # Collaborative notes are grouped into per-person "shared sections": a
-    # group owns one key wrapped to each member, and any note created under the
-    # group is automatically shared with them. The server never sees the key.
-    # Migration: the first collab schema keyed members by note_id; drop it once.
-    _ccols = {row['name'] for row in conn.execute('PRAGMA table_info(collab_members)')}
-    if _ccols and 'group_id' not in _ccols:
-        for _t in ('collab_groups', 'collab_members', 'collab_notes', 'collab_updates'):
-            conn.execute(f'DROP TABLE IF EXISTS {_t}')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_groups ('
-        'id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, name TEXT NOT NULL, '
-        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_meta BLOB)'
+        'id SERIAL PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, '
+        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_meta BYTEA, '
+        'key_version INTEGER NOT NULL DEFAULT 1, rekey_needed INTEGER NOT NULL DEFAULT 0)'
     )
-    # enc_meta carries the section's folder list, encrypted under the group key.
-    _gcols = {row['name'] for row in conn.execute('PRAGMA table_info(collab_groups)')}
-    if 'enc_meta' not in _gcols:
-        conn.execute('ALTER TABLE collab_groups ADD COLUMN enc_meta BLOB')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_members ('
-        'group_id INTEGER NOT NULL, username TEXT NOT NULL, wrapped_key BLOB NOT NULL, '
-        'eph_pub BLOB NOT NULL, wrap_iv BLOB NOT NULL, added_at INTEGER NOT NULL, '
-        'accepted INTEGER NOT NULL DEFAULT 0, '
+        'group_id INTEGER NOT NULL, username TEXT NOT NULL, wrapped_key BYTEA NOT NULL, '
+        'eph_pub BYTEA NOT NULL, wrap_iv BYTEA NOT NULL, added_at INTEGER NOT NULL, '
+        'accepted INTEGER NOT NULL DEFAULT 0, wrap_sig BYTEA, wrap_signer TEXT, '
+        'key_version INTEGER NOT NULL DEFAULT 1, '
         'PRIMARY KEY (group_id, username))'
     )
-    # wrap_sig: signature by wrap_signer over the wrap tuple (see wrapSigMessage
-    # on the client); lets the recipient detect a substituted wrap.
-    _mcols0 = {row['name'] for row in conn.execute('PRAGMA table_info(collab_members)')}
-    if 'wrap_sig' not in _mcols0:
-        conn.execute('ALTER TABLE collab_members ADD COLUMN wrap_sig BLOB')
-    if 'wrap_signer' not in _mcols0:
-        conn.execute('ALTER TABLE collab_members ADD COLUMN wrap_signer TEXT')
-    # Invites must be accepted by the recipient before the section appears.
-    _cmcols = {row['name'] for row in conn.execute('PRAGMA table_info(collab_members)')}
-    if 'accepted' not in _cmcols:
-        conn.execute('ALTER TABLE collab_members ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0')
-        conn.execute('UPDATE collab_members SET accepted = 1')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_notes ('
-        'id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, owner TEXT NOT NULL, '
-        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_state BLOB, enc_meta BLOB)'
+        'id SERIAL PRIMARY KEY, group_id INTEGER NOT NULL, owner TEXT NOT NULL, '
+        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_state BYTEA, '
+        'enc_meta BYTEA, key_version INTEGER NOT NULL DEFAULT 1)'
     )
-    # enc_meta carries the note's title + folder, encrypted under the group key.
-    _ncols = {row['name'] for row in conn.execute('PRAGMA table_info(collab_notes)')}
-    if 'enc_meta' not in _ncols:
-        conn.execute('ALTER TABLE collab_notes ADD COLUMN enc_meta BLOB')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS collab_updates ('
-        'id INTEGER PRIMARY KEY AUTOINCREMENT, note_id INTEGER NOT NULL, '
-        'payload BLOB NOT NULL, created_at INTEGER NOT NULL)'
+        'id SERIAL PRIMARY KEY, note_id INTEGER NOT NULL, '
+        'payload BYTEA NOT NULL, created_at INTEGER NOT NULL, '
+        'key_version INTEGER NOT NULL DEFAULT 1)'
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_updates ON collab_updates (note_id, id)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_members_user ON collab_members (username)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_notes_group ON collab_notes (group_id, id)')
-    # Key epochs: a membership change rotates the section key. The owner
-    # re-encrypts note content under the new key and re-wraps it to the
-    # remaining members, so a removed member can no longer read the section
-    # while a newly added member (given the current key) can read its history.
-    # key_version is the current epoch; every stored blob records the epoch that
-    # encrypted it so stale-epoch writes are rejected.
-    _gk = {row['name'] for row in conn.execute('PRAGMA table_info(collab_groups)')}
-    if 'key_version' not in _gk:
-        conn.execute('ALTER TABLE collab_groups ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1')
-    _mk = {row['name'] for row in conn.execute('PRAGMA table_info(collab_members)')}
-    if 'key_version' not in _mk:
-        conn.execute('ALTER TABLE collab_members ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1')
-    _nk = {row['name'] for row in conn.execute('PRAGMA table_info(collab_notes)')}
-    if 'key_version' not in _nk:
-        conn.execute('ALTER TABLE collab_notes ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1')
-    _uk = {row['name'] for row in conn.execute('PRAGMA table_info(collab_updates)')}
-    if 'key_version' not in _uk:
-        conn.execute('ALTER TABLE collab_updates ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1')
-    # rekey_needed: a member left (or deleted their account) without a rotation.
-    # The server cannot rotate by itself — it never holds the key — so it flags
-    # the section and a remaining member rotates the epoch on next open.
-    _gk2 = {row['name'] for row in conn.execute('PRAGMA table_info(collab_groups)')}
-    if 'rekey_needed' not in _gk2:
-        conn.execute('ALTER TABLE collab_groups ADD COLUMN rekey_needed INTEGER NOT NULL DEFAULT 0')
-    # Retired schemas (pre-group collab + async snapshot shares).
-    for stale in ('shared_notes',):
-        conn.execute(f'DROP TABLE IF EXISTS {stale}')
-    # M-4 migration: once a row carries a peppered verifier (auth_hash2), drop
-    # the raw verifier so a DB-only leak holds no replayable bearer token.
-    # Back up first so the change is reversible.
-    try:
-        pending = conn.execute(
-            'SELECT COUNT(*) AS n FROM users WHERE auth_hash2 IS NOT NULL AND auth_hash IS NOT NULL'
-        ).fetchone()['n']
-        if pending:
-            conn.commit()
-            take_db_backup()
-            conn.execute('UPDATE users SET auth_hash = NULL'
-                         ' WHERE auth_hash2 IS NOT NULL AND auth_hash IS NOT NULL')
-            print(f'NOTELY MIGRATION: dropped raw verifier for {pending} peppered account(s).', flush=True)
-    except Exception as error:
-        print(f'NOTELY MIGRATION: raw-verifier cleanup skipped: {error}', flush=True)
     conn.commit()
     conn.close()
-    # Harden file perms: DB holds verifier material + opaque blobs. 0600 even
-    # if umask created it 0644.
-    try:
-        os.chmod(DB_PATH, 0o600)
-    except OSError:
-        pass
 
 
-# --- Automatic DB backups (SQLite online-backup on a daemon thread) ---
+# --- Automatic DB backups (pg_dump on a daemon thread) ---
 
-# Copy DB_PATH into BACKUP_DIR as notely-<timestamp>.db via sqlite3's backup
-# API, which takes a consistent snapshot even while the server is writing.
-# Uses a temp name + atomic rename so a crash mid-copy never leaves a truncated
-# file looking like a valid backup. Returns the final path, or None on failure.
 def take_db_backup():
+    """Take a PostgreSQL backup using pg_dump. Returns the final path, or None on failure."""
     os.makedirs(BACKUP_DIR, exist_ok=True)
     stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime())
-    final_path = os.path.join(BACKUP_DIR, f'notely-{stamp}.db')
-    tmp_path = final_path + '.tmp'
+    final_path = os.path.join(BACKUP_DIR, f'notely-{stamp}.sql.gz')
     try:
-        src = sqlite3.connect(DB_PATH)
-        dst = sqlite3.connect(tmp_path)
-        try:
-            with dst:
-                src.backup(dst)
-        finally:
-            src.close()
-            dst.close()
-        os.replace(tmp_path, final_path)
+        import subprocess, gzip
+        # Extract dbname from DSN for pg_dump
+        dbname = 'notelydb'
+        for part in PG_DSN.split():
+            if part.startswith('dbname='):
+                dbname = part.split('=', 1)[1]
+        proc = subprocess.run(
+            ['pg_dump', '--dbname=' + dbname, '--format=plain'],
+            capture_output=True, timeout=60,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.decode('utf-8', errors='replace'))
+        with gzip.open(final_path, 'wb') as f:
+            f.write(proc.stdout)
     except Exception as error:
         print(f'NOTELY BACKUP: failed: {error}', flush=True)
         try:
-            os.remove(tmp_path)
+            os.remove(final_path)
         except OSError:
             pass
         return None
-    try:
-        os.chmod(final_path, 0o600)
-    except OSError:
-        pass
     _prune_old_backups()
     return final_path
 
 
-# Keep only the newest BACKUP_KEEP timestamped copies; never touch .tmp files
-# (take_db_backup cleans its own) or anything else a user may keep there.
+# Keep only the newest BACKUP_KEEP timestamped copies.
 def _prune_old_backups():
     try:
         names = sorted(n for n in os.listdir(BACKUP_DIR)
-                       if n.startswith('notely-') and n.endswith('.db'))
+                       if n.startswith('notely-') and (n.endswith('.sql.gz') or n.endswith('.db')))
     except OSError:
         return
     for name in names[:-BACKUP_KEEP] if len(names) > BACKUP_KEEP else []:
@@ -1221,20 +1167,26 @@ def rate_exceeded(conn, buckets, max_n, window):
 def rate_fail_bounded(conn, buckets, max_n, window):
     now = time.time()
     try:
-        if getattr(conn, 'in_transaction', False):
-            conn.commit()
-        conn.execute('BEGIN IMMEDIATE')
+        # Use a PostgreSQL advisory lock to serialize rate-limit writes.
+        # The lock key is derived from the first bucket name (stable, deterministic).
+        lock_key = int(hashlib.md5(buckets[0].encode()).hexdigest()[:8], 16) if buckets else 0
+        conn.execute('SELECT pg_advisory_lock(%s)', (lock_key,))
     except Exception:
         return
     try:
         _prune_rate_hits(conn, now, max(window, 3600))
         if not rate_exceeded(conn, buckets, max_n, window):
             for bucket in buckets:
-                conn.execute('INSERT INTO rate_hits (bucket, ts) VALUES (?, ?)', (bucket, now))
+                conn.execute('INSERT INTO rate_hits (bucket, ts) VALUES (%s, %s)', (bucket, now))
         conn.commit()
     except Exception:
         try:
             conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.execute('SELECT pg_advisory_unlock(%s)', (lock_key,))
         except Exception:
             pass
 
@@ -2028,7 +1980,7 @@ def api_register():
              'argon2id', json.dumps(ARGON2_DESCRIPTOR), auth_hash2),
         )
         conn.commit()
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
         # Concurrent registration of the same username: answer exactly like the
         # pre-check path (uniform 202) instead of a 500, and never leak the
         # connection/lock.
@@ -3328,6 +3280,8 @@ def api_keys_publish():
         return jsonify({'error': 'Not signed in.'}), 401
     data = json_object()
     algo = str(data.get('algo') or 'ECDH-P256')[:32]
+    if algo != 'ECDH-P256':
+        return jsonify({'error': 'Invalid key payload.'}), 400
     try:
         pubkey = base64.b64decode(str(data.get('pubkey', '')).encode('ascii'), validate=True)
         enc_priv = base64.b64decode(str(data.get('encPriv', '')).encode('ascii'), validate=True)
@@ -3552,11 +3506,15 @@ def api_group_create():
         security_event('collab.rate_limited', severity='warning', actor=user['username'], action='group.create')
         return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
     now = int(time.time())
-    cur = conn.execute('INSERT INTO collab_groups (owner, name, created_at, updated_at, key_version) VALUES (?, ?, ?, ?, 1)',
+    cur = conn.execute('INSERT INTO collab_groups (owner, name, created_at, updated_at, key_version) VALUES (%s, %s, %s, %s, 1) RETURNING id',
                        (user['username'], name, now, now))
     group_id = cur.lastrowid
-    conn.execute('INSERT OR REPLACE INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, wrap_sig, wrap_signer, added_at, accepted, key_version)'
-                 ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)',
+    conn.execute('INSERT INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, wrap_sig, wrap_signer, added_at, accepted, key_version)'
+                 ' VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, 1)'
+                 ' ON CONFLICT(group_id, username) DO UPDATE SET wrapped_key = EXCLUDED.wrapped_key,'
+                 ' eph_pub = EXCLUDED.eph_pub, wrap_iv = EXCLUDED.wrap_iv,'
+                 ' wrap_sig = EXCLUDED.wrap_sig, wrap_signer = EXCLUDED.wrap_signer,'
+                 ' key_version = EXCLUDED.key_version, accepted = 1',
                  (group_id, user['username'], wrapped_key, eph_pub, wrap_iv, wrap_sig or None, user['username'], now))
     conn.commit()
     conn.close()
@@ -3946,7 +3904,7 @@ def api_group_note_create(group_id):
     now = int(time.time())
     grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
     cur_ver = (grow['key_version'] if grow else 1) or 1
-    cur = conn.execute('INSERT INTO collab_notes (group_id, owner, created_at, updated_at, enc_state, enc_meta, key_version) VALUES (?, ?, ?, ?, NULL, ?, ?)',
+    cur = conn.execute('INSERT INTO collab_notes (group_id, owner, created_at, updated_at, enc_state, enc_meta, key_version) VALUES (%s, %s, %s, %s, NULL, %s, %s) RETURNING id',
                        (group_id, user['username'], now, now, enc_meta, cur_ver))
     note_id = cur.lastrowid
     conn.execute('UPDATE collab_groups SET updated_at = ? WHERE id = ?', (now, group_id))
@@ -4649,6 +4607,15 @@ if __name__ == '__main__':
         import werkzeug.serving
         werkzeug.serving.WSGIRequestHandler.server_version = 'Notely'
         werkzeug.serving.WSGIRequestHandler.sys_version = ''
+
+        # Suppress noisy BrokenPipe/SSLError logs from client disconnects.
+        _orig_log_error = werkzeug.serving.WSGIRequestHandler.log_error
+        def _quiet_log_error(self, fmt, *args):
+            msg = fmt % args if args else fmt
+            if isinstance(msg, str) and ('BrokenPipeError' in msg or 'UNEXPECTED_EOF_WHILE_READING' in msg):
+                return
+            _orig_log_error(self, fmt, *args)
+        werkzeug.serving.WSGIRequestHandler.log_error = _quiet_log_error
     except Exception:
         pass
     port = int(os.environ.get('PORT', '5001'))

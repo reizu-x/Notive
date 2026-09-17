@@ -486,8 +486,8 @@ export async function collabCompact() {
   if (!state.collab.doc || !state.collab.key || !state.collab.noteId) return;
   try {
     const Y = await loadYjs();
-    const state = Y.encodeStateAsUpdate(state.collab.doc);
-    const payload = await collabEncrypt(state.collab.key, state);
+    const updateBytes = Y.encodeStateAsUpdate(state.collab.doc);
+    const payload = await collabEncrypt(state.collab.key, updateBytes);
     const res = await apiFetch(`/api/collab/notes/${state.collab.noteId}/compact`, { method: 'POST', body: JSON.stringify({ state: payload, keyVersion: state.collab.keyVersion }) });
     if (res && res.ok) state.collab.outbox.length = 0; // full state covers every queued update
   } catch (error) {}
@@ -500,7 +500,7 @@ export function collabPresenceHeartbeat() {
   state.collab.presenceTimer = setTimeout(collabPresenceHeartbeat, 5000);
 }
 
-const PRESENCE_COLOR_RE = /^hsl\(\d{1,3}(?:\.\d+)?, ?\d{1,3}%, ?\d{1,3}%\)$/;
+const PRESENCE_COLOR_RE = /^hsl\(\d{1,3}(?:\.\d+)?, ?(?:100|\d{1,2})%, ?(?:100|\d{1,2})%\)$/;
 
 // Peer-supplied presence colors are interpolated into style attributes below;
 // validate them (XSS boundary: an accepted collaborator can send arbitrary
@@ -572,10 +572,12 @@ export function renderCollabPresence() {
   }
   const now = Date.now();
   const entries = [];
+  const stale = [];
   state.collab.presence.forEach((p, id) => {
     if (now - p.ts < COLLAB_PRESENCE_TTL_MS) entries.push({ id, ...p });
-    else state.collab.presence.delete(id);
+    else stale.push(id);
   });
+  stale.forEach((id) => state.collab.presence.delete(id));
   entries.sort((a, b) => String(a.user).localeCompare(String(b.user)));
   if (box) {
     // Always show a "you" chip so the row is visible even when alone; remote

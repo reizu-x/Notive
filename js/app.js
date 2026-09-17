@@ -2704,7 +2704,7 @@ if (BUILD_NOTE_OK) {
       let unlocked = false;
       if (prfSecret && data.prfWrap) {
         try {
-          e2ee.masterKey = await prfUnwrapMasterKey(prfSecret, data.prfWrap);
+          e2ee.masterKey = await prfUnwrapMasterKey(prfSecret, cred.id, data.prfWrap);
           e2ee.kdf = data.kdf || 'argon2id';
           unlocked = true;
         } catch (error) { /* fall through to password */ }
@@ -2773,7 +2773,7 @@ if (BUILD_NOTE_OK) {
       if (prfSecret && !data.prfWrap && e2ee.masterKey) {
         try {
           const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
-          const prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
+          const prfWrap = await prfWrapMasterKey(prfSecret, cred.id, masterRaw);
           await apiFetch('/api/passkey/prf-wrap', { method: 'POST', body: JSON.stringify({ id: cred.id, prfWrap }) });
         } catch (error) {}
       }
@@ -2985,7 +2985,7 @@ if (BUILD_NOTE_OK) {
           }
           if (prfSecret) {
             const masterRaw = await window.crypto.subtle.exportKey('raw', e2ee.masterKey);
-            prfWrap = await prfWrapMasterKey(prfSecret, masterRaw);
+            prfWrap = await prfWrapMasterKey(prfSecret, cred.id, masterRaw);
           }
         }
       } catch (error) { prfWrap = null; }
@@ -3608,9 +3608,8 @@ if (BUILD_NOTE_OK) {
       const ready = (() => { try { return Boolean(state.cachedProfile && e2ee.masterKey); } catch (e) { return false; } })();
       if (ready) { clearInterval(bootTimer); mod.syncNow().catch(() => {}); }
     }, 300);
-    // Debounced auto-sync: every persistNotes() marks dirty; a single timer
-    // pushes it soon after the last change stops.
-    setInterval(() => { if (mod.isDirty()) mod.syncNow(); }, 1200);
+    // Debounced auto-sync: markDirty() → scheduleSync() pushes after 1.5s idle.
+    // No polling interval — sync fires only when something actually changed.
   });
   window.addEventListener('pagehide', () => {
     try {
