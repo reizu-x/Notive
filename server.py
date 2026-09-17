@@ -303,8 +303,12 @@ class _PgResult:
         row = self._cursor.fetchone()
         return _PgRow(row, self._cursor.description) if row else None
     def fetchall(self):
+        if not self._cursor.description:
+            return []
         return [_PgRow(r, self._cursor.description) for r in self._cursor.fetchall()]
     def __iter__(self):
+        if not self._cursor.description:
+            return iter([])
         return iter(self.fetchall())
     @property
     def lastrowid(self):
