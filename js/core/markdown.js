@@ -8,6 +8,7 @@ export function renderMarkdown(markdown) {
   let inList = false;
   let listType = '';
   let inCode = false;
+  let codeLang = '';
   let code = [];
 
   const closeList = () => {
@@ -23,8 +24,15 @@ export function renderMarkdown(markdown) {
     if (line.trim().startsWith('```')) {
       closeList();
       if (inCode) {
-        html += `<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`;
+        if (codeLang === 'mermaid') {
+          html += `<div class="mermaid">${escapeHtml(code.join('\n'))}</div>`;
+        } else {
+          html += `<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`;
+        }
         code = [];
+        codeLang = '';
+      } else {
+        codeLang = line.trim().slice(3).trim().toLowerCase();
       }
       inCode = !inCode;
       continue;
@@ -92,7 +100,13 @@ export function renderMarkdown(markdown) {
     html += `<p>${inlineMarkdown(line)}</p>`;
   }
   closeList();
-  if (inCode) html += `<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`;
+  if (inCode) {
+    if (codeLang === 'mermaid') {
+      html += `<div class="mermaid">${escapeHtml(code.join('\n'))}</div>`;
+    } else {
+      html += `<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`;
+    }
+  }
   return html || '<p class="preview-placeholder">Start writing to see your note here.</p>';
 }
 

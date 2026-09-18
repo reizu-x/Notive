@@ -438,6 +438,12 @@ export function applyTheme(theme, announce = false) {
     option.setAttribute('aria-selected', selected ? 'true' : 'false');
   });
   if (announce) showToast(`${THEME_LABELS[normalized] || normalized} theme on`);
+  // Update mermaid theme to match
+  try {
+    if (window.mermaid) {
+      window.mermaid.initialize({ theme: normalized === 'dark' ? 'dark' : 'default' });
+    }
+  } catch (error) {}
 }
 
 export async function handleAvatarFile(file) {

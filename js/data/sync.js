@@ -4,6 +4,7 @@ import { allVaultBlobs, allVaultFolders } from './vault.js';
 import { apiFetch } from './api.js';
 import { state } from '../domain/state.js';
 import { escapeHtml } from '../core/strings.js';
+import { preferredTimezone, formatTime } from '../core/dates.js';
 
 let lastSyncedAt = 0;
 let serverVersion = 0;
@@ -44,9 +45,7 @@ function paint(text, mode) {
 }
 
 export function syncClock(ts) {
-  const d = new Date(ts);
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatTime(ts, preferredTimezone());
 }
 
 let dirtyTimer = null;

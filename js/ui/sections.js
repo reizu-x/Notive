@@ -17,7 +17,7 @@ import { BIN_RETENTION_MS } from '../core/dates.js';
 import { noteList } from '../core/elements.js';
 import { cleanFolderPath, folderIconForDepth, joinLeafRename } from '../core/paths.js';
 import { MIGRATED_COLLECTIONS_SECTION_ID } from '../core/schema.js';
-import { collabAddGroupMember, renderSharedView, updateSharedNoteMeta } from '../data/collab-crypto.js';
+import { collabAddGroupMember, collabCreate, renderSharedView, updateSharedNoteMeta } from '../data/collab-crypto.js';
 import { e2ee } from '../data/crypto.js';
 import { cleanVaultFolderInput } from '../data/vault.js';
 import { DEFAULT_CUSTOM_FOLDERS } from '../domain/constants.js';
@@ -738,11 +738,13 @@ export function uniqueSectionId() {
   return id;
 }
 
-export function uniqueSectionName() {
+export function uniqueSectionName(base) {
   const taken = new Set(takenSectionNames(null));
+  if (base && !taken.has(base.toLowerCase())) return base;
   let counter = 1;
-  while (taken.has(`section ${counter}`)) counter += 1;
-  return `Section ${counter}`;
+  const prefix = base || 'Section';
+  while (taken.has(`${prefix} ${counter}`.toLowerCase())) counter += 1;
+  return base ? `${prefix} ${counter}` : `Section ${counter}`;
 }
 
 // All taken section display names (lowercased), optionally skipping one entry.
@@ -831,7 +833,7 @@ function renderSharedPersonRows(container) {
           <span class="collection-label">${escapeHtml(name)}</span>
         </a>`).join('')
       + `</div></div>`
-    : `<p class="modal-desc shared-pad">No connections yet.</p>`;
+    : '';
 }
 
 // Paint section headers (all sections share the same custom implementation).
@@ -871,11 +873,25 @@ export function renderCustomSections() {
     const addBtn = document.getElementById('new-section');
     if (addBtn) {
       const inVault = state.activeView === 'vault';
-      addBtn.innerHTML = inVault ? '<span>+</span> Add Vault' : '<span>+</span> Add section';
-      addBtn.title = inVault ? 'Add vault (max 3)' : 'Add section';
-      addBtn.setAttribute('aria-label', inVault ? 'Add vault' : 'Add section');
+      const inShared = state.activeView === 'shared';
+      if (inShared) {
+        addBtn.innerHTML = '<span>+</span><span class="btn-label"> New Connection</span>';
+        addBtn.title = 'New Connection';
+        addBtn.setAttribute('aria-label', 'New Connection');
+      } else if (inVault) {
+        addBtn.innerHTML = '<span>+</span><span class="btn-label"> Add Vault</span>';
+        addBtn.title = 'Add vault (max 3)';
+        addBtn.setAttribute('aria-label', 'Add vault');
+      } else {
+        addBtn.innerHTML = '<span>+</span><span class="btn-label"> Add section</span>';
+        addBtn.title = 'Add section';
+        addBtn.setAttribute('aria-label', 'Add section');
+      }
     }
   } catch (error) {}
+  // In shared view, keep the button visible when collapsed (shows just "+").
+  const addSectionWrap = document.querySelector('.add-section-wrap');
+  if (addSectionWrap) addSectionWrap.classList.toggle('shared-active', state.activeView === 'shared');
   // Shared view: Main Sub Sections mirrors the connected accounts instead
   // of your own sections (click a person to filter their sections).
   if (state.activeView === 'shared') {
@@ -890,7 +906,23 @@ export function renderCustomSections() {
     updateSectionHeaders();
     return;
   }
-  container.innerHTML = state.customSections.map((section) => `
+  // Favourites/Archive view: only show sections that have matching notes.
+  const isFav = state.activeView === 'favorites' || (state.activeView === 'notes' && state.activeFilter === 'favorites');
+  const isArchive = state.activeView === 'archive';
+  let sections = state.customSections;
+  if (isFav || isArchive) {
+    const matchSections = new Set();
+    for (const note of state.notes) {
+      if (note.deleted) continue;
+      if (isFav && !note.favorite) continue;
+      if (isArchive && !note.archived) continue;
+      if (note.sections && typeof note.sections === 'object') {
+        for (const secId of Object.keys(note.sections)) matchSections.add(secId);
+      }
+    }
+    sections = state.customSections.filter((s) => matchSections.has(s.id));
+  }
+  container.innerHTML = sections.map((section) => `
     <div class="sidebar-section" data-custom-section="${escapeHtml(section.id)}" data-section="custom">
       <div class="section-label">
         <span class="section-initial" title="${escapeHtml(section.name)}" aria-hidden="true">${icon(sectionIconName(section))}</span>
@@ -1821,7 +1853,11 @@ export function bindCustomSectionsEvents() {
   const newSectionBtn = document.getElementById('new-section');
   if (newSectionBtn) newSectionBtn.addEventListener('click', (event) => {
     event.preventDefault();
-    addCustomSection();
+    if (state.activeView === 'shared') {
+      try { collabCreate(); } catch (error) {}
+    } else {
+      addCustomSection();
+    }
   });
 }
 
@@ -2200,7 +2236,7 @@ export function startSectionRename(target, anchorEl) {
   input.onblur = () => finish(true);
 }
 
-export function addCustomSection() {
+export async function addCustomSection() {
   if (!e2ee.masterKey) { showToast('Log in to manage sections'); return; }
   // Inside the Vault, "+ Add section" creates another vault (max 3) under
   // the shared password — and stays in context.
@@ -2212,7 +2248,17 @@ export function addCustomSection() {
     } catch (error) {}
     return;
   }
-  const section = { id: uniqueSectionId(), name: uniqueSectionName(), folders: [], icon: SECTION_ICONS[0] };
+  const name = await askInput({
+    eyebrow: 'Section',
+    title: 'New Section',
+    desc: 'Give your section a name.',
+    label: 'Section name',
+    password: false,
+    placeholder: 'My section',
+    okText: 'Create',
+  });
+  if (!name || !name.trim()) return;
+  const section = { id: uniqueSectionId(), name: uniqueSectionName(name.trim()), folders: [], icon: SECTION_ICONS[0] };
   state.customSections.push(section);
   persistCustomSections();
   state.activeView = 'notes';
@@ -2224,7 +2270,7 @@ export function addCustomSection() {
   updateListHeading();
   renderCustomSections();
   renderNoteList();
-  showToast('Section added — name it');
+  showToast(`Section "${section.name}" created`);
   startSectionRename({ kind: 'custom', id: section.id });
 }
 

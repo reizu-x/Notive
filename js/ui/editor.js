@@ -1,7 +1,7 @@
 // js/ui/editor.js — editor-experience helpers: live preview, syntax layer,
 // beautify, cover upload/reposition, recipe fields.
 
-import { beautifyBtn, editorToolbar, markdownInput, modeLabel, modeToggle, noteList, preview, syntaxLayer, typeBadge } from '../core/elements.js';
+import { beautifyBtn, editorToolbar, markdownInput, modeLabel, modeToggle, noteList, preview, syntaxLayer, typeBadge, checkboxOverlay, todoToolbox, todoRendered } from '../core/elements.js';
 import { renderMarkdown } from '../core/markdown.js';
 import { COVER_MAX_DIM, EXT_LABELS, cleanCoverSrc, isImageFile, sanitizeIngredients, sanitizeSteps } from '../core/schema.js';
 import { escapeHtml } from '../core/strings.js';
@@ -424,20 +424,46 @@ export function renderPreview(note) {
   if (state.collab.noteId && state.collab.body) {
     note = { id: state.collab.noteId, title: state.collab.title ? state.collab.title.toString() : '',
              body: state.collab.body.toString(), ext: 'md', tags: [], favorite: false,
-             archived: false, deleted: false };
+             archived: false, deleted: false, template: state.collab.template || '' };
   }
   if (!note) return;
   const bottomHint = document.querySelector('.editor-bottom-fixed span:first-child');
   const isMd = note.ext === 'md';
+  // Detect template: explicit field > hidden tag > body pattern (legacy notes).
+  const tags = Array.isArray(note.tags) ? note.tags : [];
+  const body = typeof note.body === 'string' ? note.body : '';
+  const template = note.template || (tags.includes('_todo') ? 'todo' : tags.includes('_recipe') ? 'recipe' : /[-*]\s+\[[ xX]\]/.test(body) ? 'todo' : '');
   const plainLabel = note.ext === 'txt' ? 'Plain text' : (EXT_LABELS[note.ext] || 'MD');
-  const showPreview = isMd && state.writeMode === 'preview';
-  if (showPreview) preview.innerHTML = renderMarkdown(note.body);
+  const showPreview = isMd && state.writeMode === 'preview' && template !== 'todo';
+
+  // To-Do notes: rendered contenteditable mode.
+  if (isMd && template === 'todo') {
+    enterTodoRendered(note);
+    if (modeLabel) modeLabel.textContent = 'To-Do';
+    if (modeToggle) modeToggle.hidden = true;
+    if (bottomHint) bottomHint.textContent = 'To-Do';
+    if (typeBadge) typeBadge.textContent = 'To-Do';
+    if (beautifyBtn) beautifyBtn.hidden = true;
+    if (editorToolbar) editorToolbar.hidden = true;
+    return;
+  }
+  exitTodoRendered();
+
+  if (showPreview) {
+    preview.innerHTML = renderMarkdown(note.body);
+    // Render mermaid diagrams if the library is loaded
+    try {
+      if (window.mermaid && preview.querySelector('.mermaid')) {
+        window.mermaid.run({ nodes: preview.querySelectorAll('.mermaid') });
+      }
+    } catch (error) {}
+  }
   markdownInput.hidden = showPreview;
   preview.hidden = !showPreview;
   if (modeLabel) modeLabel.textContent = isMd ? (showPreview ? 'Preview' : 'Write') : plainLabel;
   // Preview toggle is for standard Markdown notes and recipes; to-dos and
   // every other file type have no preview.
-  const showLivePreview = isMd && (!note.template || note.template === 'recipe');
+  const showLivePreview = isMd && (!template || template === 'recipe');
   if (modeToggle) {
     modeToggle.hidden = !showLivePreview;
     modeToggle.textContent = showPreview ? 'Write' : 'Preview';
@@ -450,6 +476,376 @@ export function renderPreview(note) {
   if (editorToolbar) editorToolbar.hidden = !mdTagged;
   if (!showPreview) autogrow();
   updateSyntaxLayer(note, showPreview);
+  renderCheckboxOverlay(note, showPreview);
+}
+
+// ---- Checkbox overlay: clickable checkboxes over the textarea ----
+
+const TASK_RE = /^(\s*)[-*]\s+\[([ xX])\]\s+(.*)$/;
+
+// Parse textarea content and return array of { lineNum, checked, prefix, text, indent }.
+function parseCheckboxes(source) {
+  if (!source) return [];
+  const lines = source.split('\n');
+  const items = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(TASK_RE);
+    if (m) items.push({ lineNum: i, checked: m[2].toLowerCase() === 'x', prefix: m[1], text: m[3] });
+  }
+  return items;
+}
+
+// Render clickable checkbox elements over the textarea. Positions are calculated
+// from the textarea's font metrics (must match .markdown-input CSS exactly).
+export function renderCheckboxOverlay(note, showPreview) {
+  if (!checkboxOverlay) return;
+  if (showPreview || !note || note.ext !== 'md') {
+    checkboxOverlay.innerHTML = '';
+    checkboxOverlay.hidden = true;
+    markdownInput.classList.remove('has-checkboxes');
+    return;
+  }
+  const items = parseCheckboxes(markdownInput.value);
+  if (!items.length) {
+    checkboxOverlay.textContent = '';
+    checkboxOverlay.hidden = true;
+    return;
+  }
+  checkboxOverlay.hidden = false;
+
+  // Measure textarea metrics to position checkboxes.
+  const cs = getComputedStyle(markdownInput);
+  const lineHeight = parseFloat(cs.lineHeight) || 22.2; // 12px * 1.85
+  const paddingTop = parseFloat(cs.paddingTop) || 6;
+  const paddingLeft = parseFloat(cs.paddingLeft) || 0;
+  const tabSize = parseInt(cs.tabSize, 10) || 2;
+  const charWidth = measureCharWidth(cs.fontFamily, cs.fontSize);
+
+  const frag = document.createDocumentFragment();
+  for (const item of items) {
+    const expandedIndent = item.prefix.replace(/\t/g, ' '.repeat(tabSize));
+    const offsetX = paddingLeft + expandedIndent.length * charWidth;
+    const offsetY = paddingTop + item.lineNum * lineHeight;
+    // "- [ ] " is6 characters wide — cover them with the checkbox.
+    const coverWidth = 6 * charWidth;
+
+    const el = document.createElement('span');
+    el.className = 'cb-item';
+    el.dataset.line = item.lineNum;
+    el.style.top = `${offsetY}px`;
+    el.style.left = `${offsetX}px`;
+    el.style.width = `${coverWidth}px`;
+
+    const box = document.createElement('span');
+    box.className = item.checked ? 'cb-box checked' : 'cb-box';
+    el.appendChild(box);
+    frag.appendChild(el);
+  }
+  checkboxOverlay.textContent = '';
+  checkboxOverlay.appendChild(frag);
+}
+
+// Measure the pixel width of a single character in the given font.
+let _cachedCharWidth = 0;
+let _cachedFont = '';
+function measureCharWidth(family, size) {
+  const key = `${family}|${size}`;
+  if (_cachedCharWidth && _cachedFont === key) return _cachedCharWidth;
+  const span = document.createElement('span');
+  span.style.cssText = `position:absolute;left:-9999px;font-family:${family};font-size:${size};white-space:pre;`;
+  span.textContent = 'x';
+  document.body.appendChild(span);
+  _cachedCharWidth = span.getBoundingClientRect().width || 7.2;
+  document.body.removeChild(span);
+  _cachedFont = key;
+  return _cachedCharWidth;
+}
+
+// Toggle a checkbox on the given line number in the textarea.
+export function toggleCheckbox(lineNum) {
+  const source = markdownInput.value;
+  const lines = source.split('\n');
+  if (lineNum < 0 || lineNum >= lines.length) return;
+  const m = lines[lineNum].match(TASK_RE);
+  if (!m) return;
+  const newMark = m[2].toLowerCase() === 'x' ? ' ' : 'x';
+  lines[lineNum] = `${m[1]}- [${newMark}] ${m[3]}`;
+  markdownInput.value = lines.join('\n');
+  saveCurrentNote();
+  const note = activeEditorNote();
+  if (note) renderCheckboxOverlay(note, false);
+}
+
+// Initialize checkbox overlay click handler (called once at boot).
+export function initCheckboxOverlay() {
+  if (!checkboxOverlay) return;
+  checkboxOverlay.addEventListener('click', (event) => {
+    const item = event.target.closest('.cb-item');
+    if (!item) return;
+    const lineNum = parseInt(item.dataset.line, 10);
+    if (!isNaN(lineNum)) toggleCheckbox(lineNum);
+  });
+}
+
+// ---- To-Do rendered editor: WYSIWYG contenteditable ----
+
+const HEADING_RE = /^(#{1,4})\s+(.*)$/;
+let _todoSyncGuard = false;
+
+function enterTodoRendered(note) {
+  if (!todoRendered || !note) return;
+  markdownInput.hidden = true;
+  checkboxOverlay.hidden = true;
+  preview.hidden = true;
+  todoRendered.hidden = false;
+  if (todoToolbox) todoToolbox.hidden = false;
+  renderTodoFromMarkdown(note);
+}
+
+function exitTodoRendered() {
+  if (!todoRendered) return;
+  todoRendered.hidden = true;
+  todoRendered.textContent = '';
+  markdownInput.hidden = false;
+  if (todoToolbox) todoToolbox.hidden = true;
+  // Clear any stale checkbox overlay.
+  if (checkboxOverlay) {
+    checkboxOverlay.textContent = '';
+    checkboxOverlay.hidden = true;
+  }
+}
+
+function renderTodoFromMarkdown(note) {
+  if (!todoRendered || !note) return;
+  const body = typeof note.body === 'string' ? note.body : '';
+  const lines = body.split('\n');
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const taskMatch = line.match(TASK_RE);
+    const headingMatch = line.match(HEADING_RE);
+    if (taskMatch) {
+      const checked = taskMatch[2].toLowerCase() === 'x';
+      const row = document.createElement('div');
+      row.className = 'td-line td-task';
+      const box = document.createElement('span');
+      box.className = checked ? 'td-cb checked' : 'td-cb';
+      box.dataset.checked = String(checked);
+      box.contentEditable = 'false';
+      const text = document.createElement('span');
+      text.className = 'td-text';
+      text.contentEditable = 'true';
+      text.textContent = taskMatch[3];
+      row.appendChild(box);
+      row.appendChild(text);
+      frag.appendChild(row);
+    } else if (headingMatch) {
+      const level = headingMatch[1].length;
+      const el = document.createElement(`div`);
+      el.className = `td-line td-h${level}`;
+      el.contentEditable = 'true';
+      el.textContent = headingMatch[2];
+      frag.appendChild(el);
+    } else {
+      const el = document.createElement('div');
+      el.className = 'td-line';
+      el.contentEditable = 'true';
+      el.textContent = line;
+      frag.appendChild(el);
+    }
+  }
+  todoRendered.textContent = '';
+  todoRendered.appendChild(frag);
+}
+
+function syncTodoRenderedToMarkdown() {
+  if (!todoRendered || !markdownInput || _todoSyncGuard) return;
+  const lines = [];
+  for (const line of todoRendered.children) {
+    if (line.classList.contains('td-task')) {
+      const box = line.querySelector('.td-cb');
+      const text = line.querySelector('.td-text');
+      const checked = box && box.dataset.checked === 'true';
+      lines.push(`- [${checked ? 'x' : ' '}] ${text ? text.textContent : ''}`);
+    } else if (line.classList.contains('td-h1')) {
+      lines.push(`# ${line.textContent}`);
+    } else if (line.classList.contains('td-h2')) {
+      lines.push(`## ${line.textContent}`);
+    } else if (line.classList.contains('td-h3')) {
+      lines.push(`### ${line.textContent}`);
+    } else if (line.classList.contains('td-h4')) {
+      lines.push(`#### ${line.textContent}`);
+    } else {
+      lines.push(line.textContent);
+    }
+  }
+  markdownInput.value = lines.join('\n');
+  const note = activeEditorNote();
+  if (note) {
+    note.body = markdownInput.value;
+    note.date = 'Now';
+    note.updatedAt = Date.now();
+    clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
+  }
+}
+
+function getFocusedLine() {
+  const sel = document.getSelection();
+  if (!sel || !sel.rangeCount) return null;
+  let node = sel.anchorNode;
+  if (node.nodeType === 3) node = node.parentElement;
+  return node ? node.closest('.td-line') : null;
+}
+
+function focusLine(line, atEnd) {
+  if (!line) return;
+  const target = line.classList.contains('td-task') ? line.querySelector('.td-text') : line;
+  if (!target) return;
+  target.focus();
+  const sel = document.getSelection();
+  const range = document.createRange();
+  if (atEnd && target.childNodes.length) {
+    range.selectNodeContents(target);
+    range.collapse(false);
+  } else {
+    range.setStart(target, 0);
+    range.collapse(true);
+  }
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function createLine(type, text) {
+  if (type === 'task') {
+    const row = document.createElement('div');
+    row.className = 'td-line td-task';
+    const box = document.createElement('span');
+    box.className = 'td-cb';
+    box.dataset.checked = 'false';
+    box.contentEditable = 'false';
+    const t = document.createElement('span');
+    t.className = 'td-text';
+    t.contentEditable = 'true';
+    t.textContent = text || '';
+    row.appendChild(box);
+    row.appendChild(t);
+    return row;
+  }
+  const el = document.createElement('div');
+  el.className = 'td-line';
+  el.contentEditable = 'true';
+  el.textContent = text || '';
+  return el;
+}
+
+function insertTodoRenderedAtCursor(insert) {
+  if (!todoRendered) return;
+  const line = getFocusedLine();
+  let newLine;
+  if (insert === 'checkbox') {
+    newLine = createLine('task');
+  } else if (insert.startsWith('h')) {
+    newLine = document.createElement('div');
+    newLine.className = `td-line td-${insert}`;
+    newLine.contentEditable = 'true';
+    newLine.textContent = 'Heading';
+  } else {
+    newLine = createLine('text');
+  }
+  if (line && todoRendered.contains(line)) {
+    line.after(newLine);
+  } else {
+    todoRendered.appendChild(newLine);
+  }
+  focusLine(newLine, false);
+  if (newLine.classList.contains('td-task')) {
+    const textEl = newLine.querySelector('.td-text');
+    if (textEl) {
+      textEl.focus();
+      const sel = document.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(textEl);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+  syncTodoRenderedToMarkdown();
+}
+
+export function initTodoEditor() {
+  if (!todoRendered) return;
+
+  // Toolbox.
+  if (todoToolbox) {
+    todoToolbox.addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-todo]');
+      if (!btn) return;
+      insertTodoRenderedAtCursor(btn.dataset.todo);
+    });
+  }
+
+  // Checkbox toggle.
+  todoRendered.addEventListener('click', (event) => {
+    const box = event.target.closest('.td-cb');
+    if (!box) return;
+    const checked = box.dataset.checked === 'true';
+    box.dataset.checked = String(!checked);
+    box.classList.toggle('checked', !checked);
+    syncTodoRenderedToMarkdown();
+  });
+
+  // Sync on input.
+  todoRendered.addEventListener('input', () => {
+    syncTodoRenderedToMarkdown();
+  });
+
+  // Enter key: create new line.
+  todoRendered.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    const line = getFocusedLine();
+    if (!line) return;
+    event.preventDefault();
+    const isTask = line.classList.contains('td-task');
+    const newLine = isTask ? createLine('task') : createLine('text');
+    line.after(newLine);
+    _todoSyncGuard = true;
+    focusLine(newLine, false);
+    _todoSyncGuard = false;
+    syncTodoRenderedToMarkdown();
+  });
+
+  // Backspace at start of line: merge with previous line.
+  todoRendered.addEventListener('keydown', (event) => {
+    if (event.key !== 'Backspace') return;
+    const sel = document.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const line = getFocusedLine();
+    if (!line) return;
+    const target = line.classList.contains('td-task') ? line.querySelector('.td-text') : line;
+    if (!target) return;
+    const range = sel.getRangeAt(0);
+    if (range.startOffset > 0 || range.startContainer !== target) return;
+    const prev = line.previousElementSibling;
+    if (!prev) return;
+    event.preventDefault();
+    const prevText = prev.classList.contains('td-task') ? prev.querySelector('.td-text') : prev;
+    if (!prevText) return;
+    const prevLen = prevText.textContent.length;
+    prevText.textContent += target.textContent;
+    line.remove();
+    prevText.focus();
+    const newRange = document.createRange();
+    newRange.setStart(prevText, Math.min(prevLen, prevText.childNodes.length));
+    newRange.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+    syncTodoRenderedToMarkdown();
+  });
+
+  // Sync on blur.
+  todoRendered.addEventListener('blur', syncTodoRenderedToMarkdown);
 }
 
 // Paint (or clear) the overlay for the open note. Only JSON/YAML are colored.

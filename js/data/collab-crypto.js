@@ -925,8 +925,7 @@ export async function renderSharedView() {
   if (allCount) allCount.textContent = '0';
   if (recentCountEl) recentCountEl.textContent = '0';
   if (starredCountEl) starredCountEl.textContent = '0';
-  const headerNew = document.getElementById('shared-new');
-  if (headerNew) headerNew.hidden = false;
+  // New Connection button is handled by sections.js via #new-section.
   const headerRefresh = document.getElementById('refresh-view');
   if (headerRefresh) headerRefresh.hidden = false;
   noteList.innerHTML = `<div class="list-section">
@@ -1133,6 +1132,9 @@ export async function createSharedNoteWithTemplate(groupId, folder, templateKey)
     if (key0 === 'recipe' && template.recipe) {
       doc.getMap('recipe').set('ingredients', JSON.stringify(sanitizeIngredients(template.recipe.ingredients)));
       doc.getMap('recipe').set('steps', JSON.stringify(sanitizeSteps(template.recipe.steps)));
+    }
+    if (key0 === 'recipe' || key0 === 'todo') {
+      doc.getArray('tags').push([`_${key0}`]);
     }
     const update = Y.encodeStateAsUpdate(doc);
     doc.destroy();

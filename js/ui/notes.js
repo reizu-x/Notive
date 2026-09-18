@@ -643,6 +643,7 @@ export function createNoteFromTemplate(templateKey) {
   }
   const note = { id, title, date: 'Now', updatedAt: Date.now(), tags, favorite: false, archived: false, deleted: false, ext: normalizeExt(template.ext), sections: filedSections, body: seedFromTemplate(templateKey, title).body };
   if (templateKey === 'recipe' || templateKey === 'todo') note.template = templateKey;
+  if (templateKey === 'recipe' || templateKey === 'todo') { if (!note.tags.includes(`_${templateKey}`)) note.tags.push(`_${templateKey}`); }
   if (templateKey === 'recipe' && template.recipe) {
     note.ingredients = sanitizeIngredients(template.recipe.ingredients);
     note.steps = sanitizeSteps(template.recipe.steps);
@@ -1020,8 +1021,7 @@ export function stepListBack() {
 
 // Render the grouped note tree: folder ordering, collapse, Bin actions vs rename pencil, scoped counters, and per-row event wiring.
 export function renderNoteList() {
-  const sharedNewBtn = document.getElementById('shared-new');
-  if (sharedNewBtn) sharedNewBtn.hidden = true;
+  // New Connection button is handled by sections.js via #new-section.
   const refreshBtnTop = document.getElementById('refresh-view');
   if (refreshBtnTop) refreshBtnTop.hidden = true; // Refresh lives only in Shared.
   if (state.activeView === 'vault') { renderVaultList(); renderTabs(); renderStripItems(); return; }

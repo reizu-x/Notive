@@ -4,6 +4,7 @@
 import { icon } from '../core/icons.js';
 import { stripBoxEl, tabBarEl, saveLabel } from '../core/elements.js';
 import { BIN_RETENTION_MS } from '../core/dates.js';
+import { preferredTimezone, formatTime } from '../core/dates.js';
 import { state } from '../domain/state.js';
 
 export function setSaveLabel(text, mode = 'green') {
@@ -30,7 +31,7 @@ export function syncAgoText() {
   if (seconds < 15) return 'Synced just now';
   if (seconds < 120) return 'Synced 1 min ago';
   if (seconds < 3600) return `Synced ${Math.floor(seconds / 60)} min ago`;
-  return `Synced at ${new Date(ts).toTimeString().slice(0, 5)}`;
+  return `Synced at ${formatTime(ts, preferredTimezone())}`;
 }
 
 export function viewLabel(view) {

@@ -994,8 +994,8 @@ export function createVaultNoteFromTemplate(templateKey) {
   const title = uniqueVaultTitle(template.titleBase);
   const note = {
     id: newNoteId(), title, body: template.body(title),
-    tags: [...template.tags], ext: normalizeExt(template.ext),
-    date: 'Now', favorite: false, folder,
+    tags: [...template.tags, ...(templateKey === 'recipe' || templateKey === 'todo' ? [`_${templateKey}`] : [])], ext: normalizeExt(template.ext),
+    date: 'Now', favorite: false, folder, template: templateKey,
   };
   state.vault.notes.unshift(note);
   state.currentVaultId = note.id;

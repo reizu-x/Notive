@@ -99,7 +99,6 @@
             </div>
             <div class="notes-actions">
               <button class="icon-button workspace-toggle" id="toggle-workspace" aria-label="Collapse workspace" title="Collapse workspace" data-icon="sidebar"></button>
-              <button class="new-note-button" id="shared-new" hidden><span>+</span> New connection</button>
               <button class="icon-button strip-back" id="workspace-strip-back" aria-label="Back to parent folder" title="Back to parent folder" data-icon="chevron-right" hidden></button>
               <span class="workspace-view-icon" id="workspace-view-icon" title="All Notes" aria-hidden="true">All Notes</span>
               <div class="strip-separator" id="strip-separator" aria-hidden="true"></div>
@@ -241,9 +240,25 @@
                 <button class="mode-toggle" id="mode-toggle" title="Switch between writing and preview">Preview</button>
               </div>
             </div>
+            <div class="todo-toolbox" id="todo-toolbox" hidden>
+              <div class="toolbox-group">
+                <button type="button" class="toolbox-btn" data-todo="h1" title="Heading 1"><strong>H1</strong></button>
+                <button type="button" class="toolbox-btn" data-todo="h2" title="Heading 2"><strong>H2</strong></button>
+                <button type="button" class="toolbox-btn" data-todo="h3" title="Heading 3"><strong>H3</strong></button>
+                <button type="button" class="toolbox-btn" data-todo="h4" title="Heading 4"><strong>H4</strong></button>
+              </div>
+              <span class="toolbox-divider"></span>
+              <div class="toolbox-group">
+                <button type="button" class="toolbox-btn" data-todo="checkbox" title="Add checkbox"><span data-icon="check-square"></span></button>
+                <button type="button" class="toolbox-btn" data-todo="bold" title="Bold"><strong>B</strong></button>
+                <button type="button" class="toolbox-btn toolbox-btn-italic" data-todo="italic" title="Italic">I</button>
+              </div>
+            </div>
             <div class="code-wrap" id="code-wrap">
               <pre class="syntax-layer" id="syntax-layer" aria-hidden="true" hidden></pre>
               <textarea class="markdown-input" id="markdown-input" rows="18" spellcheck="true" aria-label="Markdown editor"></textarea>
+              <div class="checkbox-overlay" id="checkbox-overlay" aria-hidden="true"></div>
+              <div class="todo-rendered" id="todo-rendered" hidden></div>
               <div class="collab-caret-layer" id="collab-caret-layer" aria-hidden="true"></div>
             </div>
             <article class="markdown-preview unified-preview" id="markdown-preview" tabindex="0" aria-label="Rendered preview — click or focus to keep writing" hidden></article>
@@ -847,6 +862,7 @@
     <!-- Vendored QR (MIT, qrcode-generator 1.5.0; adapter keeps the QRCode(...) API) for MFA setup. Local only: secret never leaves device. -->
     <script src="js/boot.js"></script>
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-fNse+GzXblndDsHPTGnb91FmFdpQmGqYCGhwecMIsHKDmKkjiuy5DZmjYggpKP6e" crossorigin="anonymous" defer></script>
-    <script type="module" src="js/app.js?v=dev167"></script>
+    <script src="vendor/mermaid/mermaid.min.js" integrity="sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2" crossorigin="anonymous" defer></script>
+    <script type="module" src="js/app.js?v=dev168"></script>
   </body>
 </html>
