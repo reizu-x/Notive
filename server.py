@@ -1531,6 +1531,15 @@ def root():
 def public_files(filename):
     # Vendored modules (argon2, qrcode, yjs + lib0) are served from vendor/.
     # The front-end is split into ES modules under js/ (entry: js/app.js).
+    # Pentest M-16 (round-16, CRITICAL): `send_from_directory`'s safe_join
+    # normalizes `vendor/../notely.key` to `notely.key` (still inside BASE_DIR),
+    # so the prefix check passed while `..` collapsed the path to the CWD root —
+    # leaking notely.key (32-byte DB key), server.py, notely.db. Fix: reject
+    # any path whose segments contain '..' at all (string match on the path
+    # AND on the URL-decoded wire form — they are pre-decoded by Flask).
+    parts = filename.replace('\\', '/').split('/')
+    if '..' in parts:
+        return jsonify({'error': 'Not found'}), 404
     if filename in PUBLIC_FILES or filename.startswith('vendor/') or filename.startswith('js/'):
         response = send_from_directory(BASE_DIR, filename)
         response.cache_control.no_store = True
