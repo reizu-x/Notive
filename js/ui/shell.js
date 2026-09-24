@@ -32,7 +32,7 @@ export function setLoginThemeMenu(open) {
 export function applyFont(font, announce = false) {
   const normalized = FONTS.includes(font) ? font : 'default';
   document.documentElement.dataset.font = normalized;
-  try { localStorage.setItem('dafnote-font', normalized); } catch (error) {}
+  try { localStorage.setItem('drafnote-font', normalized); } catch (error) {}
   const fontSelectEl = document.getElementById('font-select');
   if (fontSelectEl) fontSelectEl.value = normalized;
   if (announce) showToast(`${normalized.charAt(0).toUpperCase() + normalized.slice(1)} font on`);
@@ -153,7 +153,7 @@ export function paintAvatar(el, fallbackInitials) {
 // Synchronous view of the in-memory session for render code (null when signed out).
 export function getSessionUser() {
   if (!state.cachedProfile) return null;
-  return { username: state.cachedProfile.username, name: fullNameOf(state.cachedProfile), subtitle: state.cachedProfile.subtitle || 'Dafnote User' };
+  return { username: state.cachedProfile.username, name: fullNameOf(state.cachedProfile), subtitle: state.cachedProfile.subtitle || 'DrafNote User' };
 }
 
 export async function restoreSessionUnlock() {
@@ -210,7 +210,7 @@ export function clearSessionUnlock() {
 // without re-typing the password we keep it in sessionStorage (wrapped, see
 // below), which the browser wipes when the tab/window closes. Clearing it
 // (logout) or closing the browser locks the vault again.
-export function sessionUnlockKey() { return accountScopeKey('dafnote-session-unlock'); }
+export function sessionUnlockKey() { return accountScopeKey('drafnote-session-unlock'); }
 
 // Session-wrap KEK. The master key is stored wrapped under this random
 // per-tab AES-GCM key (pentest finding F-2) instead of as raw base64 text:
@@ -218,7 +218,7 @@ export function sessionUnlockKey() { return accountScopeKey('dafnote-session-unl
 // The KEK seed also lives in sessionStorage — same-origin script can still
 // reach it, so this raises the bar rather than being a full guarantee; the
 // accepted design tradeoff (refresh without re-typing the password) is kept.
-export function sessionKekKey() { return accountScopeKey('dafnote-session-unlock-kek'); }
+export function sessionKekKey() { return accountScopeKey('drafnote-session-unlock-kek'); }
 
 function loadSessionKek() {
   try { return e2eeB64ToBytes(sessionStorage.getItem(sessionKekKey()) || ''); }
@@ -249,7 +249,7 @@ async function unwrapSessionKey(wrapped) {
 // after their first selection, so the workspace returns as the user left it).
 export function restoreWorkspaceCollapsed() {
   try {
-    setWorkspaceCollapsed(localStorage.getItem('dafnote-workspace-collapsed') === '1');
+    setWorkspaceCollapsed(localStorage.getItem('drafnote-workspace-collapsed') === '1');
   } catch (error) { setWorkspaceCollapsed(false); }
 }
 
@@ -258,7 +258,7 @@ export function restoreWorkspaceCollapsed() {
 export function setWorkspaceCollapsed(collapsed) {
   const shell = document.querySelector('.app-shell');
   if (shell) shell.classList.toggle('workspace-collapsed', collapsed);
-  try { localStorage.setItem('dafnote-workspace-collapsed', collapsed ? '1' : '0'); } catch (error) {}
+  try { localStorage.setItem('drafnote-workspace-collapsed', collapsed ? '1' : '0'); } catch (error) {}
   if (workspaceToggle) {
     const label = collapsed ? 'Expand workspace' : 'Collapse workspace';
     workspaceToggle.setAttribute('aria-label', label);
@@ -282,14 +282,14 @@ export function setWorkspaceCollapsed(collapsed) {
 
 // Whether the sidebar starts collapsed on load (Settings → Side Menu; device-local).
 export function startCollapsedPref() {
-  try { return localStorage.getItem('dafnote-sidebar-start-collapsed') !== '0'; }
+  try { return localStorage.getItem('drafnote-sidebar-start-collapsed') !== '0'; }
   catch (error) { return true; }
 }
 
 // Collapse/expand the icon-strip sidebar and persist the choice.
 export function setSidebarCollapsed(collapsed) {
   sidebar.classList.toggle('collapsed', collapsed);
-  try { localStorage.setItem('dafnote-sidebar-collapsed', collapsed ? '1' : '0'); } catch (error) {}
+  try { localStorage.setItem('drafnote-sidebar-collapsed', collapsed ? '1' : '0'); } catch (error) {}
   if (sidebarToggle) {
     const label = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
     sidebarToggle.setAttribute('aria-label', label);
@@ -302,7 +302,7 @@ export function setSidebarCollapsed(collapsed) {
 export function restorePanelWidth() {
   if (!notesPanel) return;
   try {
-    const saved = parseInt(localStorage.getItem('dafnote-panel-width') || '', 10);
+    const saved = parseInt(localStorage.getItem('drafnote-panel-width') || '', 10);
     if (Number.isFinite(saved)) notesPanel.style.flexBasis = `${Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, saved))}px`;
   } catch (error) {}
 }
@@ -311,7 +311,7 @@ export function applyPanelWidth(px) {
   if (!notesPanel) return;
   const width = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(px)));
   notesPanel.style.flexBasis = `${width}px`;
-  try { localStorage.setItem('dafnote-panel-width', String(width)); } catch (error) {}
+  try { localStorage.setItem('drafnote-panel-width', String(width)); } catch (error) {}
 }
 
 // One seed used by both All Notes and the Shared view, so editing a template's
@@ -340,7 +340,7 @@ export function welcomeSeedUi() {
 }
 
 export function welcomeSeedNotes() {
-  const generalWelcome = `# Welcome to Dafnote
+  const generalWelcome = `# Welcome to DrafNote
 
 This is your private, end-to-end encrypted notebook. Everything you write is
 encrypted on this device before it ever reaches the server — nobody else can
@@ -412,7 +412,7 @@ drafts, anything that is yours.
 
   return [
     {
-      id: 'welcome-general', title: 'Welcome to Dafnote', date: 'Today',
+      id: 'welcome-general', title: 'Welcome to DrafNote', date: 'Today',
       tags: ['welcome'], favorite: true, ext: 'md',
       sections: { [WELCOME_SECTION_ID]: 'General' },
       body: generalWelcome,
@@ -431,7 +431,7 @@ drafts, anything that is yours.
 export function applyTheme(theme, announce = false) {
   const normalized = THEMES.includes(theme) ? theme : 'light';
   document.documentElement.dataset.theme = normalized;
-  try { localStorage.setItem('dafnote-theme', normalized); } catch (error) {}
+  try { localStorage.setItem('drafnote-theme', normalized); } catch (error) {}
   // Sync to the per-account envelope so the choice survives logout, restart
   // and other devices. No-op while logged out/locked (localStorage still keeps
   // the login screen on the picked theme).

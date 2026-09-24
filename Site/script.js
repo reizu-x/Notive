@@ -1,4 +1,4 @@
-// Dafnote marketing site — no dependencies, no external requests
+// DrafNote marketing site — no dependencies, no external requests
 (function(){
   var menuBtn = document.getElementById('menu-btn');
   var mobileNav = document.getElementById('mobile-nav');
@@ -67,7 +67,7 @@
         return;
       }
       try{
-        var key = 'dafnote-waitlist';
+        var key = 'drafnote-waitlist';
         var list = JSON.parse(localStorage.getItem(key) || '[]');
         list.push({email: email.value, mode: mode ? mode.value : '', at: new Date().toISOString()});
         localStorage.setItem(key, JSON.stringify(list));

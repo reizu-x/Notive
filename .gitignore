@@ -1,10 +1,10 @@
 # Secrets, databases and logs stay out everywhere (any folder depth).
-dafnote.db
-dafnote.db.*
-dafnote.key
+drafnote.db
+drafnote.db.*
+drafnote.key
 *.bak
 *.bak-*
-dafnote.db.bak*
+drafnote.db.bak*
 server-*.log
 audit.log
 audit-*.log

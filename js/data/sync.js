@@ -13,7 +13,7 @@ export function isSyncing() { return Boolean(state.syncBusy); }
 // AAD context binding for workspace notes encryption (mirrors notes.js).
 function syncAadContext() {
   const name = state.cachedProfile && state.cachedProfile.username;
-  return 'dafnote-notes-v1:' + (name ? String(name) : '');
+  return 'drafnote-notes-v1:' + (name ? String(name) : '');
 }
 
 function scope(base) {

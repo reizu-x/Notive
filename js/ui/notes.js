@@ -62,7 +62,7 @@ import { applyUiSnapshot, uiSnapshot } from './vault.js';
 export function exportAllNotes() {
   if (!state.cachedProfile || !state.notesLoaded) { showToast('Log in first'); return; }
   const payload = {
-    app: 'Dafnote',
+    app: 'DrafNote',
     version: 2,
     exportedAt: new Date().toISOString(),
     notes: state.notes.map((note) => ({ ...note })),
@@ -74,7 +74,7 @@ export function exportAllNotes() {
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
   const stamp = new Date().toISOString().slice(0, 10);
-  link.download = sanitizeFilename(`Dafnote-notes-${stamp}`, 'json');
+  link.download = sanitizeFilename(`DrafNote-notes-${stamp}`, 'json');
   link.rel = 'noopener';
   document.body.appendChild(link);
   link.click();
@@ -121,7 +121,7 @@ ${body0}`.replace(/^\n+/, '')
   const blob = buildStoreZip(entries);
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
-  link.download = sanitizeFilename(`Dafnote-notes-${new Date().toISOString().slice(0, 10)}`, 'zip');
+  link.download = sanitizeFilename(`DrafNote-notes-${new Date().toISOString().slice(0, 10)}`, 'zip');
   link.rel = 'noopener';
   document.body.appendChild(link);
   link.click();
@@ -515,15 +515,15 @@ export function deviceOnlyPref() {
   try { return localStorage.getItem(deviceOnlyKey()) === '1'; } catch (error) { return false; }
 }
 
-export function localNotesKey() { return accountScopeKey('dafnote-local-notes'); }
+export function localNotesKey() { return accountScopeKey('drafnote-local-notes'); }
 
 // AAD context binding for the workspace envelope (cross-account swap resistance).
 export function notesAadContext() {
   const name = state.cachedProfile && state.cachedProfile.username;
-  return 'dafnote-notes-v1:' + (name ? String(name) : '');
+  return 'drafnote-notes-v1:' + (name ? String(name) : '');
 }
 
-export function deviceOnlyKey() { return accountScopeKey('dafnote-device-only'); }
+export function deviceOnlyKey() { return accountScopeKey('drafnote-device-only'); }
 
 // The note the editor is bound to, whether it lives in the workspace or the
 // unlocked Vault. Editor chrome (favorite/share/type/download/preview) goes
@@ -539,7 +539,7 @@ export function activeEditorNote() {
 // Delete legacy plaintext note keys after server migration (CWE-312: no plaintext notes lingering on disk).
 export function wipeLegacyLocalNotes() {
   try {
-    localStorage.removeItem('dafnote-notes');
+    localStorage.removeItem('drafnote-notes');
     localStorage.removeItem('quietly-notes');
   } catch (error) {}
 }
@@ -547,7 +547,7 @@ export function wipeLegacyLocalNotes() {
 // One-time read of pre-server localStorage note keys. Returns null when absent or invalid.
 export function readLegacyLocalNotes() {
   try {
-    const raw = JSON.parse(localStorage.getItem('dafnote-notes') || localStorage.getItem('quietly-notes') || 'null');
+    const raw = JSON.parse(localStorage.getItem('drafnote-notes') || localStorage.getItem('quietly-notes') || 'null');
     if (!Array.isArray(raw) || !raw.length) return null;
     return raw.map(migrateNote).slice(0, 2000);
   } catch (error) {
@@ -1391,7 +1391,7 @@ export async function loadNotesFromServer() {
     const legacy = readLegacyLocalNotes();
     state.notes = legacy || [];
     state.notesLoaded = true;
-    showToast('Cannot reach the Dafnote server — working offline');
+    showToast('Cannot reach the DrafNote server — working offline');
   }
 }
 
