@@ -512,12 +512,12 @@ export function resolveListFolderTarget(header) {
   return { ns: 'custom', section: sectionId, path: header.dataset.folder };
 }
 
-// True when a drag event carries a Notive folder (slide-menu/workspace shared
+// True when a drag event carries a Dafnote folder (slide-menu/workspace shared
 // payload), as opposed to a note drag (text/plain) or a file hover.
 export function isFolderDrag(event) {
   try {
     const types = event.dataTransfer ? Array.from(event.dataTransfer.types || []) : [];
-    return types.includes('application/x-notive-folder');
+    return types.includes('application/x-dafnote-folder');
   } catch (error) { return false; }
 }
 
@@ -987,7 +987,7 @@ export function selectCustomFolder(sectionId, folder) {
   state.activeFilter = 'all';
   state.activeCustom = { section: sectionId, folder };
   state.lastMarkedSectionId = sectionId;
-  try { localStorage.setItem('notive-last-section', sectionId); } catch (error) {}
+  try { localStorage.setItem('dafnote-last-section', sectionId); } catch (error) {}
   clearSearch();
   updateListHeading();
   renderCustomSections();
@@ -1005,7 +1005,7 @@ export function selectCustomSection(sectionId) {
   state.activeFilter = 'all';
   state.activeCustom = { section: sectionId, folder: null };
   state.lastMarkedSectionId = sectionId;
-  try { localStorage.setItem('notive-last-section', sectionId); } catch (error) {}
+  try { localStorage.setItem('dafnote-last-section', sectionId); } catch (error) {}
   clearSearch();
   updateListHeading();
   renderCustomSections();
@@ -1027,7 +1027,7 @@ export function applyStripFolderFilter(sectionId, folder) {
   }
   state.activeCustom = { section: sectionId, folder: folder || null };
   state.lastMarkedSectionId = sectionId;
-  try { localStorage.setItem('notive-last-section', sectionId); } catch (error) {}
+  try { localStorage.setItem('dafnote-last-section', sectionId); } catch (error) {}
   clearSearch();
   updateListHeading();
   renderCustomSections();
@@ -1364,7 +1364,7 @@ export function bindFolderDragDrop() {
     if (!row) return;
     const target = sidebarFolderTarget(event);
     if (!target || !e2ee.masterKey) { event.preventDefault(); return; }
-    event.dataTransfer.setData('application/x-notive-folder', JSON.stringify(target));
+    event.dataTransfer.setData('application/x-dafnote-folder', JSON.stringify(target));
     event.dataTransfer.effectAllowed = 'move';
     row.classList.add('dragging');
     closeFolderContextMenu();
@@ -1377,7 +1377,7 @@ export function bindFolderDragDrop() {
   sidebar.addEventListener('dragover', (event) => {
     const row = event.target.closest('.collection-item');
     if (!row || !e2ee.masterKey) return;
-    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes('application/x-notive-folder')) return;
+    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes('application/x-dafnote-folder')) return;
     const rect = row.getBoundingClientRect();
     const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
     event.preventDefault();
@@ -1397,7 +1397,7 @@ export function bindFolderDragDrop() {
     const row = event.target.closest('.collection-item');
     if (!row || !e2ee.masterKey) return;
     let dragged = null;
-    try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notive-folder')); } catch (error) { dragged = null; }
+    try { dragged = JSON.parse(event.dataTransfer.getData('application/x-dafnote-folder')); } catch (error) { dragged = null; }
     if (!dragged || !dragged.path) return;
     const target = sidebarFolderTarget(event);
     if (!target || target.ns !== dragged.ns || target.section !== dragged.section) return;

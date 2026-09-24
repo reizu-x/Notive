@@ -4,19 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notive-build" content="dev89" />
+    <meta name="dafnote-build" content="dev89" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' https: data:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
-    <title>Notive - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev171" />
+    <title>Dafnote - private notes</title>
+    <link rel="icon" href="favicon.ico?v=dev1" sizes="16x16 32x32 48x48" />
+    <link rel="stylesheet" href="styles.css?v=dev174" />
   </head>
   <body>
     <div class="boot-shimmer" id="boot-shimmer" aria-hidden="true">
       <div class="boot-shimmer-card">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
-        </span>
-        <span class="brand-name">Notive</span>
+        <svg class="brand-lockup" viewBox="0 0 100 32" preserveAspectRatio="xMinYMid slice" fill="none" role="img" aria-label="Dafnote"><path d="M10 21V9h5.5a6 6 0 0 1 0 12H10Z" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 25c5 1.5 13 1.5 19-1" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><text class="lockup-text" x="25" y="22" font-family="Fraunces, Georgia, 'DejaVu Serif', 'Times New Roman', serif" font-size="20" font-weight="700" letter-spacing="-0.5" fill="currentColor">afnote</text></svg>
         <div class="shimmer-lines" aria-hidden="true"><span class="shimmer-line" style="width:70%"></span><span class="shimmer-line" style="width:85%"></span><span class="shimmer-line" style="width:60%"></span></div>
       </div>
     </div>
@@ -24,11 +22,8 @@
     <!-- Sidebar: brand, profile card (rendered from session), nav views, sections folders -->
       <aside class="sidebar" id="sidebar">
         <div class="brand-row">
-          <a class="brand" href="#" aria-label="Notive home">
-            <span class="brand-mark" aria-hidden="true">
-              <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
-            </span>
-            <span class="brand-name">Notive</span>
+          <a class="brand" href="#" aria-label="Dafnote home">
+            <svg class="brand-lockup" viewBox="0 0 100 32" preserveAspectRatio="xMinYMid slice" fill="none" role="img" aria-label="Dafnote"><path d="M10 21V9h5.5a6 6 0 0 1 0 12H10Z" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 25c5 1.5 13 1.5 19-1" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><text class="lockup-text" x="25" y="22" font-family="Fraunces, Georgia, 'DejaVu Serif', 'Times New Roman', serif" font-size="20" font-weight="700" letter-spacing="-0.5" fill="currentColor">afnote</text></svg>
           </a>
           <button class="icon-button sidebar-toggle" id="toggle-sidebar" aria-label="Collapse sidebar" title="Collapse sidebar" data-icon="sidebar"></button>
           <button class="icon-button sidebar-close" id="close-sidebar" aria-label="Close menu" data-icon="x"></button>
@@ -89,7 +84,7 @@
         <div class="notes-header">
           <div class="mobile-header-row">
             <button class="icon-button menu-toggle" id="open-sidebar" aria-label="Open menu" data-icon="menu"></button>
-            <span class="mobile-brand">Notive</span>
+            <span class="mobile-brand">Dafnote</span>
             <button class="icon-button" aria-label="More options" data-icon="dots"></button>
           </div>
           <div class="notes-title-row">
@@ -273,10 +268,7 @@
     <div class="login-overlay" id="login-overlay" hidden>
       <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="login-title">
         <div class="login-brand">
-          <span class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
-          </span>
-          <span class="brand-name">Notive</span>
+          <svg class="brand-lockup" viewBox="0 0 100 32" preserveAspectRatio="xMinYMid slice" fill="none" role="img" aria-label="Dafnote"><path d="M10 21V9h5.5a6 6 0 0 1 0 12H10Z" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 25c5 1.5 13 1.5 19-1" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><text class="lockup-text" x="25" y="22" font-family="Fraunces, Georgia, 'DejaVu Serif', 'Times New Roman', serif" font-size="20" font-weight="700" letter-spacing="-0.5" fill="currentColor">afnote</text></svg>
         </div>
         <p class="eyebrow">Welcome back</p>
         <h2 id="login-title">Log in</h2>
@@ -394,7 +386,7 @@
           </nav>
           <div class="settings-pane" data-settings-pane="appearance">
             <h3 class="settings-pane-title" id="settings-title">Appearance</h3>
-            <p class="modal-desc">Pick a theme for Notive. Your choice is saved on this device.</p>
+            <p class="modal-desc">Pick a theme for Dafnote. Your choice is saved on this device.</p>
             <label class="login-field"><span>Theme</span>
               <select id="theme-select">
                 <option value="light">Light — warm paper, easy on the eyes</option>
@@ -407,10 +399,10 @@
             </label>
             <hr />
             <h3 class="settings-pane-title">Font</h3>
-            <p class="modal-desc">Pick a reading font for Notive. Saved on this device only.</p>
+            <p class="modal-desc">Pick a reading font for Dafnote. Saved on this device only.</p>
             <label class="login-field"><span>Font</span>
               <select id="font-select" autocomplete="off">
-                <option value="default">Default — Notive's built-in look</option>
+                <option value="default">Default — Dafnote's built-in look</option>
                 <option value="serif">Serif — bookish Georgia letterforms</option>
                 <option value="palatino">Palatino — elegant old-style serif</option>
                 <option value="sans">Sans — clean system grotesque</option>
@@ -421,7 +413,7 @@
           </div>
           <div class="settings-pane" data-settings-pane="profile" hidden>
             <h3 class="settings-pane-title">Profile</h3>
-            <p class="modal-desc">Your Notive account details.</p>
+            <p class="modal-desc">Your Dafnote account details.</p>
             <label class="login-field"><span>Username</span><input id="account-username" type="text" readonly autocomplete="username" /></label>
             <label class="login-field"><span>First name</span><input id="account-first" type="text" autocomplete="given-name" maxlength="60" placeholder="First name" /></label>
             <label class="login-field"><span>Last name</span><input id="account-last" type="text" autocomplete="family-name" maxlength="60" placeholder="Last name" /></label>
@@ -467,12 +459,12 @@
           </div>
           <div class="settings-pane" data-settings-pane="behaviour" hidden>
             <h3 class="settings-pane-title">Behaviour</h3>
-            <p class="modal-desc">Choose how the sidebar looks when Notive opens.</p>
+            <p class="modal-desc">Choose how the sidebar looks when Dafnote opens.</p>
             <label class="setting-row"><input type="checkbox" id="start-collapsed" /><span class="setting-row-text"><strong>Start collapsed</strong><span>Open with the icon-only sidebar. Uncheck to start expanded.</span></span></label>
             <hr />
             <h3 class="settings-pane-title">Notes on this device</h3>
             <p class="modal-desc">Keep a copy of your notes on this desktop, or take them off the cloud entirely.</p>
-            <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Notive server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
+            <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Dafnote server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
             <hr />
             <h3 class="settings-pane-title">Import/Export</h3>
             <p class="modal-desc">Back up or restore notes as a single file. Export uses the format below; import detects it from the file. Folders travel with the notes, and imports land in their own section for sorting.</p>
@@ -686,7 +678,7 @@
           </div>
           <button class="icon-button" id="resync-close" aria-label="Close resync dialog" data-icon="x"></button>
         </div>
-        <p class="modal-desc">This device has notes saved in local storage. Upload, and they replace the notes on the Notive server — or keep the server copy and clear the local one.</p>
+        <p class="modal-desc">This device has notes saved in local storage. Upload, and they replace the notes on the Dafnote server — or keep the server copy and clear the local one.</p>
         <div class="modal-actions">
           <button class="btn btn-secondary" id="resync-cancel">Cancel</button>
           <button class="btn btn-danger" id="resync-keep">Keep server notes</button>
@@ -737,7 +729,7 @@
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
         <div class="modal-head">
           <div>
-            <p class="eyebrow" id="prompt-eyebrow">Notive</p>
+            <p class="eyebrow" id="prompt-eyebrow">Dafnote</p>
             <h2 id="prompt-title">Input needed</h2>
           </div>
           <button class="icon-button" id="prompt-cancel-x" aria-label="Cancel" data-icon="x"></button>

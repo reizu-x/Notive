@@ -1,5 +1,5 @@
 // ============================================================================
-// Notive frontend (app.js) — single IIFE, 'use strict'.
+// Dafnote frontend (app.js) — single IIFE, 'use strict'.
 // WHAT IT DOES: sidebar navigation, custom sections/folders, note list tree,
 // Markdown editor with live preview, templates, import/export, Bin (3-day
 // soft-delete), Archive, right-click menus, themes, and the login gate.
@@ -65,7 +65,7 @@ import { findCustomItem, repathList } from './ui/sections.js';
 import { cleanUiSnapshot, readLegacyUiKeys } from './ui/vault.js';
 
 'use strict';
-// Build guard: index.html carries <meta name="notive-build">. If this script
+// Build guard: index.html carries <meta name="dafnote-build">. If this script
 // is older/newer than the page (stale cache mix), reload once for a matching
 // pair instead of running half-bound handlers that silently do nothing.
 // EXPECTED_BUILD must be bumped together with the meta + cache busters.
@@ -73,17 +73,17 @@ import { cleanUiSnapshot, readLegacyUiKeys } from './ui/vault.js';
 // on mismatch we reload once and leave the page inert.
 const BUILD_NOTE_OK = (() => {
   try {
-    const tag = document.querySelector('meta[name="notive-build"]');
+    const tag = document.querySelector('meta[name="dafnote-build"]');
     const build = tag ? tag.getAttribute('content') : null;
     if (build !== 'dev89') {
-      if (!sessionStorage.getItem('notive-build-reloaded')) {
-        sessionStorage.setItem('notive-build-reloaded', '1');
+      if (!sessionStorage.getItem('dafnote-build-reloaded')) {
+        sessionStorage.setItem('dafnote-build-reloaded', '1');
         window.location.reload();
         return false;
       }
       return false;
     }
-    sessionStorage.removeItem('notive-build-reloaded');
+    sessionStorage.removeItem('dafnote-build-reloaded');
     const buildTag = document.getElementById('build-tag');
     if (buildTag) buildTag.textContent = `dev build ${build}`;
     return true;
@@ -645,7 +645,7 @@ if (BUILD_NOTE_OK) {
       return;
     }
     if (event.target.closest('[data-tab-overflow]')) { toggleTabOverflow(); return; }
-    if (event.target.closest('[data-tab-home]')) { goAllNotes(); return; }
+    if (event.target.closest('[data-tab-home]')) { state.openTabs = []; goAllNotes(); return; }
     const tab = event.target.closest('[data-tab-id]');
     if (!tab) return;
     if (tab.dataset.tabShared === '1') openCollabNote(tab.dataset.tabId);
@@ -955,7 +955,7 @@ if (BUILD_NOTE_OK) {
 
 
 
-  // True when a drag event carries a Notive folder (slide-menu/workspace shared
+  // True when a drag event carries a Dafnote folder (slide-menu/workspace shared
   // payload), as opposed to a note drag (text/plain) or a file hover.
 
 
@@ -1593,7 +1593,7 @@ if (BUILD_NOTE_OK) {
       payload = { kind: 'note', id: noteRow.dataset.collabOpen, groupId: noteRow.dataset.collabGroup };
     }
     if (!payload) return;
-    try { event.dataTransfer.setData('application/x-notive-shared', JSON.stringify(payload)); } catch (error) {}
+    try { event.dataTransfer.setData('application/x-dafnote-shared', JSON.stringify(payload)); } catch (error) {}
     event.dataTransfer.effectAllowed = 'move';
   });
   noteList.addEventListener('dragover', (event) => {
@@ -1615,7 +1615,7 @@ if (BUILD_NOTE_OK) {
   noteList.addEventListener('drop', (event) => {
     if (state.activeView !== 'shared') return;
     let payload = null;
-    try { payload = JSON.parse(event.dataTransfer.getData('application/x-notive-shared') || 'null'); } catch (error) { payload = null; }
+    try { payload = JSON.parse(event.dataTransfer.getData('application/x-dafnote-shared') || 'null'); } catch (error) { payload = null; }
     if (!payload || !payload.kind) return;
     event.preventDefault();
     const folderRow = event.target.closest('.shared-folder');
@@ -2076,7 +2076,7 @@ if (BUILD_NOTE_OK) {
         if (ext === 'json' && text.trim().startsWith('{') && text.length < MAX_IMPORT_BYTES_PER_FILE) {
           try {
             const parsed = JSON.parse(text);
-            if (parsed && parsed.app === 'Notive' && Array.isArray(parsed.notes)) {
+            if (parsed && parsed.app === 'Dafnote' && Array.isArray(parsed.notes)) {
               await adoptNotesEnvelope({
                 v: 2,
                 notes: parsed.notes.filter((note) => note && !note.deleted).slice(0, 2000),
@@ -2087,7 +2087,7 @@ if (BUILD_NOTE_OK) {
               imported += 1;
               continue;
             }
-          } catch (error) { /* not a Notive backup: import as note below */ }
+          } catch (error) { /* not a Dafnote backup: import as note below */ }
         }
         // F-41: .md/.txt imports round-trip front-matter (title + tags).
         let importBody = text || (ext === 'md' ? `# ${base}\n` : '');
@@ -2243,7 +2243,7 @@ if (BUILD_NOTE_OK) {
     // Double-click resets to the default width (325px) and clears the override.
     panelResizer.addEventListener('dblclick', () => {
       notesPanel.style.flexBasis = '';
-      try { localStorage.removeItem('notive-panel-width'); } catch (error) {}
+      try { localStorage.removeItem('dafnote-panel-width'); } catch (error) {}
     });
     restorePanelWidth();
   }
@@ -2279,8 +2279,8 @@ if (BUILD_NOTE_OK) {
   // ---- Auth & E2EE session, themes, settings, boot ----
 
 
-  // Auth is handled by the Notive server (server.py) backed by the encrypted
-  // SQLite database (notive.db). The browser stores no credentials: the session
+  // Auth is handled by the Dafnote server (server.py) backed by the encrypted
+  // SQLite database (dafnote.db). The browser stores no credentials: the session
   // lives in an HttpOnly cookie and the profile below is in-memory only.
   state.cachedProfile = null;
 
@@ -2527,7 +2527,7 @@ if (BUILD_NOTE_OK) {
       const message = error && error.message;
       loginFail(message === 'e2ee-unwrap' ? 'Could not unlock notes with this password.'
         : (message && message.indexOf('argon2') === 0) ? 'Security libraries failed integrity check. Hard-refresh and retry.'
-        : 'Cannot reach the Notive server. Is it running?');
+        : 'Cannot reach the Dafnote server. Is it running?');
     }
     done();
   });
@@ -2591,7 +2591,7 @@ if (BUILD_NOTE_OK) {
         })
       });
     } catch (error) {
-      fail('Cannot reach the Notive server. Is it running?');
+      fail('Cannot reach the Dafnote server. Is it running?');
       regDone();
       return;
     }
@@ -2827,8 +2827,8 @@ if (BUILD_NOTE_OK) {
       else if (msg === 'e2ee-unwrap') loginFail('Could not unlock notes with this password.');
       else if (msg === 'password required') loginFail('Enter your password to unlock notes.');
       else if (name === 'NotAllowedError' || name === 'AbortError') loginFail('Passkey sign-in was cancelled or timed out.');
-      else if (name === 'SecurityError' || (msg && /rp\.?id|origin|relying party/i.test(msg))) loginFail('This passkey can’t be used on this address — open Notive at the exact address you registered it (e.g. https://localhost:5001).');
-      else if (name === 'TypeError' || (msg && /failed to fetch|network|load failed/i.test(msg))) loginFail('Cannot reach the Notive server. Is it running?');
+      else if (name === 'SecurityError' || (msg && /rp\.?id|origin|relying party/i.test(msg))) loginFail('This passkey can’t be used on this address — open Dafnote at the exact address you registered it (e.g. https://localhost:5001).');
+      else if (name === 'TypeError' || (msg && /failed to fetch|network|load failed/i.test(msg))) loginFail('Cannot reach the Dafnote server. Is it running?');
       else loginFail(msg || 'Passkey sign-in failed.');
     }
     state.authBusy = false;
@@ -3188,14 +3188,14 @@ if (BUILD_NOTE_OK) {
 
   if (acctRecDownloadBtn) acctRecDownloadBtn.addEventListener('click', () => {
     try {
-      const body = ['Notive password recovery codes', `Account: ${(state.cachedProfile && state.cachedProfile.username) || ''}`,
+      const body = ['Dafnote password recovery codes', `Account: ${(state.cachedProfile && state.cachedProfile.username) || ''}`,
         `Generated: ${new Date().toISOString()}`, '',
         ...state.acctRecShownCodes, '',
         'Each code works once. Store them offline.'].join('\n');
       const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'notive-recovery-codes.txt';
+      link.download = 'dafnote-recovery-codes.txt';
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -3453,7 +3453,7 @@ if (BUILD_NOTE_OK) {
   document.querySelectorAll('.settings-nav-item').forEach((item) => item.addEventListener('click', () => setSettingsTab(item.dataset.settingsTab)));
   document.getElementById('start-collapsed').addEventListener('change', (event) => {
     const collapsed = event.target.checked;
-    try { localStorage.setItem('notive-sidebar-start-collapsed', collapsed ? '1' : '0'); } catch (error) {}
+    try { localStorage.setItem('dafnote-sidebar-start-collapsed', collapsed ? '1' : '0'); } catch (error) {}
     setSidebarCollapsed(collapsed);
     showToast(collapsed ? 'Sidebar will start collapsed' : 'Sidebar will start expanded');
   });
@@ -3569,7 +3569,7 @@ if (BUILD_NOTE_OK) {
   }
   // Hide the settings modal.
 
-  try { state.savedTheme = localStorage.getItem('notive-theme') || 'light'; } catch (error) {}
+  try { state.savedTheme = localStorage.getItem('dafnote-theme') || 'light'; } catch (error) {}
   applyTheme(state.savedTheme);
   document.getElementById('open-settings').addEventListener('click', (event) => {
     event.preventDefault();
@@ -3584,7 +3584,7 @@ if (BUILD_NOTE_OK) {
   // Reading font (Settings → Appearance). Device-local like the sidebar prefs
   // (not part of the per-account envelope): one line, no sync conflicts.
 
-  try { state.savedFont = localStorage.getItem('notive-font') || 'default'; } catch (error) {}
+  try { state.savedFont = localStorage.getItem('dafnote-font') || 'default'; } catch (error) {}
   applyFont(state.savedFont);
 
   if (fontSelect) fontSelect.addEventListener('change', () => applyFont(fontSelect.value, true));

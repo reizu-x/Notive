@@ -8,7 +8,7 @@ import { state } from '../domain/state.js';
 // Pentest F-46: device-only mode opts accounts out of cloud traffic. While
 // the per-account opt-out is set, collab/keys egress is refused here — the
 // single network-policy choke point — instead of at each call site.
-const DEVICE_ONLY_KEY = 'notive-device-only';
+const DEVICE_ONLY_KEY = 'dafnote-device-only';
 
 function deviceOnlyActive() {
   try {

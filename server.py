@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Notive server: serves the app and backs logins with an encrypted SQLite DB.
+"""Dafnote server: serves the app and backs logins with an encrypted SQLite DB.
 
 Layout (all in this folder):
   server.py    this backend
-  notive.db    SQLite database file (users + sessions + notes + rate data).
-  notive.key   32-byte database encryption key — created on first run (0600).
-               In production set NOTIVE_DB_KEY (base64) instead of using the file.
+  dafnote.db    SQLite database file (users + sessions + notes + rate data).
+  dafnote.key   32-byte database encryption key — created on first run (0600).
+               In production set DAFNOTE_DB_KEY (base64) instead of using the file.
 
 Security model (end-to-end encryption for note contents):
   * NOTE CONTENTS are end-to-end encrypted: each account owns a random 256-bit
@@ -58,23 +58,23 @@ from argon2.low_level import Type as Argon2Type, hash_secret_raw
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PG_DSN = os.environ.get(
-    'NOTIVE_PG_DSN',
-    'dbname=notivedb user=notive password=notive_secure_2026 host=localhost'
+    'DAFNOTE_PG_DSN',
+    'dbname=dafnotedb user=dafnote password=dafnote_secure_2026 host=localhost'
 )
-print(f'NOTIVE DB: using PostgreSQL ({PG_DSN.split("dbname=")[1].split()[0] if "dbname=" in PG_DSN else PG_DSN})', flush=True)
-KEY_PATH = os.environ.get('NOTIVE_KEY_PATH', os.path.join(BASE_DIR, 'notive.key'))
+print(f'DAFNOTE DB: using PostgreSQL ({PG_DSN.split("dbname=")[1].split()[0] if "dbname=" in PG_DSN else PG_DSN})', flush=True)
+KEY_PATH = os.environ.get('DAFNOTE_KEY_PATH', os.path.join(BASE_DIR, 'dafnote.key'))
 # Automatic backups: pg_dump copies of the PostgreSQL database, taken on a daemon
 # thread. Copies (not moves) — the DB itself is never touched. Env overrides:
-#   NOTIVE_BACKUP_INTERVAL_SECONDS  cadence (0 disables backups entirely)
-#   NOTIVE_BACKUP_KEEP              how many timestamped copies to retain
-BACKUP_DIR = os.environ.get('NOTIVE_BACKUP_DIR', '/home/r3izu/Documents/dbbackup')
-BACKUP_INTERVAL_SECONDS = int(os.environ.get('NOTIVE_BACKUP_INTERVAL_SECONDS', '3600'))
-BACKUP_KEEP = max(1, int(os.environ.get('NOTIVE_BACKUP_KEEP', '48')))
+#   DAFNOTE_BACKUP_INTERVAL_SECONDS  cadence (0 disables backups entirely)
+#   DAFNOTE_BACKUP_KEEP              how many timestamped copies to retain
+BACKUP_DIR = os.environ.get('DAFNOTE_BACKUP_DIR', '/home/r3izu/Documents/dbbackup')
+BACKUP_INTERVAL_SECONDS = int(os.environ.get('DAFNOTE_BACKUP_INTERVAL_SECONDS', '3600'))
+BACKUP_KEEP = max(1, int(os.environ.get('DAFNOTE_BACKUP_KEEP', '48')))
 # __Host- prefix enforces Secure + Path=/ + no Domain (cookie tossing defense).
-# Transition: server still accepts legacy 'notive_session' for 7 days (see
+# Transition: server still accepts legacy 'dafnote_session' for 7 days (see
 # get_session_token_from_request), but always sets the __Host- cookie.
-SESSION_COOKIE = '__Host-notive_session'
-LEGACY_SESSION_COOKIE = 'notive_session'
+SESSION_COOKIE = '__Host-dafnote_session'
+LEGACY_SESSION_COOKIE = 'dafnote_session'
 SESSION_MAX_AGE_SECONDS = 12 * 3600
 SESSION_IDLE_SECONDS = 30 * 60
 SESSION_ROTATE_AFTER_SECONDS = 4 * 3600
@@ -149,7 +149,7 @@ NOTE_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
 
 # Blocklist of commonly used / expected / compromised passwords. The embedded
 # set is intentionally small; real deployments should point
-# NOTIVE_PASSWORD_BLOCKLIST at a large list (one password per line, e.g. a
+# DAFNOTE_PASSWORD_BLOCKLIST at a large list (one password per line, e.g. a
 # SecLists or Pwned Passwords export) — entries are merged at startup.
 _EMBEDDED_BLOCKLIST = frozenset(word.lower() for word in (
     '123456', '123456789', '12345678', '1234567', '1234567890', '12345', '1234',
@@ -160,14 +160,14 @@ _EMBEDDED_BLOCKLIST = frozenset(word.lower() for word in (
     'root', 'toor', 'login', 'letmein', 'welcome', 'welcome1', 'monkey', 'dragon',
     'iloveyou', 'sunshine', 'princess', 'football', 'trustno1', 'whatever',
     'freedom', 'hello', 'changeme', 'secret', 'master', 'shadow', 'superman',
-    'michael', 'aaaaaaaaaaaa', 'aaaaaaaaaaaaaaaa', 'notive', 'notive123',
-    'notive123!', 'notes12345', 'notes123456',
+    'michael', 'aaaaaaaaaaaa', 'aaaaaaaaaaaaaaaa', 'dafnote', 'dafnote123',
+    'dafnote123!', 'notes12345', 'notes123456',
 ))
 
 
 def _load_password_blocklist():
     words = set(_EMBEDDED_BLOCKLIST)
-    path = os.environ.get('NOTIVE_PASSWORD_BLOCKLIST')
+    path = os.environ.get('DAFNOTE_PASSWORD_BLOCKLIST')
     if path and os.path.exists(path):
         try:
             with open(path, 'r', errors='ignore') as handle:
@@ -238,16 +238,16 @@ def generate_policy_password(length=20):
 
 
 # Bootstrap account PROFILES only — no secrets here. Passwords come from the
-# environment (NOTIVE_PASSWORD_<USERNAME>, e.g. NOTIVE_PASSWORD_ADMIN). On a
+# environment (DAFNOTE_PASSWORD_<USERNAME>, e.g. DAFNOTE_PASSWORD_ADMIN). On a
 # fresh database, any bootstrap user without an env password gets a random
 # policy-compliant one printed ONCE to the server log; rotate it immediately.
 BOOTSTRAP_PROFILES = {
 }
 
 
-# Resolve a bootstrap password: NOTIVE_PASSWORD_<USER> env var wins, else generate + print once to the server log.
+# Resolve a bootstrap password: DAFNOTE_PASSWORD_<USER> env var wins, else generate + print once to the server log.
 def bootstrap_password(username):
-    env_name = 'NOTIVE_PASSWORD_' + username.upper()
+    env_name = 'DAFNOTE_PASSWORD_' + username.upper()
     configured = os.environ.get(env_name)
     if configured:
         return configured, 'env'
@@ -262,20 +262,20 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = NOTES_MAX_REQUEST_BYTES + 1024
 
 
-# Load the 32-byte database key: NOTIVE_DB_KEY env wins, else the 0600 notive.key file (created once). Validates exact length.
+# Load the 32-byte database key: DAFNOTE_DB_KEY env wins, else the 0600 dafnote.key file (created once). Validates exact length.
 def get_db_key():
     """32-byte AES key: env var wins, else the local key file (created once)."""
-    env_key = os.environ.get('NOTIVE_DB_KEY')
+    env_key = os.environ.get('DAFNOTE_DB_KEY')
     if env_key:
         try:
             key = base64.b64decode(env_key, validate=True)
         except Exception:
             raise RuntimeError(
-                'Invalid NOTIVE_DB_KEY: must be base64 of exactly 32 bytes.'
+                'Invalid DAFNOTE_DB_KEY: must be base64 of exactly 32 bytes.'
             )
         if len(key) != 32:
             raise RuntimeError(
-                'Invalid NOTIVE_DB_KEY: must decode to exactly 32 bytes.'
+                'Invalid DAFNOTE_DB_KEY: must decode to exactly 32 bytes.'
             )
         return key
     if os.path.exists(KEY_PATH):
@@ -413,7 +413,7 @@ def decrypt_blob(blob, aad=None):
 
 
 def blob_aad(kind, username):
-    return f'notive-{kind}-v1:{username or ""}'.encode('utf-8')
+    return f'dafnote-{kind}-v1:{username or ""}'.encode('utf-8')
 
 
 def encrypt_profile(profile, username=None):
@@ -481,8 +481,8 @@ def is_e2ee_account(row):
 
 # Fixed dummy hash so unknown usernames take the same PBKDF2 work as
 # real ones (timing-attack mitigation for user enumeration).
-_DUMMY_SALT = b'notive-enumeration-dummy-salt-01'
-_DUMMY_HASH = hashlib.pbkdf2_hmac('sha256', b'notive-dummy-password', _DUMMY_SALT, PBKDF2_ITERATIONS)
+_DUMMY_SALT = b'dafnote-enumeration-dummy-salt-01'
+_DUMMY_HASH = hashlib.pbkdf2_hmac('sha256', b'dafnote-dummy-password', _DUMMY_SALT, PBKDF2_ITERATIONS)
 
 
 def dummy_kdf_salt_for(username):
@@ -506,13 +506,13 @@ def dummy_kdf_salt_for(username):
 # classes — the client policy check remains the primary gate. What the server
 # CAN do is reject verifiers that match a known-weak password, plus identity-
 # derived guesses. Every candidate costs one pinned Argon2id (~0.1 s at 64 MiB),
-# so the search is bounded by NOTIVE_WEAK_SCREEN_MAX (default 40) to keep
+# so the search is bounded by DAFNOTE_WEAK_SCREEN_MAX (default 40) to keep
 # registration responsive. This is a bar-raiser against scripted policy bypass,
 # NOT a complete policy: a determined API client can still register a weak
 # password the list misses. The definitive fix is OPAQUE/PAKE (server never
 # sees the password yet can still bind policy at the protocol level).
-WEAK_SCREEN_MAX = max(1, int(os.environ.get('NOTIVE_WEAK_SCREEN_MAX', '40')))
-IDENTITY_SCREEN_MAX = max(0, int(os.environ.get('NOTIVE_IDENTITY_SCREEN_MAX', '12')))
+WEAK_SCREEN_MAX = max(1, int(os.environ.get('DAFNOTE_WEAK_SCREEN_MAX', '40')))
+IDENTITY_SCREEN_MAX = max(0, int(os.environ.get('DAFNOTE_IDENTITY_SCREEN_MAX', '12')))
 
 # Top leaked / trivial passwords, including the common capitalised variants a
 # naive lowercase-only dictionary misses and obvious repeated-character
@@ -665,8 +665,8 @@ def totp_verify(secret_bytes, code, window=1, step=30):
 
 
 def pepper_auth_hash(auth_hash_bytes):
-    """Server-side pepper: HMAC(DB_KEY, 'notive-auth-v1:' + authHash)."""
-    return hmac.new(DB_KEY, b'notive-auth-v1:' + bytes(auth_hash_bytes), hashlib.sha256).digest()
+    """Server-side pepper: HMAC(DB_KEY, 'dafnote-auth-v1:' + authHash)."""
+    return hmac.new(DB_KEY, b'dafnote-auth-v1:' + bytes(auth_hash_bytes), hashlib.sha256).digest()
 
 
 def verify_auth_hash(candidate_bytes, row):
@@ -949,7 +949,7 @@ def init_db():
             conn.execute('ALTER TABLE vault_meta DROP CONSTRAINT vault_meta_pkey')
             conn.execute('ALTER TABLE vault_meta ADD PRIMARY KEY (username, vault_id)')
     except Exception as error:
-        print(f'NOTIVE MIGRATION: vault multi-key skipped: {error}', flush=True)
+        print(f'DAFNOTE MIGRATION: vault multi-key skipped: {error}', flush=True)
     # E2EE migration: add columns if missing.
     user_cols = _pg_columns(conn, 'users')
     for col, coltype in (('salt_auth', 'BYTEA'), ('salt_enc', 'BYTEA'), ('auth_hash', 'BYTEA'),
@@ -1049,7 +1049,7 @@ def init_db():
         if source == 'generated':
             if sys.stdout.isatty():
                 print(
-                    f'NOTIVE FIRST-RUN: generated password for {username!r}: {password} — '
+                    f'DAFNOTE FIRST-RUN: generated password for {username!r}: {password} — '
                     'log in and change it immediately.',
                     flush=True,
                 )
@@ -1059,7 +1059,7 @@ def init_db():
                 os.write(fd, (f'{username} {password}\n').encode('utf-8'))
                 os.close(fd)
                 print(
-                    f'NOTIVE FIRST-RUN: credentials for {username!r} written to '
+                    f'DAFNOTE FIRST-RUN: credentials for {username!r} written to '
                     f'0600 file {cred_path} (stdout is redirected). Change the password on first login.',
                     flush=True,
                 )
@@ -1109,7 +1109,7 @@ def take_db_backup():
     """Take a PostgreSQL backup using pg_dump. Returns the final path, or None on failure."""
     os.makedirs(BACKUP_DIR, exist_ok=True)
     stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime())
-    final_path = os.path.join(BACKUP_DIR, f'notive-{stamp}.sql.gz')
+    final_path = os.path.join(BACKUP_DIR, f'dafnote-{stamp}.sql.gz')
     try:
         import subprocess, gzip
         proc = subprocess.run(
@@ -1121,7 +1121,7 @@ def take_db_backup():
         with gzip.open(final_path, 'wb') as f:
             f.write(proc.stdout)
     except Exception as error:
-        print(f'NOTIVE BACKUP: failed: {error}', flush=True)
+        print(f'DAFNOTE BACKUP: failed: {error}', flush=True)
         try:
             os.remove(final_path)
         except OSError:
@@ -1135,7 +1135,7 @@ def take_db_backup():
 def _prune_old_backups():
     try:
         names = sorted(n for n in os.listdir(BACKUP_DIR)
-                       if n.startswith('notive-') and (n.endswith('.sql.gz') or n.endswith('.db')))
+                       if n.startswith('dafnote-') and (n.endswith('.sql.gz') or n.endswith('.db')))
     except OSError:
         return
     for name in names[:-BACKUP_KEEP] if len(names) > BACKUP_KEEP else []:
@@ -1147,7 +1147,7 @@ def _prune_old_backups():
 
 # Daemon loop: sleep first (a fresh start needs no backup of an unchanged DB),
 # then take one snapshot per interval and exit cleanly with the interpreter.
-# NOTIVE_BACKUP_INTERVAL_SECONDS=0 disables the thread entirely.
+# DAFNOTE_BACKUP_INTERVAL_SECONDS=0 disables the thread entirely.
 def _backup_loop():
     while True:
         time.sleep(max(1, BACKUP_INTERVAL_SECONDS))
@@ -1156,10 +1156,10 @@ def _backup_loop():
 
 def start_backup_thread():
     if BACKUP_INTERVAL_SECONDS <= 0:
-        print('NOTIVE BACKUP: disabled (NOTIVE_BACKUP_INTERVAL_SECONDS=0).', flush=True)
+        print('DAFNOTE BACKUP: disabled (DAFNOTE_BACKUP_INTERVAL_SECONDS=0).', flush=True)
         return
-    threading.Thread(target=_backup_loop, name='notive-backup', daemon=True).start()
-    print(f'NOTIVE BACKUP: every {BACKUP_INTERVAL_SECONDS}s, keeping {BACKUP_KEEP} '
+    threading.Thread(target=_backup_loop, name='dafnote-backup', daemon=True).start()
+    print(f'DAFNOTE BACKUP: every {BACKUP_INTERVAL_SECONDS}s, keeping {BACKUP_KEEP} '
           f'copies in {BACKUP_DIR}', flush=True)
 
 
@@ -1203,7 +1203,7 @@ def rate_fail_bounded(conn, buckets, max_n, window):
         lock_key = int(hashlib.md5(buckets[0].encode()).hexdigest()[:8], 16) if buckets else 0
         conn.execute('SELECT pg_advisory_lock(%s)', (lock_key,))
     except Exception:
-        print(f'NOTIVE: advisory lock failed for {buckets!r}, proceeding without lock', flush=True)
+        print(f'DAFNOTE: advisory lock failed for {buckets!r}, proceeding without lock', flush=True)
         lock_key = None
     try:
         _prune_rate_hits(conn, now, max(window, 3600))
@@ -1347,18 +1347,18 @@ def issue_session_token(conn, username, now):
 
 
 # Whether the session cookie carries the Secure flag: explicit
-# NOTIVE_COOKIE_SECURE=1/0 always wins (default Secure ON, even for
+# DAFNOTE_COOKIE_SECURE=1/0 always wins (default Secure ON, even for
 # loopback — modern browsers accept Secure on http://localhost as a secure
 # context; plain-HTTP LAN deployments must set up TLS).
 def session_cookie_secure():
-    env = os.environ.get('NOTIVE_COOKIE_SECURE')
+    env = os.environ.get('DAFNOTE_COOKIE_SECURE')
     if env is not None:
         return env == '1'
     return True
 
 
 # Set the HttpOnly __Host- SameSite=Lax session cookie (Secure always unless
-# NOTIVE_COOKIE_SECURE=0). __Host- requires Secure + Path=/ + no Domain.
+# DAFNOTE_COOKIE_SECURE=0). __Host- requires Secure + Path=/ + no Domain.
 def set_session_cookie(response, token):
     response.set_cookie(
         SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS,
@@ -1415,7 +1415,7 @@ def current_session_user():
                     profile = decrypt_profile(user['enc_profile'], user['username'] if user else None)
                 except Exception:
                     return None
-                request._notive_session_due_rotation = (
+                request._dafnote_session_due_rotation = (
                     int(row['created_at'] or 0) + SESSION_ROTATE_AFTER_SECONDS) <= int(time.time())
                 return {
                     'username': user['username'],
@@ -1448,21 +1448,21 @@ def rotate_session_if_due(conn, user, now):
 # --- Security audit logging + alerting (OWASP A09) -------------------------
 # Structured JSONL of security-relevant events (auth outcomes, recovery, MFA,
 # CSRF rejects, rate-limit trips, unhandled errors). Written append-only; the
-# optional NOTIVE_ALERT_WEBHOOK receives a POST for events at or above
-# NOTIVE_ALERT_MIN_SEVERITY (default 'high'). Callers pass identifiers only —
+# optional DAFNOTE_ALERT_WEBHOOK receives a POST for events at or above
+# DAFNOTE_ALERT_MIN_SEVERITY (default 'high'). Callers pass identifiers only —
 # never passwords, verifiers or key material.
-AUDIT_LOG_PATH = os.environ.get('NOTIVE_AUDIT_LOG', '/home/r3izu/Documents/audit/audit.log')
-AUDIT_ENABLED = os.environ.get('NOTIVE_AUDIT', '1').lower() != '0'
-ALERT_WEBHOOK = os.environ.get('NOTIVE_ALERT_WEBHOOK', '').strip()
+AUDIT_LOG_PATH = os.environ.get('DAFNOTE_AUDIT_LOG', '/home/r3izu/Documents/audit/audit.log')
+AUDIT_ENABLED = os.environ.get('DAFNOTE_AUDIT', '1').lower() != '0'
+ALERT_WEBHOOK = os.environ.get('DAFNOTE_ALERT_WEBHOOK', '').strip()
 try:
     from urllib.parse import urlparse as _awparse
     _aw = _awparse(ALERT_WEBHOOK) if ALERT_WEBHOOK else None
     if _aw is not None and _aw.scheme != 'https':
-        print(f'NOTIVE ALERT: NOTIVE_ALERT_WEBHOOK must be https:// (got {_aw.scheme or "none"!r}) — webhook disabled.', flush=True)
+        print(f'DAFNOTE ALERT: DAFNOTE_ALERT_WEBHOOK must be https:// (got {_aw.scheme or "none"!r}) — webhook disabled.', flush=True)
         ALERT_WEBHOOK = ''
 except Exception:
     ALERT_WEBHOOK = ''
-ALERT_MIN_SEVERITY = os.environ.get('NOTIVE_ALERT_MIN_SEVERITY', 'high').lower()
+ALERT_MIN_SEVERITY = os.environ.get('DAFNOTE_ALERT_MIN_SEVERITY', 'high').lower()
 _SEVERITY_RANK = {'info': 0, 'warning': 1, 'high': 2, 'critical': 3}
 AUDITED_ENDPOINTS = {
     '/api/login', '/api/register', '/api/change-password', '/api/upgrade-kdf',
@@ -1502,7 +1502,7 @@ def security_event(event, severity='info', **fields):
         except Exception:
             # A failed audit write must be observable somewhere.
             try:
-                print(f'NOTIVE AUDIT WRITE FAILED: {event} ({severity})', file=sys.stderr, flush=True)
+                print(f'DAFNOTE AUDIT WRITE FAILED: {event} ({severity})', file=sys.stderr, flush=True)
             except Exception:
                 pass
         if ALERT_WEBHOOK and _SEVERITY_RANK.get(severity, 0) >= _SEVERITY_RANK.get(ALERT_MIN_SEVERITY, 2):
@@ -1532,9 +1532,9 @@ def public_files(filename):
     # Vendored modules (argon2, qrcode, yjs + lib0) are served from vendor/.
     # The front-end is split into ES modules under js/ (entry: js/app.js).
     # Pentest M-16 (round-16, CRITICAL): `send_from_directory`'s safe_join
-    # normalizes `vendor/../notive.key` to `notive.key` (still inside BASE_DIR),
+    # normalizes `vendor/../dafnote.key` to `dafnote.key` (still inside BASE_DIR),
     # so the prefix check passed while `..` collapsed the path to the CWD root —
-    # leaking notive.key (32-byte DB key), server.py, notive.db. Fix: reject
+    # leaking dafnote.key (32-byte DB key), server.py, dafnote.db. Fix: reject
     # any path whose segments contain '..' at all (string match on the path
     # AND on the URL-decoded wire form — they are pre-decoded by Flask).
     parts = filename.replace('\\', '/').split('/')
@@ -1595,14 +1595,14 @@ def security_headers(response):
 def maybe_rotate_session(response):
     # Central rotation: any authorized /api response whose session is due rotates
     # its cookie on that response (not only /api/me polls).
-    due = getattr(request, '_notive_session_due_rotation', None)
+    due = getattr(request, '_dafnote_session_due_rotation', None)
     if not due or not request.path.startswith('/api/') or request.method not in ('GET', 'POST', 'PUT', 'DELETE'):
         return response
     if response.status_code >= 400:
         return response
     user = current_session_user()
     if not user:
-        request._notive_session_due_rotation = None
+        request._dafnote_session_due_rotation = None
         return response
     conn = get_db()
     try:
@@ -1611,7 +1611,7 @@ def maybe_rotate_session(response):
         conn.close()
     if token:
         set_session_cookie(response, token)
-    request._notive_session_due_rotation = None
+    request._dafnote_session_due_rotation = None
     return response
 
 
@@ -2018,7 +2018,7 @@ def api_register():
             ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params, auth_hash2)'
             ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             (username, b'', b'', 0,
-             encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': 'Notive User', 'email': email}, username),
+             encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': 'Dafnote User', 'email': email}, username),
              int(time.time()), salt_auth, salt_enc, (None if auth_hash2 else auth_hash), wrap_iv + wrap_ct,
              'argon2id', json.dumps(ARGON2_DESCRIPTOR), auth_hash2),
         )
@@ -2696,7 +2696,7 @@ def api_mfa_setup():
     conn.commit()
     conn.close()
     b32 = base64.b32encode(secret).decode('ascii')
-    uri = f'otpauth://totp/Notive:{user["username"]}?secret={b32}&issuer=Notive&digits=6&period=30'
+    uri = f'otpauth://totp/Dafnote:{user["username"]}?secret={b32}&issuer=Dafnote&digits=6&period=30'
     return jsonify({'secret': b32, 'otpauth': uri})
 
 
@@ -2876,10 +2876,10 @@ def api_passkey_register_begin():
                      (user['username'], prf_salt, int(time.time())))
         conn.commit()
     conn.close()
-    user_handle = b64url_encode(hashlib.sha256(b'notive-user-v1:' + user['username'].lower().encode('utf-8')).digest())
+    user_handle = b64url_encode(hashlib.sha256(b'dafnote-user-v1:' + user['username'].lower().encode('utf-8')).digest())
     return jsonify({
         'challenge': b64url_encode(challenge),
-        'rp': {'name': 'Notive', 'id': rp_id},
+        'rp': {'name': 'Dafnote', 'id': rp_id},
         'user': {'id': user_handle, 'name': user['username'], 'displayName': user['username']},
         'pubKeyCredParams': [{'type': 'public-key', 'alg': -7}],
         'timeout': 60000,
@@ -3280,7 +3280,7 @@ def api_account_email():
                  (encrypt_profile({
                      'firstName': profile.get('firstName', ''),
                      'lastName': profile.get('lastName', ''),
-                     'subtitle': profile.get('subtitle', 'Notive User'),
+                     'subtitle': profile.get('subtitle', 'Dafnote User'),
                      'email': email,
                  }), user['username']))
     conn.commit()
@@ -3312,7 +3312,7 @@ def api_account_profile():
                  (encrypt_profile({
                      'firstName': first,
                      'lastName': last,
-                     'subtitle': profile.get('subtitle', 'Notive User'),
+                     'subtitle': profile.get('subtitle', 'Dafnote User'),
                      'email': profile.get('email', ''),
                  }), user['username']))
     conn.commit()
@@ -3487,7 +3487,7 @@ def api_keys_lookup():
     conn.commit()
     conn.close()
     if not row:
-        return jsonify({'error': 'That account has not set up sharing yet. Ask them to log in to Notive once, then try again.'}), 404
+        return jsonify({'error': 'That account has not set up sharing yet. Ask them to log in to Dafnote once, then try again.'}), 404
     return jsonify({
         'username': target,
         'algo': row['algo'],
@@ -4381,11 +4381,11 @@ def trusted_app_origin():
     """Configured origin for links minted server-side (CWE-640 fix).
 
     The Host header is client-supplied, so deriving emailed links from it
-    invites password-reset poisoning. NOTIVE_PUBLIC_ORIGIN must be set to the
+    invites password-reset poisoning. DAFNOTE_PUBLIC_ORIGIN must be set to the
     app's real public origin (e.g. 'https://notes.example.com'); there is no
     Host fallback. Returns None when unset so callers fail closed rather than
     mail a link to an attacker-controlled host."""
-    trusted = os.environ.get('NOTIVE_PUBLIC_ORIGIN')
+    trusted = os.environ.get('DAFNOTE_PUBLIC_ORIGIN')
     if trusted:
         candidate = trusted.rstrip('/')
         # Must be an absolute http(s) origin; reject anything malformed.
@@ -4396,9 +4396,9 @@ def trusted_app_origin():
                 return candidate
         except Exception:
             pass
-        print('NOTIVE: NOTIVE_PUBLIC_ORIGIN is set but invalid; reset links disabled.', flush=True)
+        print('DAFNOTE: DAFNOTE_PUBLIC_ORIGIN is set but invalid; reset links disabled.', flush=True)
         return None
-    print('NOTIVE: NOTIVE_PUBLIC_ORIGIN is not set; password-reset emails are disabled '
+    print('DAFNOTE: DAFNOTE_PUBLIC_ORIGIN is not set; password-reset emails are disabled '
           '(set it to the public https origin to enable them).', flush=True)
     return None
 
@@ -4414,22 +4414,22 @@ def send_recovery_email(to_email, username, token):
         return
     host = (request.host or '').split(':')[0]
     link = origin + f'/?emailToken={token}'
-    smtp_host = os.environ.get('NOTIVE_SMTP_HOST')
+    smtp_host = os.environ.get('DAFNOTE_SMTP_HOST')
     if not smtp_host:
-        print(f'NOTIVE DEV: password-reset link for {username!r}: {link}', flush=True)
+        print(f'DAFNOTE DEV: password-reset link for {username!r}: {link}', flush=True)
         return
     import smtplib
     from email.message import EmailMessage
     msg = EmailMessage()
-    msg['Subject'] = 'Notive password reset'
-    msg['From'] = os.environ.get('NOTIVE_SMTP_FROM', f'notive@{host}')
+    msg['Subject'] = 'Dafnote password reset'
+    msg['From'] = os.environ.get('DAFNOTE_SMTP_FROM', f'dafnote@{host}')
     msg['To'] = to_email
     msg.set_content(
-        f'Hi {username},\n\nReset your Notive password (expires in 15 minutes):\n{link}\n\n'
+        f'Hi {username},\n\nReset your Dafnote password (expires in 15 minutes):\n{link}\n\n'
         'If you did not request this, ignore this email.\n')
-    port = int(os.environ.get('NOTIVE_SMTP_PORT', '587'))
-    user = os.environ.get('NOTIVE_SMTP_USER')
-    password = os.environ.get('NOTIVE_SMTP_PASS')
+    port = int(os.environ.get('DAFNOTE_SMTP_PORT', '587'))
+    user = os.environ.get('DAFNOTE_SMTP_USER')
+    password = os.environ.get('DAFNOTE_SMTP_PASS')
     with smtplib.SMTP(smtp_host, port, timeout=10) as smtp:
         smtp.starttls()
         if user:
@@ -4745,7 +4745,7 @@ if __name__ == '__main__':
     # Hide Werkzeug version banner (info-disclosure fix). Must run before app.run.
     try:
         import werkzeug.serving
-        werkzeug.serving.WSGIRequestHandler.server_version = 'Notive'
+        werkzeug.serving.WSGIRequestHandler.server_version = 'Dafnote'
         werkzeug.serving.WSGIRequestHandler.sys_version = ''
 
         # Suppress noisy BrokenPipe/SSLError logs from client disconnects.
@@ -4762,17 +4762,17 @@ if __name__ == '__main__':
     # HTTPS is mandatory: the app relies on Web Crypto and __Host- session
     # cookies, both of which need a secure context. There is no plain-HTTP
     # mode — bind all interfaces by default so the LAN can reach it, and
-    # require a cert/key (env override, else certs/notive.{crt,key}).
-    bind_host = os.environ.get('NOTIVE_BIND_HOST', '0.0.0.0')
-    tls_cert = os.environ.get('NOTIVE_TLS_CERT') or os.path.join(BASE_DIR, 'certs', 'notive.crt')
-    tls_key = os.environ.get('NOTIVE_TLS_KEY') or os.path.join(BASE_DIR, 'certs', 'notive.key')
+    # require a cert/key (env override, else certs/dafnote.{crt,key}).
+    bind_host = os.environ.get('DAFNOTE_BIND_HOST', '0.0.0.0')
+    tls_cert = os.environ.get('DAFNOTE_TLS_CERT') or os.path.join(BASE_DIR, 'certs', 'dafnote.crt')
+    tls_key = os.environ.get('DAFNOTE_TLS_KEY') or os.path.join(BASE_DIR, 'certs', 'dafnote.key')
     if not os.path.exists(tls_cert) or not os.path.exists(tls_key):
         sys.exit(
-            'NOTIVE: HTTPS is required. Provide NOTIVE_TLS_CERT and NOTIVE_TLS_KEY, '
+            'DAFNOTE: HTTPS is required. Provide DAFNOTE_TLS_CERT and DAFNOTE_TLS_KEY, '
             f'or place a cert/key at {tls_cert} and {tls_key}.'
         )
-    print(f'NOTIVE: HTTPS enabled ({tls_cert}).', flush=True)
-    print('NOTIVE: production use requires HTTPS reverse proxy + NOTIVE_COOKIE_SECURE=1 '
+    print(f'DAFNOTE: HTTPS enabled ({tls_cert}).', flush=True)
+    print('DAFNOTE: production use requires HTTPS reverse proxy + DAFNOTE_COOKIE_SECURE=1 '
           '(default Secure ON) + gunicorn (Werkzeug dev server is single-process).', flush=True)
     app.run(host=bind_host, port=port, threaded=True,
             ssl_context=build_tls_context(tls_cert, tls_key))

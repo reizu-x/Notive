@@ -117,8 +117,8 @@ async function prfKekRawHKDF(prfSecretBytes, credentialIdB64) {
   const bits = await window.crypto.subtle.deriveBits(
     {
       name: 'HKDF', hash: 'SHA-256',
-      salt: new TextEncoder().encode('notive-prf-kek-v1:' + String(credentialIdB64 || '')),
-      info: new TextEncoder().encode('notive master-key KEK'),
+      salt: new TextEncoder().encode('dafnote-prf-kek-v1:' + String(credentialIdB64 || '')),
+      info: new TextEncoder().encode('dafnote master-key KEK'),
     }, base, 256);
   return new Uint8Array(bits);
 }
