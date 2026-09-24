@@ -35,7 +35,7 @@ export function syncAgoText() {
 }
 
 export function viewLabel(view) {
-  if (view === 'favorites') return 'Starred notes';
+  if (view === 'favorites') return 'Favourites';
   if (view === 'archive') return 'Archive';
   if (view === 'bin') return 'Bin';
   if (view === 'vault') return 'Vault';

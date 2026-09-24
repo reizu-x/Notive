@@ -23,7 +23,7 @@ export const BIN_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 
 // Return the user's preferred timezone from localStorage, or 'auto' (browser local).
 export function preferredTimezone() {
-  try { return localStorage.getItem('notely-timezone') || 'auto'; } catch (error) { return 'auto'; }
+  try { return localStorage.getItem('notive-timezone') || 'auto'; } catch (error) { return 'auto'; }
 }
 
 // Format a timestamp in the given timezone using Intl.DateTimeFormat.

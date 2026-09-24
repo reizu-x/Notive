@@ -1,24 +1,44 @@
-# Notely
+# Notive
 
 **Your notes. Truly yours.**
 
-Notely is a private, self-hosted notes application built on a simple idea: your notes are your property — and only you should be able to read them.
+Notive is a private, self-hosted notes application built on a simple idea: your notes are your property — and only you should be able to read them.
 
-Whether you're keeping recipes, to-do lists, journal entries, or research notes, Notely gives you a calm, focused space to write, organise, and find what matters, while keeping your content protected from the moment you create it.
+Whether you're keeping recipes, to-do lists, journal entries, or research notes, Notive gives you a calm, focused space to write, organise, and find what matters, while keeping your content protected from the moment you create it.
 
-## What Notely does
+## Features
 
-- **Notes for every purpose** — Standard notes, recipes, and to-do lists, each with a dedicated writing experience.
-- **Organise your way** — Create colourful folders and sections, then drag, drop, and arrange them however you like.
-- **Find anything fast** — Search and filters across your notes, so you never lose a thought.
-- **Focus on writing** — A clean editor with live preview, plus templates to get you started quickly.
-- **Import & export** — Bring notes in and take them with you in familiar plain-text formats.
-- **Never lose work** — Deleted notes are kept safely recoverable for a grace period.
-- **Make it yours** — Themes, favourites, archiving, and a reading list for later.
+**Write your way**
+- Standard notes with a clean Write/Preview Markdown editor.
+- Recipe template with structured ingredients and steps.
+- To-do template with checkboxes that track progress.
+- Tags on any note, with tag search and a tag manager.
+- Flowcharts and diagrams rendered from plain text.
+- Formatting toolbar, word counts, and note covers.
+
+**Organise freely**
+- Colourful sections with nesting folders, arranged by drag and drop.
+- All, Important, and Recent views over the whole workspace.
+- Star favourites, archive finished notes, restore anything from the Bin within its grace period.
+
+**Lock it down**
+- Password-protected vaults for sensitive notes, separate from your login.
+- End-to-end encrypted shared sections with invited members.
+- Two-factor authentication, passkeys, and self-serve account recovery.
+- Deleted notes rest in the Bin before permanent removal — mistakes are recoverable.
+
+**Find anything**
+- Full-text search across titles, contents, folders, and recipe fields.
+- Quoted tag and phrase queries, per-section and per-folder filtering.
+
+**Own your data**
+- Import and export as JSON, YAML, Markdown, or plain text.
+- Automatic backups of the encrypted store.
+- Six themes and reading fonts, synced per device.
 
 ## Privacy by design
 
-Notely is built around end-to-end encryption. In plain terms:
+Notive is built around end-to-end encryption. In plain terms:
 
 - Your notes are encrypted on your device before they ever leave it.
 - The server can only ever see encrypted content — never your words or data.
@@ -27,10 +47,10 @@ Notely is built around end-to-end encryption. In plain terms:
 
 When you want an extra layer of protection, you can add two-factor authentication, passkeys, or a private vault for sensitive notes.
 
-## Who is Notely for?
+## Who is Notive for?
 
 Anyone who wants a private place to write — personal journaling, family recipes, research, or quiet reflection — without trading away control of their data.
 
 ## Self-hosted & open source
 
-Notely is open source — run it yourself on your own hardware and review every line of the code. A hosted cloud option is planned for the future, at a low monthly price that simply covers server costs.
+Notive is open source — run it yourself on your own hardware and review every line of the code. A hosted cloud option is planned for the future, at a low monthly price that simply covers server costs.

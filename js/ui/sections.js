@@ -12,7 +12,7 @@ import { COLLECTION_COLORS, SECTION_ICONS, sharedCollapsed, sharedGroupFolders, 
 import { state } from '../domain/state.js';
 import { showToast } from './modal.js';
 import { setDeleteDialog } from './notes.js';
-import { normalizeTagName, sharedGroupTagList } from './tags.js';
+import { isValidTagName, normalizeTagName, sharedGroupTagList } from './tags.js';
 import { BIN_RETENTION_MS } from '../core/dates.js';
 import { noteList } from '../core/elements.js';
 import { cleanFolderPath, folderIconForDepth, joinLeafRename } from '../core/paths.js';
@@ -155,6 +155,7 @@ export function sectionTagAdd(raw) {
   if (state.sectionSettingsGroupId == null) return;
   const tag = normalizeTagName(raw);
   if (!tag) return;
+  if (!isValidTagName(tag)) { showToast('Tags allow letters only (A–Z)'); return; }
   const tags = sharedGroupTagList(state.sectionSettingsGroupId);
   if (tags.some((t) => String(t).toLowerCase() === tag.toLowerCase())) return;
   if (tags.length >= 100) { showToast('Section tag limit reached (100)'); return; }
@@ -511,12 +512,12 @@ export function resolveListFolderTarget(header) {
   return { ns: 'custom', section: sectionId, path: header.dataset.folder };
 }
 
-// True when a drag event carries a Notely folder (slide-menu/workspace shared
+// True when a drag event carries a Notive folder (slide-menu/workspace shared
 // payload), as opposed to a note drag (text/plain) or a file hover.
 export function isFolderDrag(event) {
   try {
     const types = event.dataTransfer ? Array.from(event.dataTransfer.types || []) : [];
-    return types.includes('application/x-notely-folder');
+    return types.includes('application/x-notive-folder');
   } catch (error) { return false; }
 }
 
@@ -986,7 +987,7 @@ export function selectCustomFolder(sectionId, folder) {
   state.activeFilter = 'all';
   state.activeCustom = { section: sectionId, folder };
   state.lastMarkedSectionId = sectionId;
-  try { localStorage.setItem('notely-last-section', sectionId); } catch (error) {}
+  try { localStorage.setItem('notive-last-section', sectionId); } catch (error) {}
   clearSearch();
   updateListHeading();
   renderCustomSections();
@@ -1004,7 +1005,7 @@ export function selectCustomSection(sectionId) {
   state.activeFilter = 'all';
   state.activeCustom = { section: sectionId, folder: null };
   state.lastMarkedSectionId = sectionId;
-  try { localStorage.setItem('notely-last-section', sectionId); } catch (error) {}
+  try { localStorage.setItem('notive-last-section', sectionId); } catch (error) {}
   clearSearch();
   updateListHeading();
   renderCustomSections();
@@ -1026,7 +1027,7 @@ export function applyStripFolderFilter(sectionId, folder) {
   }
   state.activeCustom = { section: sectionId, folder: folder || null };
   state.lastMarkedSectionId = sectionId;
-  try { localStorage.setItem('notely-last-section', sectionId); } catch (error) {}
+  try { localStorage.setItem('notive-last-section', sectionId); } catch (error) {}
   clearSearch();
   updateListHeading();
   renderCustomSections();
@@ -1363,7 +1364,7 @@ export function bindFolderDragDrop() {
     if (!row) return;
     const target = sidebarFolderTarget(event);
     if (!target || !e2ee.masterKey) { event.preventDefault(); return; }
-    event.dataTransfer.setData('application/x-notely-folder', JSON.stringify(target));
+    event.dataTransfer.setData('application/x-notive-folder', JSON.stringify(target));
     event.dataTransfer.effectAllowed = 'move';
     row.classList.add('dragging');
     closeFolderContextMenu();
@@ -1376,7 +1377,7 @@ export function bindFolderDragDrop() {
   sidebar.addEventListener('dragover', (event) => {
     const row = event.target.closest('.collection-item');
     if (!row || !e2ee.masterKey) return;
-    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes('application/x-notely-folder')) return;
+    if (!event.dataTransfer || !Array.from(event.dataTransfer.types || []).includes('application/x-notive-folder')) return;
     const rect = row.getBoundingClientRect();
     const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
     event.preventDefault();
@@ -1396,7 +1397,7 @@ export function bindFolderDragDrop() {
     const row = event.target.closest('.collection-item');
     if (!row || !e2ee.masterKey) return;
     let dragged = null;
-    try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notely-folder')); } catch (error) { dragged = null; }
+    try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notive-folder')); } catch (error) { dragged = null; }
     if (!dragged || !dragged.path) return;
     const target = sidebarFolderTarget(event);
     if (!target || target.ns !== dragged.ns || target.section !== dragged.section) return;
@@ -2258,7 +2259,10 @@ export async function addCustomSection() {
     okText: 'Create',
   });
   if (!name || !name.trim()) return;
-  const section = { id: uniqueSectionId(), name: uniqueSectionName(name.trim()), folders: [], icon: SECTION_ICONS[0] };
+  // New sections ship with a starter folder: empty sections are deliberately
+  // unselectable (isSectionEmpty guard), so a bare section would be dead on
+  // arrival — no click, no strip entry, no filing target.
+  const section = { id: uniqueSectionId(), name: uniqueSectionName(name.trim()), folders: ['General'], icon: SECTION_ICONS[0] };
   state.customSections.push(section);
   persistCustomSections();
   state.activeView = 'notes';
@@ -2271,7 +2275,6 @@ export async function addCustomSection() {
   renderCustomSections();
   renderNoteList();
   showToast(`Section "${section.name}" created`);
-  startSectionRename({ kind: 'custom', id: section.id });
 }
 
 // Delete every folder in a built-in section and hide the section header;

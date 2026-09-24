@@ -48,7 +48,7 @@ const VAULT_METAS_TTL_MS = 30 * 60 * 1000;
 // (hard-refreshes no longer cost fetches). Same sensitivity as the session
 // cookie already stored there — tab-scoped, dies with the tab.
 function vaultMetasCacheKey(user) {
-  return 'notely-vault-meta:' + String(user || '').toLowerCase();
+  return 'notive-vault-meta:' + String(user || '').toLowerCase();
 }
 
 function readCachedVaultMetas(user) {
@@ -85,7 +85,7 @@ function clearCachedVaultMetas() {
     const keys = [];
     for (let i = 0; i < sessionStorage.length; i += 1) {
       const key = sessionStorage.key(i);
-      if (key && key.startsWith('notely-vault-meta:')) keys.push(key);
+      if (key && key.startsWith('notive-vault-meta:')) keys.push(key);
     }
     keys.forEach((key) => sessionStorage.removeItem(key));
   } catch (error) {}
@@ -160,13 +160,13 @@ export function vaultFail(message) {  const errorEl = document.getElementById('v
 // network-side backstop).
 const VAULT_MAX_TRIES = 3;
 const VAULT_LOCKOUT_MS = 15 * 60 * 1000;
-const VAULT_FAILS_PREFIX = 'notely-vault-fails:';
+const VAULT_FAILS_PREFIX = 'notive-vault-fails:';
 
 function vaultFailKey() {
   try {
     const name = state.cachedProfile && state.cachedProfile.username
       ? String(state.cachedProfile.username).toLowerCase() : '';
-    return name ? VAULT_FAILS_KEY_PREFIX + name : null;
+    return name ? VAULT_FAILS_PREFIX + name : null;
   } catch (error) { return null; }
 }
 
@@ -221,7 +221,7 @@ export async function openVaultModal() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       meta = await response.json();
     } catch (error) {
-      showToast('Cannot reach the Notely server');
+      showToast('Cannot reach the Notive server');
       return;
     }
     writeCachedVaultMetas(me, meta && Array.isArray(meta.vaults) ? meta.vaults : []);
@@ -284,7 +284,7 @@ export async function writeUiVaultLocal() {
   let theme = 'light';
   try {
     const current = document.documentElement.dataset.theme
-      || localStorage.getItem('notely-theme') || 'light';
+      || localStorage.getItem('notive-theme') || 'light';
     if (THEMES.includes(current)) theme = current;
   } catch (error) {}
   const snapshot = JSON.stringify({
@@ -313,8 +313,8 @@ export async function writeUiVaultLocal() {
         }
       }
     } catch (error) {}
-    localStorage.removeItem('notely-collections');
-    localStorage.removeItem('notely-deleted-collections');
+    localStorage.removeItem('notive-collections');
+    localStorage.removeItem('notive-deleted-collections');
     localStorage.removeItem(COLLAPSED_FOLDERS_KEY);
   } catch (error) {}
 }
@@ -399,9 +399,12 @@ export async function deleteVault(vaultId) {
     proof.currentVaultAuth = challenge;
   } catch (err) { showToast('Delete cancelled'); return; }
   try {
-    // Prove with the vault password using vault 1's salt_auth (shared).
-    const existing = (state.vaultList && state.vaultList.length) ? state.vaultList : [];
-    const first = existing.length ? existing[0] : (state.vaultMetas || [])[0];
+    // Prove with the vault password using vault-1's salt_auth (shared).
+    // F-56 fix: read from vaultMetas (carries saltAuth), not vaultList
+    // (which maps name-only projections and never carries salts — the old
+    // read made single-vault deletion permanently unavailable).
+    const metas = state.vaultMetas || [];
+    const first = metas.length ? metas[0] : null;
     if (!first || !first.saltAuth) {
       showToast('Open the vault first, then delete it');
       return;
@@ -578,7 +581,7 @@ export async function createAdditionalVault() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       meta = await response.json();
     } catch (error) {
-      showToast('Cannot reach the Notely server');
+      showToast('Cannot reach the Notive server');
       return;
     }
     rows = meta && Array.isArray(meta.vaults) ? meta.vaults : [];
@@ -1139,7 +1142,7 @@ export function readLegacyUiKeys() {
     }
   } catch (error) {}
   try {
-    const stored = JSON.parse(localStorage.getItem('notely-collections') || 'null');
+    const stored = JSON.parse(localStorage.getItem('notive-collections') || 'null');
     if (Array.isArray(stored)) {
       const cols = stored.filter((name) => typeof name === 'string' && name.trim()).slice(0, 200);
       if (cols.length) out.cols = cols;
@@ -1208,7 +1211,7 @@ export function uiSnapshot() {
   let theme = 'light';
   try {
     const current = document.documentElement.dataset.theme
-      || localStorage.getItem('notely-theme') || 'light';
+      || localStorage.getItem('notive-theme') || 'light';
     if (THEMES.includes(current)) theme = current;
   } catch (error) {}
   return {

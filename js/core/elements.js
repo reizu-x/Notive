@@ -16,6 +16,7 @@ export const typeBadge = document.getElementById('type-badge');
 export const editorToolbar = document.getElementById('editor-toolbar');
 export const allCount = document.getElementById('all-count');
 export const recentCountEl = document.getElementById('recent-count');
+export const importantCountEl = document.getElementById('important-count');
 export const starredCountEl = document.getElementById('starred-count');
 export const totalCount = document.getElementById('total-count');
 export const importInput = document.getElementById('import-input');

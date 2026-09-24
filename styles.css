@@ -940,15 +940,23 @@ sidebar — they live in the workspace strip / note list instead. */
 at the bottom, only the nav + folder lists scroll. */
 .sidebar-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 
+/* Never draw scrollbar chrome anywhere on the site: every scroll region
+   (sidebar, note list, editor, modal lists, code blocks) keeps scrolling
+   via wheel / touch / keyboard — it just never renders a bar. */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { display: none; }
+
 @media (min-width: 761px) {
   /* Desktop: the three columns fill the viewport and scroll independently —
   no page-level scrollbar. The sidebar middle, the note list and the editor
-  each get their own scrollbar only when their content overflows. */
-  .app-shell { height: 100vh; }
-  .sidebar { height: 100vh; min-height: 0; }
-  .notes-panel { height: 100vh; min-height: 0; }
+  each scroll within their own area only when their content overflows.
+  dvh keeps the fit exact when mobile browser chrome shows/hides. */
+  html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+  .app-shell { height: 100vh; height: 100dvh; }
+  .sidebar { height: 100vh; height: 100dvh; min-height: 0; }
+  .notes-panel { height: 100vh; height: 100dvh; min-height: 0; }
   .note-list { min-height: 0; }
-  .editor-panel { height: 100vh; min-height: 0; }
+  .editor-panel { height: 100vh; height: 100dvh; min-height: 0; }
   .editor-scroll { flex: 1; min-height: 0; }
 }
 
@@ -1320,8 +1328,13 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .toolbox-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 28px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 5px; background: transparent; color: var(--toolbar-ink); font-family: 'DM Mono', monospace; font-size: 11px; cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
 .toolbox-btn:hover { background: var(--toolbar-hover-bg); color: var(--toolbar-hover-ink); border-color: var(--btn-hover-border); }
 .toolbox-btn-italic { font-style: italic; }
-.todo-rendered { display: block; width: 100%; min-height: 55vh; padding: 6px 0 24px; border: 0; outline: 0; color: var(--source-ink); background: transparent; font-family: 'DM Mono', monospace; font-size: 12px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: break-word; cursor: text; }
+.todo-rendered { display: block; width: 100%; min-height: 55vh; padding: 6px 0 24px; border: 0; outline: 0; color: var(--source-ink); background: transparent; font-family: 'DM Mono', monospace; font-size: 12px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: break-word; cursor: text; font-synthesis: style; }
 .todo-rendered:focus { outline: none; }
+/* :root disables font synthesis app-wide; the (often uninstalled) DM Mono
+   stack can fall back to a face with bold but no italic, which made <em>/<i>
+   render upright and invisible while <strong> worked. Re-enable synthetic
+   slant here and pin the style so italics always show. */
+.todo-rendered em, .todo-rendered i { font-style: italic; }
 .todo-rendered .td-line { display: block; margin: 0; padding: 0; min-height: 1.4em; }
 .todo-rendered .td-h1 { font-size: 22px; font-weight: 600; color: var(--preview-head); font-family: Fraunces, serif; margin: 0.4em 0 0.15em; }
 .todo-rendered .td-h2 { font-size: 18px; font-weight: 600; color: var(--preview-head); font-family: Fraunces, serif; margin: 0.35em 0 0.12em; }

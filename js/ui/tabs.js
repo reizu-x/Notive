@@ -533,7 +533,7 @@ export function enableNoteDragDrop() {
       const fromList = target ? folderListOf(target.ns, target.section) : null;
       // Intermediate headers are not real folders: they cannot be dragged.
       if (!target || !fromList || !fromList.includes(target.path) || !e2ee.masterKey) { event.preventDefault(); return; }
-      event.dataTransfer.setData('application/x-notely-folder', JSON.stringify(target));
+      event.dataTransfer.setData('application/x-notive-folder', JSON.stringify(target));
       event.dataTransfer.effectAllowed = 'move';
       header.classList.add('dragging');
       closeFolderContextMenu();
@@ -563,7 +563,7 @@ export function enableNoteDragDrop() {
     header.addEventListener('drop', (event) => {
       if (!isFolderDrag(event) || !e2ee.masterKey) return;
       let dragged = null;
-      try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notely-folder')); } catch (error) { dragged = null; }
+      try { dragged = JSON.parse(event.dataTransfer.getData('application/x-notive-folder')); } catch (error) { dragged = null; }
       if (!dragged || !dragged.path) return;
       const target = resolveListFolderTarget(header);
       if (!target || target.ns !== dragged.ns || target.section !== dragged.section) return;

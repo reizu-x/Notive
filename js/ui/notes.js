@@ -13,7 +13,7 @@ import { setSaveLabel, syncAgoText } from './feedback.js';
 import { showToast } from './modal.js';
 import { customNoteFolder, isFavoritesView } from './sections.js';
 import { BIN_RETENTION_MS } from '../core/dates.js';
-import { allCount, breadcrumbTitle, editorToolbar, listEmpty, markdownInput, noteList, preview, recentCountEl, starredCountEl, tagList, titleInput, totalCount, wordCount } from '../core/elements.js';
+import { allCount, breadcrumbTitle, editorToolbar, importantCountEl, listEmpty, markdownInput, noteList, preview, recentCountEl, starredCountEl, tagList, titleInput, totalCount, wordCount } from '../core/elements.js';
 import { icon } from '../core/icons.js';
 import { isValidNoteId, newNoteId } from '../core/ids.js';
 import { folderDepth, folderIconForDepth, folderLeaf, folderParent } from '../core/paths.js';
@@ -62,7 +62,7 @@ import { applyUiSnapshot, uiSnapshot } from './vault.js';
 export function exportAllNotes() {
   if (!state.cachedProfile || !state.notesLoaded) { showToast('Log in first'); return; }
   const payload = {
-    app: 'Notely',
+    app: 'Notive',
     version: 2,
     exportedAt: new Date().toISOString(),
     notes: state.notes.map((note) => ({ ...note })),
@@ -74,7 +74,7 @@ export function exportAllNotes() {
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
   const stamp = new Date().toISOString().slice(0, 10);
-  link.download = sanitizeFilename(`Notely-notes-${stamp}`, 'json');
+  link.download = sanitizeFilename(`Notive-notes-${stamp}`, 'json');
   link.rel = 'noopener';
   document.body.appendChild(link);
   link.click();
@@ -121,7 +121,7 @@ ${body0}`.replace(/^\n+/, '')
   const blob = buildStoreZip(entries);
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
-  link.download = sanitizeFilename(`Notely-notes-${new Date().toISOString().slice(0, 10)}`, 'zip');
+  link.download = sanitizeFilename(`Notive-notes-${new Date().toISOString().slice(0, 10)}`, 'zip');
   link.rel = 'noopener';
   document.body.appendChild(link);
   link.click();
@@ -278,9 +278,12 @@ export function getNoteContextMenu() {
   return document.getElementById('note-context-menu');
 }
 
-// True when a note carries the important tag (case-insensitive).
+// True when a note is flagged important. The flag used to be stored as an
+// 'important' tag (retired); legacy payloads carrying the tag still count.
 export function isImportant(note) {
-  return Boolean(note && Array.isArray(note.tags) && note.tags.some((tag) => String(tag).toLowerCase() === IMPORTANT_TAG));
+  if (!note) return false;
+  if (note.important === true) return true;
+  return Boolean(Array.isArray(note.tags) && note.tags.some((tag) => String(tag).toLowerCase() === IMPORTANT_TAG));
 }
 
 // Selected note, falling back to the first note (may be undefined when empty — callers must guard).
@@ -412,7 +415,7 @@ export function visibleNotes() {
       }
     }
     const matchesSearch = noteMatchesSearch(note, state.searchQuery);
-    const matchesFilter = state.activeFilter === 'all' || (state.activeFilter === 'favorites' && note.favorite) || (state.activeFilter === 'recent' && isRecentNote(note));
+    const matchesFilter = state.activeFilter === 'all' || (state.activeFilter === 'favorites' && note.favorite) || (state.activeFilter === 'recent' && isRecentNote(note)) || (state.activeFilter === 'important' && isImportant(note));
     const matchesCustom = !state.activeCustom || (customNoteFolder(note, state.activeCustom.section) !== null
       && (!state.activeCustom.folder || isFolderOrSub(customNoteFolder(note, state.activeCustom.section), state.activeCustom.folder)));
     return matchesSearch && matchesFilter && matchesCustom;
@@ -512,15 +515,15 @@ export function deviceOnlyPref() {
   try { return localStorage.getItem(deviceOnlyKey()) === '1'; } catch (error) { return false; }
 }
 
-export function localNotesKey() { return accountScopeKey('notely-local-notes'); }
+export function localNotesKey() { return accountScopeKey('notive-local-notes'); }
 
 // AAD context binding for the workspace envelope (cross-account swap resistance).
 export function notesAadContext() {
   const name = state.cachedProfile && state.cachedProfile.username;
-  return 'notely-notes-v1:' + (name ? String(name) : '');
+  return 'notive-notes-v1:' + (name ? String(name) : '');
 }
 
-export function deviceOnlyKey() { return accountScopeKey('notely-device-only'); }
+export function deviceOnlyKey() { return accountScopeKey('notive-device-only'); }
 
 // The note the editor is bound to, whether it lives in the workspace or the
 // unlocked Vault. Editor chrome (favorite/share/type/download/preview) goes
@@ -536,7 +539,7 @@ export function activeEditorNote() {
 // Delete legacy plaintext note keys after server migration (CWE-312: no plaintext notes lingering on disk).
 export function wipeLegacyLocalNotes() {
   try {
-    localStorage.removeItem('notely-notes');
+    localStorage.removeItem('notive-notes');
     localStorage.removeItem('quietly-notes');
   } catch (error) {}
 }
@@ -544,7 +547,7 @@ export function wipeLegacyLocalNotes() {
 // One-time read of pre-server localStorage note keys. Returns null when absent or invalid.
 export function readLegacyLocalNotes() {
   try {
-    const raw = JSON.parse(localStorage.getItem('notely-notes') || localStorage.getItem('quietly-notes') || 'null');
+    const raw = JSON.parse(localStorage.getItem('notive-notes') || localStorage.getItem('quietly-notes') || 'null');
     if (!Array.isArray(raw) || !raw.length) return null;
     return raw.map(migrateNote).slice(0, 2000);
   } catch (error) {
@@ -940,16 +943,19 @@ export function duplicateNoteById(id) {
   showToast('Note duplicated');
 }
 
-// Add/remove the important tag; important notes require popup confirmation before deletion.
+// Flag/unflag a note as important (shown in the Important tab).
+// The legacy 'important' tag is stripped whenever encountered.
 export function toggleImportantById(id) {
   const note = state.notes.find((item) => item.id === id);
   if (!note) return;
-  if (!Array.isArray(note.tags)) note.tags = [];
   if (isImportant(note)) {
-    note.tags = note.tags.filter((tag) => String(tag).toLowerCase() !== IMPORTANT_TAG);
-    showToast('Removed important tag');
+    note.important = false;
+    if (Array.isArray(note.tags)) note.tags = note.tags.filter((tag) => String(tag).toLowerCase() !== IMPORTANT_TAG);
+    showToast('Removed from Important');
   } else {
-    note.tags = [...note.tags, IMPORTANT_TAG];
+    note.important = true;
+    if (Array.isArray(note.tags)) note.tags = note.tags.filter((tag) => String(tag).toLowerCase() !== IMPORTANT_TAG);
+    else note.tags = [];
     showToast('Marked as important');
   }
   if (id === state.currentId) updateMeta(note);
@@ -1186,8 +1192,8 @@ export function renderNoteList() {
   noteList.hidden = visible.length === 0;
   const emptyTitle = listEmpty.querySelector('strong');
   const emptySub = listEmpty.querySelector('span:last-child');
-  if (emptyTitle) emptyTitle.textContent = inBin ? 'Bin is empty' : 'No notes found';
-  if (emptySub) emptySub.textContent = inBin ? 'Deleted notes stay here for 3 days before they are permanently removed.' : 'Try another search or create a new note.';
+  if (emptyTitle) emptyTitle.textContent = inBin ? 'Bin is empty' : state.activeFilter === 'important' ? 'No important notes' : 'No notes found';
+  if (emptySub) emptySub.textContent = inBin ? 'Deleted notes stay here for 3 days before they are permanently removed.' : state.activeFilter === 'important' ? 'Right-click a note and choose Mark as important.' : 'Try another search or create a new note.';
   const liveNotes = state.notes.filter((note) => !note.deleted && !note.archived);
   const archivedNotes = state.notes.filter((note) => !note.deleted && note.archived);
   const binnedNotes = state.notes.filter((note) => note.deleted);
@@ -1195,6 +1201,7 @@ export function renderNoteList() {
   if (allCount) allCount.textContent = scope.length;
   if (recentCountEl) recentCountEl.textContent = scope.filter((note) => isRecentNote(note)).length;
   if (starredCountEl) starredCountEl.textContent = scope.filter((note) => note.favorite).length;
+  if (importantCountEl) importantCountEl.textContent = scope.filter((note) => isImportant(note)).length;
   const activeContextName = (state.activeCustom ? (state.activeCustom.folder || sectionDisplayName('custom', state.activeCustom.section)) : null);
   if (totalCount) totalCount.textContent = inBin ? `${visible.length} in bin` : (activeContextName ? `${visible.length} note${visible.length === 1 ? '' : 's'} in ${activeContextName}` : `${visible.length} note${visible.length === 1 ? '' : 's'}`);
   const navAllCount = document.getElementById('nav-all-count');
@@ -1384,7 +1391,7 @@ export async function loadNotesFromServer() {
     const legacy = readLegacyLocalNotes();
     state.notes = legacy || [];
     state.notesLoaded = true;
-    showToast('Cannot reach the Notely server — working offline');
+    showToast('Cannot reach the Notive server — working offline');
   }
 }
 
@@ -1608,7 +1615,7 @@ export function updateMeta(note) {
   wordCount.textContent = `${words} word${words === 1 ? '' : 's'}`;
   const editedEl = document.getElementById('edited-label');
   if (editedEl) editedEl.textContent = relativeEditedLabel(note);
-  const tags = Array.isArray(note.tags) ? note.tags.filter((tag) => typeof tag === 'string').slice(0, 20) : [];
+  const tags = Array.isArray(note.tags) ? note.tags.filter((tag) => typeof tag === 'string' && String(tag).toLowerCase() !== IMPORTANT_TAG).slice(0, 20) : [];
   // "+" affordance sits inline after the tags and opens the tag editor for THIS
   // note (the note id is bound to the button). It only appears for the user's
   // own regular notes: vault and shared/collab notes have no editable tag list,
@@ -1625,14 +1632,14 @@ export function updateMeta(note) {
 
 // Single place that computes the list heading from view + collection + chip filter (e.g. "Work · Starred").
 export function updateListHeading() {
-  const suffix = state.activeFilter === 'favorites' ? ' · Starred' : state.activeFilter === 'recent' ? ' · Recent' : '';
+  const suffix = state.activeFilter === 'favorites' ? ' · Favourites' : state.activeFilter === 'recent' ? ' · Recent' : state.activeFilter === 'important' ? ' · Important' : '';
   if (state.activeView === 'bin') listHeading.textContent = `Bin${suffix}`;
   else if (state.activeView === 'vault') listHeading.textContent = `Vault${suffix}`;
   else if (state.activeView === 'shared') listHeading.textContent = 'Shared';
   else if (state.activeView === 'archive') listHeading.textContent = `Archive${suffix}`;
-  else if (state.activeView === 'favorites') listHeading.textContent = 'Starred notes';
+  else if (state.activeView === 'favorites') listHeading.textContent = 'Favourites';
   else if (state.activeCustom) listHeading.textContent = `${state.activeCustom.folder ? folderLeaf(state.activeCustom.folder) : sectionDisplayName('custom', state.activeCustom.section)}${suffix}`;
-  else listHeading.textContent = state.activeFilter === 'favorites' ? 'Starred notes' : state.activeFilter === 'recent' ? 'Recent notes' : 'All Notes';
+  else listHeading.textContent = state.activeFilter === 'favorites' ? 'Favourites' : state.activeFilter === 'recent' ? 'Recent' : state.activeFilter === 'important' ? 'Important' : 'All Notes';
   // Collapsed-strip name mirrors the heading (dev), rendered vertically.
   try {
     const viewIcon = document.getElementById('workspace-view-icon');

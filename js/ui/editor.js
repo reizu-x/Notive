@@ -3,6 +3,7 @@
 
 import { beautifyBtn, editorToolbar, markdownInput, modeLabel, modeToggle, noteList, preview, syntaxLayer, typeBadge, checkboxOverlay, todoToolbox, todoRendered } from '../core/elements.js';
 import { renderMarkdown } from '../core/markdown.js';
+import { inlineMarkdown } from '../core/markdown.js';
 import { COVER_MAX_DIM, EXT_LABELS, cleanCoverSrc, isImageFile, sanitizeIngredients, sanitizeSteps } from '../core/schema.js';
 import { escapeHtml } from '../core/strings.js';
 import { highlightJson, highlightYaml } from '../core/syntax.js';
@@ -116,8 +117,8 @@ async function prfKekRawHKDF(prfSecretBytes, credentialIdB64) {
   const bits = await window.crypto.subtle.deriveBits(
     {
       name: 'HKDF', hash: 'SHA-256',
-      salt: new TextEncoder().encode('notely-prf-kek-v1:' + String(credentialIdB64 || '')),
-      info: new TextEncoder().encode('notely master-key KEK'),
+      salt: new TextEncoder().encode('notive-prf-kek-v1:' + String(credentialIdB64 || '')),
+      info: new TextEncoder().encode('notive master-key KEK'),
     }, base, 256);
   return new Uint8Array(bits);
 }
@@ -439,6 +440,9 @@ export function renderPreview(note) {
   // To-Do notes: rendered contenteditable mode.
   if (isMd && template === 'todo') {
     enterTodoRendered(note);
+    // The Write/Preview header row is redundant here (the toggle is hidden
+    // in To-Do mode, leaving only a "To-Do" label above the toolbox).
+    try { modeLabel.closest('.write-head').hidden = true; } catch (error) {}
     if (modeLabel) modeLabel.textContent = 'To-Do';
     if (modeToggle) modeToggle.hidden = true;
     if (bottomHint) bottomHint.textContent = 'To-Do';
@@ -448,6 +452,7 @@ export function renderPreview(note) {
     return;
   }
   exitTodoRendered();
+  try { modeLabel.closest('.write-head').hidden = false; } catch (error) {}
 
   if (showPreview) {
     preview.innerHTML = renderMarkdown(note.body);
@@ -591,6 +596,10 @@ export function initCheckboxOverlay() {
 
 const HEADING_RE = /^(#{1,4})\s+(.*)$/;
 let _todoSyncGuard = false;
+// Last non-collapsed selection inside the To-Do editor. Button clicks can
+// steal or collapse the live selection before the click handler runs, so
+// formatting restores this range first.
+let _todoSavedRange = null;
 
 function enterTodoRendered(note) {
   if (!todoRendered || !note) return;
@@ -617,6 +626,7 @@ function exitTodoRendered() {
 
 function renderTodoFromMarkdown(note) {
   if (!todoRendered || !note) return;
+  _todoSavedRange = null;
   const body = typeof note.body === 'string' ? note.body : '';
   const lines = body.split('\n');
   const frag = document.createDocumentFragment();
@@ -635,7 +645,7 @@ function renderTodoFromMarkdown(note) {
       const text = document.createElement('span');
       text.className = 'td-text';
       text.contentEditable = 'true';
-      text.textContent = taskMatch[3];
+      setTodoLineHtml(text, taskMatch[3]);
       row.appendChild(box);
       row.appendChild(text);
       frag.appendChild(row);
@@ -644,18 +654,122 @@ function renderTodoFromMarkdown(note) {
       const el = document.createElement(`div`);
       el.className = `td-line td-h${level}`;
       el.contentEditable = 'true';
-      el.textContent = headingMatch[2];
+      setTodoLineHtml(el, headingMatch[2]);
       frag.appendChild(el);
     } else {
       const el = document.createElement('div');
       el.className = 'td-line';
       el.contentEditable = 'true';
-      el.textContent = line;
+      setTodoLineHtml(el, line);
       frag.appendChild(el);
     }
   }
   todoRendered.textContent = '';
   todoRendered.appendChild(frag);
+}
+
+// Paint a rendered To-Do line from markdown so **bold**/*italic*/`code`
+// show formatted; a lone <br> keeps empty lines focusable (the serializer
+// below maps it back to an empty string).
+function setTodoLineHtml(el, raw) {
+  const text = typeof raw === 'string' ? raw : '';
+  el.innerHTML = text ? inlineMarkdown(text) : '<br>';
+}
+
+// Serialize a rendered To-Do line back to inline markdown so bold/italic/
+// code applied in the WYSIWYG view survive syncing and re-renders.
+// Anything outside the inline subset degrades to its text content; pasted
+// block structures degrade to line breaks so words never glue together.
+function todoInlineToMarkdown(el) {
+  if (!el) return '';
+  if (el.childNodes.length === 1 && el.firstChild.nodeName === 'BR') return '';
+  let out = '';
+  for (const node of el.childNodes) {
+    if (node.nodeType === 3) { out += node.nodeValue; continue; }
+    if (node.nodeType !== 1) continue;
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'br') { out += '\n'; continue; }
+    // Block structures (rich-text pastes): break the line so words never
+    // glue together; the trailing break is trimmed at the line level.
+    if (tag === 'div' || tag === 'p' || tag === 'li') {
+      const inner = todoInlineToMarkdown(node);
+      const prefix = tag === 'li' ? '- ' : '';
+      out += (out && !out.endsWith('\n') ? '\n' : '') + prefix + inner + '\n';
+      continue;
+    }
+    const inner = todoInlineToMarkdown(node);
+    if (tag === 'strong' || tag === 'b') out += `**${inner}**`;
+    else if (tag === 'em' || tag === 'i') out += `*${inner}*`;
+    else if (tag === 'code') out += `\`${inner}\``;
+    else if (tag === 'a') {
+      const href = node.getAttribute('href') || '';
+      out += href ? `[${inner}](${href})` : inner;
+    } else out += node.textContent;
+  }
+  return out;
+}
+
+// One rendered line → one markdown line (trailing breaks are <br> artifacts).
+function todoLineToMarkdown(el) {
+  return todoInlineToMarkdown(el).replace(/\n+$/, '');
+}
+
+// True while the caret/selection sits inside the visible To-Do editor.
+export function isTodoRenderedActive() {
+  return !!todoSelectionTarget();
+}
+
+// The live selection plus its editable To-Do line, or null when the caret
+// is outside the To-Do editor.
+function todoSelectionTarget() {
+  if (!todoRendered || todoRendered.hidden) return null;
+  const sel = document.getSelection();
+  if (!sel || !sel.rangeCount || !sel.anchorNode) return null;
+  const anchorEl = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
+  const line = anchorEl && anchorEl.closest ? anchorEl.closest('.td-line') : null;
+  if (!line || !todoRendered.contains(line)) return null;
+  const target = line.classList.contains('td-task')
+    ? line.querySelector('.td-text') : line;
+  if (!target) return null;
+  return { sel, line, target };
+}
+
+// Put the saved pre-click range back (button focus steals selections).
+function restoreTodoSelection() {
+  if (!_todoSavedRange) return false;
+  try {
+    const sc = _todoSavedRange.commonAncestorContainer;
+    if (!sc) return false;
+    const el = sc.nodeType === 1 ? sc : sc.parentElement;
+    // Stale after a re-render: the nodes are detached, bail out.
+    if (!el || !todoRendered.contains(el)) { _todoSavedRange = null; return false; }
+    const line = el.closest('.td-line');
+    const target = line && line.classList.contains('td-task')
+      ? line.querySelector('.td-text') : line;
+    if (!target) return false;
+    target.focus({ preventScroll: true });
+    const sel = document.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(_todoSavedRange);
+    return true;
+  } catch (error) { return false; }
+}
+
+// Bold/Italic from the To-Do toolbox: format the live selection in place.
+// The input listener then syncs the formatted DOM back to markdown.
+// Lost focus (button stole it): restore the saved pre-click range.
+// Collapsed caret in a line: toggles the typing style where the caret sits.
+function applyTodoInlineFormat(kind) {
+  if (!todoSelectionTarget() && !restoreTodoSelection()) {
+    showToast('Select text to format first');
+    return;
+  }
+  const ctx = todoSelectionTarget();
+  if (!ctx) { showToast('Select text to format first'); return; }
+  try {
+    document.execCommand(kind === 'bold' ? 'bold' : 'italic', false, null);
+  } catch (error) { showToast('Could not apply formatting'); return; }
+  syncTodoRenderedToMarkdown();
 }
 
 function syncTodoRenderedToMarkdown() {
@@ -666,17 +780,17 @@ function syncTodoRenderedToMarkdown() {
       const box = line.querySelector('.td-cb');
       const text = line.querySelector('.td-text');
       const checked = box && box.dataset.checked === 'true';
-      lines.push(`- [${checked ? 'x' : ' '}] ${text ? text.textContent : ''}`);
+      lines.push(`- [${checked ? 'x' : ' '}] ${text ? todoLineToMarkdown(text) : ''}`);
     } else if (line.classList.contains('td-h1')) {
-      lines.push(`# ${line.textContent}`);
+      lines.push(`# ${todoLineToMarkdown(line)}`);
     } else if (line.classList.contains('td-h2')) {
-      lines.push(`## ${line.textContent}`);
+      lines.push(`## ${todoLineToMarkdown(line)}`);
     } else if (line.classList.contains('td-h3')) {
-      lines.push(`### ${line.textContent}`);
+      lines.push(`### ${todoLineToMarkdown(line)}`);
     } else if (line.classList.contains('td-h4')) {
-      lines.push(`#### ${line.textContent}`);
+      lines.push(`#### ${todoLineToMarkdown(line)}`);
     } else {
-      lines.push(line.textContent);
+      lines.push(todoLineToMarkdown(line));
     }
   }
   markdownInput.value = lines.join('\n');
@@ -777,11 +891,30 @@ function insertTodoRenderedAtCursor(insert) {
 export function initTodoEditor() {
   if (!todoRendered) return;
 
+  // Remember the last ranged selection inside the To-Do editor so the
+  // Bold/Italic buttons can restore it after the button steals focus.
+  document.addEventListener('selectionchange', () => {
+    try {
+      const sel = document.getSelection();
+      if (!sel || !sel.rangeCount || sel.isCollapsed || !sel.anchorNode) return;
+      const anchorEl = sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement;
+      if (!anchorEl || !todoRendered.contains(anchorEl)) return;
+      _todoSavedRange = sel.getRangeAt(0).cloneRange();
+    } catch (error) {}
+  });
+
   // Toolbox.
   if (todoToolbox) {
+    // Keep the editor selection alive while clicking toolbox buttons, so
+    // Bold/Italic can format the selected text instead of losing it to blur.
+    todoToolbox.addEventListener('mousedown', (event) => event.preventDefault());
     todoToolbox.addEventListener('click', (event) => {
       const btn = event.target.closest('[data-todo]');
       if (!btn) return;
+      if (btn.dataset.todo === 'bold' || btn.dataset.todo === 'italic') {
+        applyTodoInlineFormat(btn.dataset.todo);
+        return;
+      }
       insertTodoRenderedAtCursor(btn.dataset.todo);
     });
   }
@@ -833,7 +966,8 @@ export function initTodoEditor() {
     const prevText = prev.classList.contains('td-task') ? prev.querySelector('.td-text') : prev;
     if (!prevText) return;
     const prevLen = prevText.textContent.length;
-    prevText.textContent += target.textContent;
+    // Move nodes (not textContent) so inline formatting survives the merge.
+    while (target.firstChild) prevText.appendChild(target.firstChild);
     line.remove();
     prevText.focus();
     const newRange = document.createRange();

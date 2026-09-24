@@ -1,5 +1,5 @@
 // ============================================================================
-// Notely frontend (app.js) — single IIFE, 'use strict'.
+// Notive frontend (app.js) — single IIFE, 'use strict'.
 // WHAT IT DOES: sidebar navigation, custom sections/folders, note list tree,
 // Markdown editor with live preview, templates, import/export, Bin (3-day
 // soft-delete), Archive, right-click menus, themes, and the login gate.
@@ -39,7 +39,7 @@ import { FOLDER_SEP, MAX_SUBFOLDER_PARENT_DEPTH, CONTROL_CHARS, splitFolderPath,
   folderDepth, folderIconForDepth, isFolderOrSub, cleanFolderPath, joinLeafRename } from './core/paths.js';
 import { isRecentNote, relativeEditedLabel } from './core/dates.js';
 import { cancelCollabInvite, closeCollabNewDialog, closeCollabNote, closeCollabPending, closeSharedContextMenu, collabAddGroupMember, collabAdoptRekey, collabAssetsChanged, collabCompact, collabCreate, collabInvite, collabPresenceColor, collabPresenceHeartbeat, collabPresenceLocal, collabPresenceReceive, collabRemoveMember, collabSyncDom, loadYjs, openCollabPending, refreshSharedNavCount, renderCollabMembersModal, renderCollabPresence, scheduleCollabMeta, setCollabNewStatus, setCollabStatus, setSharedNavCount, sharedNoteMatchesSearch, sharedUniqueTitle, showSharedContextMenu, updateSharedNoteMeta } from './data/collab-crypto.js';
-import { COLLAPSED_FOLDERS_KEY, IMPORTANT_TAG, NOTE_TEMPLATES, SECTION_DATA_KEY, SECTION_ICONS, UI_VAULT_KEY, sharedBodyCache, sharedCollapsed, sharedGroupFolders, sharedGroupKeys, sharedGroupOwners, sharedGroupTags, sharedNoteMeta } from './domain/constants.js';
+import { COLLAPSED_FOLDERS_KEY, NOTE_TEMPLATES, SECTION_DATA_KEY, SECTION_ICONS, UI_VAULT_KEY, sharedBodyCache, sharedCollapsed, sharedGroupFolders, sharedGroupKeys, sharedGroupOwners, sharedGroupTags, sharedNoteMeta } from './domain/constants.js';
 import { closeAcctRecModal, closeMfaQrModal, openAcctRecModal, openMfaQrModal, prfFirstResult, prfSecretViaAssertion, refreshAccountPane, refreshAcctRecStatus, renderAcctRecCodes, saveAccountName } from './ui/auth.js';
 import { clearRecoveryCodesLocal, closeRecoverModal, downscaleCover, enterCoverRepos, findTreeWrap, focusRecipeField, handleCollabCoverFile, loadRecoveryCodesLocal, moveCoverOnNote, newRecoveryCode, openRecoverModal, prfUnwrapMasterKey, prfWrapMasterKey, recipeDataForActive, renderCover, renderPreview, renderRecipeBody, renderRecipeHero, saveRecoveryCodesLocal, setCoverReposUI } from './ui/editor.js';
 import {activeEditorNote, buildNotesEnvelope, clearSearch, closeNoteContextMenu, currentNote, deviceOnlyPref, downloadNoteById, ensureNoteFiled, exportAllNotes, firstFilingOf, getNoteContextMenu, isImportant, isPlainTextNote, localNotesKey, markSynced, openEmptyBinConfirm, openNoteContextMenu, readLegacyLocalNotes, saveNotesToDevice, scopeNotes, setDeleteDialog, setDeviceOnlyPref, updateBinUI, visibleNotes, wipeLegacyLocalNotes, exportAllNotesMdZip, importFromClipboard} from './ui/notes.js';
@@ -50,7 +50,7 @@ import { addNoteTag, cleanTagList, closeTagEditor, normalizeTagName, openSharedT
 import { applyUiSnapshot, decryptUiVaultRaw, openVaultModal, openVaultNoteDeleteConfirm, uiVaultKey, writeUiVaultLocal } from './ui/vault.js';
 import { acceptInvite, collabDeleteNote, confirmCollabNew, createSharedNoteWithTemplate, declineInvite, moveSharedNote, openCollabNote, openSharedNewNote, renderSharedView } from './data/collab-crypto.js';
 import { refreshPasskeys } from './ui/auth.js';
-import { applyBeautify, exitCoverRepos, handleCoverFile, initCheckboxOverlay, initTodoEditor, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
+import { applyBeautify, exitCoverRepos, handleCoverFile, initCheckboxOverlay, initTodoEditor, isTodoRenderedActive, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
 import { bindNoteContextMenu, clearEditor, createNoteFromTemplate, goAllNotes, goAllNotesKeepNote, loadNotesFromServer, onNewNoteClick, persistNotes, purgeExpiredBin, renderNoteList, requestDeleteNoteById, saveCurrentNote, selectNote, stepListBack, syncNotesToServer } from './ui/notes.js';
 import { addSharedFolder, addSubfolder, applyStripFolderFilter, bindCustomSectionsEvents, bindFolderContextMenu, bindFolderDragDrop, bindSectionContextMenu, bindVaultContextMenu, bindSectionHeaderEvents, chooseSectionIcon, deleteCustomSection, isFavoritesView, leaveSharedSection, moveSharedNoteToFolder, persistCollapsedFolders, renameSharedFolder, reparentSharedFolder, selectCustomFolder, selectCustomSection, syncCustomSections } from './ui/sections.js';
 import { applyTheme, enterWorkspace, handleAvatarFile } from './ui/shell.js';
@@ -65,7 +65,7 @@ import { findCustomItem, repathList } from './ui/sections.js';
 import { cleanUiSnapshot, readLegacyUiKeys } from './ui/vault.js';
 
 'use strict';
-// Build guard: index.html carries <meta name="notely-build">. If this script
+// Build guard: index.html carries <meta name="notive-build">. If this script
 // is older/newer than the page (stale cache mix), reload once for a matching
 // pair instead of running half-bound handlers that silently do nothing.
 // EXPECTED_BUILD must be bumped together with the meta + cache busters.
@@ -73,17 +73,17 @@ import { cleanUiSnapshot, readLegacyUiKeys } from './ui/vault.js';
 // on mismatch we reload once and leave the page inert.
 const BUILD_NOTE_OK = (() => {
   try {
-    const tag = document.querySelector('meta[name="notely-build"]');
+    const tag = document.querySelector('meta[name="notive-build"]');
     const build = tag ? tag.getAttribute('content') : null;
     if (build !== 'dev89') {
-      if (!sessionStorage.getItem('notely-build-reloaded')) {
-        sessionStorage.setItem('notely-build-reloaded', '1');
+      if (!sessionStorage.getItem('notive-build-reloaded')) {
+        sessionStorage.setItem('notive-build-reloaded', '1');
         window.location.reload();
         return false;
       }
       return false;
     }
-    sessionStorage.removeItem('notely-build-reloaded');
+    sessionStorage.removeItem('notive-build-reloaded');
     const buildTag = document.getElementById('build-tag');
     if (buildTag) buildTag.textContent = `dev build ${build}`;
     return true;
@@ -955,7 +955,7 @@ if (BUILD_NOTE_OK) {
 
 
 
-  // True when a drag event carries a Notely folder (slide-menu/workspace shared
+  // True when a drag event carries a Notive folder (slide-menu/workspace shared
   // payload), as opposed to a note drag (text/plain) or a file hover.
 
 
@@ -1593,7 +1593,7 @@ if (BUILD_NOTE_OK) {
       payload = { kind: 'note', id: noteRow.dataset.collabOpen, groupId: noteRow.dataset.collabGroup };
     }
     if (!payload) return;
-    try { event.dataTransfer.setData('application/x-notely-shared', JSON.stringify(payload)); } catch (error) {}
+    try { event.dataTransfer.setData('application/x-notive-shared', JSON.stringify(payload)); } catch (error) {}
     event.dataTransfer.effectAllowed = 'move';
   });
   noteList.addEventListener('dragover', (event) => {
@@ -1615,7 +1615,7 @@ if (BUILD_NOTE_OK) {
   noteList.addEventListener('drop', (event) => {
     if (state.activeView !== 'shared') return;
     let payload = null;
-    try { payload = JSON.parse(event.dataTransfer.getData('application/x-notely-shared') || 'null'); } catch (error) { payload = null; }
+    try { payload = JSON.parse(event.dataTransfer.getData('application/x-notive-shared') || 'null'); } catch (error) { payload = null; }
     if (!payload || !payload.kind) return;
     event.preventDefault();
     const folderRow = event.target.closest('.shared-folder');
@@ -1739,12 +1739,13 @@ if (BUILD_NOTE_OK) {
   document.getElementById('close-delete').addEventListener('click', closeDeleteConfirm);
   document.getElementById('cancel-delete').addEventListener('click', closeDeleteConfirm);
   document.getElementById('confirm-delete').addEventListener('click', confirmPendingDelete);
-  // Delete/Backspace removes the marked workspace note (same rules as the menu:
+  // Delete removes the marked workspace note (same rules as the menu:
   // Bin confirm for binned/important notes, direct soft-delete otherwise).
-  // Ignored while typing, while logged out, inside any popup, or in the Vault
-  // view (vault notes keep their own delete UI).
+  // Backspace never deletes: too easy to hit while focus sits outside the
+  // editor. Ignored while typing, while logged out, inside any popup, or in
+  // the Vault view (vault notes keep their own delete UI).
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+    if (event.key !== 'Delete') return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target;
     if (target && (target.isContentEditable
@@ -2075,7 +2076,7 @@ if (BUILD_NOTE_OK) {
         if (ext === 'json' && text.trim().startsWith('{') && text.length < MAX_IMPORT_BYTES_PER_FILE) {
           try {
             const parsed = JSON.parse(text);
-            if (parsed && parsed.app === 'Notely' && Array.isArray(parsed.notes)) {
+            if (parsed && parsed.app === 'Notive' && Array.isArray(parsed.notes)) {
               await adoptNotesEnvelope({
                 v: 2,
                 notes: parsed.notes.filter((note) => note && !note.deleted).slice(0, 2000),
@@ -2086,7 +2087,7 @@ if (BUILD_NOTE_OK) {
               imported += 1;
               continue;
             }
-          } catch (error) { /* not a Notely backup: import as note below */ }
+          } catch (error) { /* not a Notive backup: import as note below */ }
         }
         // F-41: .md/.txt imports round-trip front-matter (title + tags).
         let importBody = text || (ext === 'md' ? `# ${base}\n` : '');
@@ -2242,7 +2243,7 @@ if (BUILD_NOTE_OK) {
     // Double-click resets to the default width (325px) and clears the override.
     panelResizer.addEventListener('dblclick', () => {
       notesPanel.style.flexBasis = '';
-      try { localStorage.removeItem('notely-panel-width'); } catch (error) {}
+      try { localStorage.removeItem('notive-panel-width'); } catch (error) {}
     });
     restorePanelWidth();
   }
@@ -2278,8 +2279,8 @@ if (BUILD_NOTE_OK) {
   // ---- Auth & E2EE session, themes, settings, boot ----
 
 
-  // Auth is handled by the Notely server (server.py) backed by the encrypted
-  // SQLite database (notely.db). The browser stores no credentials: the session
+  // Auth is handled by the Notive server (server.py) backed by the encrypted
+  // SQLite database (notive.db). The browser stores no credentials: the session
   // lives in an HttpOnly cookie and the profile below is in-memory only.
   state.cachedProfile = null;
 
@@ -2526,7 +2527,7 @@ if (BUILD_NOTE_OK) {
       const message = error && error.message;
       loginFail(message === 'e2ee-unwrap' ? 'Could not unlock notes with this password.'
         : (message && message.indexOf('argon2') === 0) ? 'Security libraries failed integrity check. Hard-refresh and retry.'
-        : 'Cannot reach the Notely server. Is it running?');
+        : 'Cannot reach the Notive server. Is it running?');
     }
     done();
   });
@@ -2590,7 +2591,7 @@ if (BUILD_NOTE_OK) {
         })
       });
     } catch (error) {
-      fail('Cannot reach the Notely server. Is it running?');
+      fail('Cannot reach the Notive server. Is it running?');
       regDone();
       return;
     }
@@ -2826,8 +2827,8 @@ if (BUILD_NOTE_OK) {
       else if (msg === 'e2ee-unwrap') loginFail('Could not unlock notes with this password.');
       else if (msg === 'password required') loginFail('Enter your password to unlock notes.');
       else if (name === 'NotAllowedError' || name === 'AbortError') loginFail('Passkey sign-in was cancelled or timed out.');
-      else if (name === 'SecurityError' || (msg && /rp\.?id|origin|relying party/i.test(msg))) loginFail('This passkey can’t be used on this address — open Notely at the exact address you registered it (e.g. https://localhost:5001).');
-      else if (name === 'TypeError' || (msg && /failed to fetch|network|load failed/i.test(msg))) loginFail('Cannot reach the Notely server. Is it running?');
+      else if (name === 'SecurityError' || (msg && /rp\.?id|origin|relying party/i.test(msg))) loginFail('This passkey can’t be used on this address — open Notive at the exact address you registered it (e.g. https://localhost:5001).');
+      else if (name === 'TypeError' || (msg && /failed to fetch|network|load failed/i.test(msg))) loginFail('Cannot reach the Notive server. Is it running?');
       else loginFail(msg || 'Passkey sign-in failed.');
     }
     state.authBusy = false;
@@ -3187,14 +3188,14 @@ if (BUILD_NOTE_OK) {
 
   if (acctRecDownloadBtn) acctRecDownloadBtn.addEventListener('click', () => {
     try {
-      const body = ['Notely password recovery codes', `Account: ${(state.cachedProfile && state.cachedProfile.username) || ''}`,
+      const body = ['Notive password recovery codes', `Account: ${(state.cachedProfile && state.cachedProfile.username) || ''}`,
         `Generated: ${new Date().toISOString()}`, '',
         ...state.acctRecShownCodes, '',
         'Each code works once. Store them offline.'].join('\n');
       const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }));
       const link = document.createElement('a');
       link.href = url;
-      link.download = 'notely-recovery-codes.txt';
+      link.download = 'notive-recovery-codes.txt';
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -3452,7 +3453,7 @@ if (BUILD_NOTE_OK) {
   document.querySelectorAll('.settings-nav-item').forEach((item) => item.addEventListener('click', () => setSettingsTab(item.dataset.settingsTab)));
   document.getElementById('start-collapsed').addEventListener('change', (event) => {
     const collapsed = event.target.checked;
-    try { localStorage.setItem('notely-sidebar-start-collapsed', collapsed ? '1' : '0'); } catch (error) {}
+    try { localStorage.setItem('notive-sidebar-start-collapsed', collapsed ? '1' : '0'); } catch (error) {}
     setSidebarCollapsed(collapsed);
     showToast(collapsed ? 'Sidebar will start collapsed' : 'Sidebar will start expanded');
   });
@@ -3568,7 +3569,7 @@ if (BUILD_NOTE_OK) {
   }
   // Hide the settings modal.
 
-  try { state.savedTheme = localStorage.getItem('notely-theme') || 'light'; } catch (error) {}
+  try { state.savedTheme = localStorage.getItem('notive-theme') || 'light'; } catch (error) {}
   applyTheme(state.savedTheme);
   document.getElementById('open-settings').addEventListener('click', (event) => {
     event.preventDefault();
@@ -3583,7 +3584,7 @@ if (BUILD_NOTE_OK) {
   // Reading font (Settings → Appearance). Device-local like the sidebar prefs
   // (not part of the per-account envelope): one line, no sync conflicts.
 
-  try { state.savedFont = localStorage.getItem('notely-font') || 'default'; } catch (error) {}
+  try { state.savedFont = localStorage.getItem('notive-font') || 'default'; } catch (error) {}
   applyFont(state.savedFont);
 
   if (fontSelect) fontSelect.addEventListener('change', () => applyFont(fontSelect.value, true));
@@ -3635,10 +3636,15 @@ if (BUILD_NOTE_OK) {
       showToast('Note saved');
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'b') {
+      // Inside the To-Do rendered editor the browser formats the live
+      // selection natively; the todo sync serializes it back to markdown.
+      // wrapSelection would write to the hidden textarea and be wiped.
+      if (isTodoRenderedActive()) return;
       event.preventDefault();
       wrapSelection('**');
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'i') {
+      if (isTodoRenderedActive()) return;
       event.preventDefault();
       wrapSelection('*');
     }
