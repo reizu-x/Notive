@@ -1,4 +1,4 @@
-// js/data/crypto.js — Notely account E2EE primitives. This is the security core:
+// js/data/crypto.js — Notive account E2EE primitives. This is the security core:
 // base64/random helpers, the password KDF (Argon2id + PBKDF2), master-key
 // wrap/unwrap, the Argon2 vendor loader (SRI-verified), and workspace encrypt/
 // decrypt. Nothing here touches DOM or app state beyond the exported `e2ee`

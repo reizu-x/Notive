@@ -32,7 +32,7 @@ export function setLoginThemeMenu(open) {
 export function applyFont(font, announce = false) {
   const normalized = FONTS.includes(font) ? font : 'default';
   document.documentElement.dataset.font = normalized;
-  try { localStorage.setItem('notely-font', normalized); } catch (error) {}
+  try { localStorage.setItem('notive-font', normalized); } catch (error) {}
   const fontSelectEl = document.getElementById('font-select');
   if (fontSelectEl) fontSelectEl.value = normalized;
   if (announce) showToast(`${normalized.charAt(0).toUpperCase() + normalized.slice(1)} font on`);
@@ -153,7 +153,7 @@ export function paintAvatar(el, fallbackInitials) {
 // Synchronous view of the in-memory session for render code (null when signed out).
 export function getSessionUser() {
   if (!state.cachedProfile) return null;
-  return { username: state.cachedProfile.username, name: fullNameOf(state.cachedProfile), subtitle: state.cachedProfile.subtitle || 'Notely User' };
+  return { username: state.cachedProfile.username, name: fullNameOf(state.cachedProfile), subtitle: state.cachedProfile.subtitle || 'Notive User' };
 }
 
 export async function restoreSessionUnlock() {
@@ -210,7 +210,7 @@ export function clearSessionUnlock() {
 // without re-typing the password we keep it in sessionStorage (wrapped, see
 // below), which the browser wipes when the tab/window closes. Clearing it
 // (logout) or closing the browser locks the vault again.
-export function sessionUnlockKey() { return accountScopeKey('notely-session-unlock'); }
+export function sessionUnlockKey() { return accountScopeKey('notive-session-unlock'); }
 
 // Session-wrap KEK. The master key is stored wrapped under this random
 // per-tab AES-GCM key (pentest finding F-2) instead of as raw base64 text:
@@ -218,7 +218,7 @@ export function sessionUnlockKey() { return accountScopeKey('notely-session-unlo
 // The KEK seed also lives in sessionStorage — same-origin script can still
 // reach it, so this raises the bar rather than being a full guarantee; the
 // accepted design tradeoff (refresh without re-typing the password) is kept.
-export function sessionKekKey() { return accountScopeKey('notely-session-unlock-kek'); }
+export function sessionKekKey() { return accountScopeKey('notive-session-unlock-kek'); }
 
 function loadSessionKek() {
   try { return e2eeB64ToBytes(sessionStorage.getItem(sessionKekKey()) || ''); }
@@ -249,7 +249,7 @@ async function unwrapSessionKey(wrapped) {
 // after their first selection, so the workspace returns as the user left it).
 export function restoreWorkspaceCollapsed() {
   try {
-    setWorkspaceCollapsed(localStorage.getItem('notely-workspace-collapsed') === '1');
+    setWorkspaceCollapsed(localStorage.getItem('notive-workspace-collapsed') === '1');
   } catch (error) { setWorkspaceCollapsed(false); }
 }
 
@@ -258,7 +258,7 @@ export function restoreWorkspaceCollapsed() {
 export function setWorkspaceCollapsed(collapsed) {
   const shell = document.querySelector('.app-shell');
   if (shell) shell.classList.toggle('workspace-collapsed', collapsed);
-  try { localStorage.setItem('notely-workspace-collapsed', collapsed ? '1' : '0'); } catch (error) {}
+  try { localStorage.setItem('notive-workspace-collapsed', collapsed ? '1' : '0'); } catch (error) {}
   if (workspaceToggle) {
     const label = collapsed ? 'Expand workspace' : 'Collapse workspace';
     workspaceToggle.setAttribute('aria-label', label);
@@ -282,14 +282,14 @@ export function setWorkspaceCollapsed(collapsed) {
 
 // Whether the sidebar starts collapsed on load (Settings → Side Menu; device-local).
 export function startCollapsedPref() {
-  try { return localStorage.getItem('notely-sidebar-start-collapsed') !== '0'; }
+  try { return localStorage.getItem('notive-sidebar-start-collapsed') !== '0'; }
   catch (error) { return true; }
 }
 
 // Collapse/expand the icon-strip sidebar and persist the choice.
 export function setSidebarCollapsed(collapsed) {
   sidebar.classList.toggle('collapsed', collapsed);
-  try { localStorage.setItem('notely-sidebar-collapsed', collapsed ? '1' : '0'); } catch (error) {}
+  try { localStorage.setItem('notive-sidebar-collapsed', collapsed ? '1' : '0'); } catch (error) {}
   if (sidebarToggle) {
     const label = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
     sidebarToggle.setAttribute('aria-label', label);
@@ -302,7 +302,7 @@ export function setSidebarCollapsed(collapsed) {
 export function restorePanelWidth() {
   if (!notesPanel) return;
   try {
-    const saved = parseInt(localStorage.getItem('notely-panel-width') || '', 10);
+    const saved = parseInt(localStorage.getItem('notive-panel-width') || '', 10);
     if (Number.isFinite(saved)) notesPanel.style.flexBasis = `${Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, saved))}px`;
   } catch (error) {}
 }
@@ -311,7 +311,7 @@ export function applyPanelWidth(px) {
   if (!notesPanel) return;
   const width = Math.min(PANEL_MAX_WIDTH, Math.max(PANEL_MIN_WIDTH, Math.round(px)));
   notesPanel.style.flexBasis = `${width}px`;
-  try { localStorage.setItem('notely-panel-width', String(width)); } catch (error) {}
+  try { localStorage.setItem('notive-panel-width', String(width)); } catch (error) {}
 }
 
 // One seed used by both All Notes and the Shared view, so editing a template's
@@ -340,7 +340,7 @@ export function welcomeSeedUi() {
 }
 
 export function welcomeSeedNotes() {
-  const generalWelcome = `# Welcome to Notely
+  const generalWelcome = `# Welcome to Notive
 
 This is your private, end-to-end encrypted notebook. Everything you write is
 encrypted on this device before it ever reaches the server — nobody else can
@@ -349,7 +349,8 @@ read it, not even the server itself.
 ## The basics
 
 - **New note** — the button at the top of the list creates a note.
-- **Write** — the left pane is your editor, the right pane previews as you type.
+- **Write, then Preview** — the editor opens in Write mode; flip to Preview
+  with the button at the top to see your formatted note.
 - **Organise** — every note can live in a folder. This workspace starts with
   two: **General** and **Personal**, inside the **Notes** section.
 - **Search** — the search bar finds note titles, contents and folders. To find a
@@ -360,7 +361,7 @@ read it, not even the server itself.
 The sidebar holds **sections** (think of them as shelves). Each section contains
 **folders**, and folders can nest — type \`Work / Projects\` to create a folder
 inside a folder. Create new sections with **+ Add section**, and add folders
-with the **+** next to a section.
+by right-clicking a section and choosing **New folder**.
 
 ## Note types
 
@@ -373,9 +374,18 @@ When creating a note you can pick a template:
 ## Safety net
 
 - **Favorite** notes (right-click) to pin them for quick access.
+- **Mark as important** (right-click) to collect notes under the **Important** tab.
 - **Archive** notes you want out of the way but not gone.
 - **Delete** moves a note to the **Bin**, where it waits for a grace period
   before being removed for good — mistakes are recoverable.
+
+## More to explore
+
+- **Vault** — password-protected secret notes, separate from your login.
+- **Appearance** — six themes and reading fonts under Settings.
+- **Diagrams** — fenced \`\`\`mermaid blocks render as flowcharts in Preview.
+- **Import / Export** — bring notes in or take them with you as
+  JSON, YAML, Markdown or plain text.
 
 > Everything here is yours alone. Change these notes, rename the folders, or
 > delete them — this workspace is yours to shape.`;
@@ -402,7 +412,7 @@ drafts, anything that is yours.
 
   return [
     {
-      id: 'welcome-general', title: 'Welcome to Notely', date: 'Today',
+      id: 'welcome-general', title: 'Welcome to Notive', date: 'Today',
       tags: ['welcome'], favorite: true, ext: 'md',
       sections: { [WELCOME_SECTION_ID]: 'General' },
       body: generalWelcome,
@@ -421,7 +431,7 @@ drafts, anything that is yours.
 export function applyTheme(theme, announce = false) {
   const normalized = THEMES.includes(theme) ? theme : 'light';
   document.documentElement.dataset.theme = normalized;
-  try { localStorage.setItem('notely-theme', normalized); } catch (error) {}
+  try { localStorage.setItem('notive-theme', normalized); } catch (error) {}
   // Sync to the per-account envelope so the choice survives logout, restart
   // and other devices. No-op while logged out/locked (localStorage still keeps
   // the login screen on the picked theme).

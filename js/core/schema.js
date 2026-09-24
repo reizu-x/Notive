@@ -98,13 +98,19 @@ export function migrateNote(note) {
   }
   if (!Array.isArray(migrated.tags)) migrated.tags = [];
   else {
-    // The draft tag is retired: strip it from old notes so it never renders.
+    // Retired tags, stripped from old notes so they never render:
+    // - 'draft' is gone entirely;
+    // - 'important' moved to a boolean flag (Important tab) — promote, then strip.
+    if (migrated.tags.some((tag) => typeof tag === 'string' && tag.trim().toLowerCase() === 'important')) {
+      migrated.important = true;
+    }
     migrated.tags = migrated.tags
       .filter((tag) => typeof tag === 'string')
       .map((tag) => tag.trim().slice(0, 40))
-      .filter((tag) => tag && tag.toLowerCase() !== 'draft')
+      .filter((tag) => tag && tag.toLowerCase() !== 'draft' && tag.toLowerCase() !== 'important' && /^[A-Za-z]+$/.test(tag))
       .slice(0, 20);
   }
+  if (typeof migrated.important !== 'boolean') migrated.important = false;
   if (typeof migrated.title !== 'string' || !migrated.title.trim()) migrated.title = 'Untitled note';
   else migrated.title = migrated.title.trim().slice(0, 200);
   // Strip NULs: they are meaningless in text but double as internal

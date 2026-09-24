@@ -4,11 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notely-build" content="dev89" />
+    <meta name="notive-build" content="dev89" />
     <meta name="referrer" content="no-referrer" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' https: data:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
-    <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev167" />
+    <title>Notive - private notes</title>
+    <link rel="stylesheet" href="styles.css?v=dev171" />
   </head>
   <body>
     <div class="boot-shimmer" id="boot-shimmer" aria-hidden="true">
@@ -16,7 +16,7 @@
         <span class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
         </span>
-        <span class="brand-name">Notely</span>
+        <span class="brand-name">Notive</span>
         <div class="shimmer-lines" aria-hidden="true"><span class="shimmer-line" style="width:70%"></span><span class="shimmer-line" style="width:85%"></span><span class="shimmer-line" style="width:60%"></span></div>
       </div>
     </div>
@@ -24,11 +24,11 @@
     <!-- Sidebar: brand, profile card (rendered from session), nav views, sections folders -->
       <aside class="sidebar" id="sidebar">
         <div class="brand-row">
-          <a class="brand" href="#" aria-label="Notely home">
+          <a class="brand" href="#" aria-label="Notive home">
             <span class="brand-mark" aria-hidden="true">
               <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
             </span>
-            <span class="brand-name">Notely</span>
+            <span class="brand-name">Notive</span>
           </a>
           <button class="icon-button sidebar-toggle" id="toggle-sidebar" aria-label="Collapse sidebar" title="Collapse sidebar" data-icon="sidebar"></button>
           <button class="icon-button sidebar-close" id="close-sidebar" aria-label="Close menu" data-icon="x"></button>
@@ -89,7 +89,7 @@
         <div class="notes-header">
           <div class="mobile-header-row">
             <button class="icon-button menu-toggle" id="open-sidebar" aria-label="Open menu" data-icon="menu"></button>
-            <span class="mobile-brand">Notely</span>
+            <span class="mobile-brand">Notive</span>
             <button class="icon-button" aria-label="More options" data-icon="dots"></button>
           </div>
           <div class="notes-title-row">
@@ -117,6 +117,7 @@
           </label>
           <div class="filter-row" aria-label="Note filters">
             <button class="filter-chip active" data-filter="all">All <span id="all-count">12</span></button>
+            <button class="filter-chip" data-filter="important">Important <span id="important-count"></span></button>
             <button class="filter-chip" data-filter="recent">Recent <span id="recent-count"></span></button>
             <span class="filter-actions">
               <button class="icon-button list-back" id="list-back" aria-label="Back" title="Back" data-icon="chevron-right" hidden></button>
@@ -275,7 +276,7 @@
           <span class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
           </span>
-          <span class="brand-name">Notely</span>
+          <span class="brand-name">Notive</span>
         </div>
         <p class="eyebrow">Welcome back</p>
         <h2 id="login-title">Log in</h2>
@@ -393,7 +394,7 @@
           </nav>
           <div class="settings-pane" data-settings-pane="appearance">
             <h3 class="settings-pane-title" id="settings-title">Appearance</h3>
-            <p class="modal-desc">Pick a theme for Notely. Your choice is saved on this device.</p>
+            <p class="modal-desc">Pick a theme for Notive. Your choice is saved on this device.</p>
             <label class="login-field"><span>Theme</span>
               <select id="theme-select">
                 <option value="light">Light — warm paper, easy on the eyes</option>
@@ -406,10 +407,10 @@
             </label>
             <hr />
             <h3 class="settings-pane-title">Font</h3>
-            <p class="modal-desc">Pick a reading font for Notely. Saved on this device only.</p>
+            <p class="modal-desc">Pick a reading font for Notive. Saved on this device only.</p>
             <label class="login-field"><span>Font</span>
               <select id="font-select" autocomplete="off">
-                <option value="default">Default — Notely's built-in look</option>
+                <option value="default">Default — Notive's built-in look</option>
                 <option value="serif">Serif — bookish Georgia letterforms</option>
                 <option value="palatino">Palatino — elegant old-style serif</option>
                 <option value="sans">Sans — clean system grotesque</option>
@@ -420,7 +421,7 @@
           </div>
           <div class="settings-pane" data-settings-pane="profile" hidden>
             <h3 class="settings-pane-title">Profile</h3>
-            <p class="modal-desc">Your Notely account details.</p>
+            <p class="modal-desc">Your Notive account details.</p>
             <label class="login-field"><span>Username</span><input id="account-username" type="text" readonly autocomplete="username" /></label>
             <label class="login-field"><span>First name</span><input id="account-first" type="text" autocomplete="given-name" maxlength="60" placeholder="First name" /></label>
             <label class="login-field"><span>Last name</span><input id="account-last" type="text" autocomplete="family-name" maxlength="60" placeholder="Last name" /></label>
@@ -466,12 +467,12 @@
           </div>
           <div class="settings-pane" data-settings-pane="behaviour" hidden>
             <h3 class="settings-pane-title">Behaviour</h3>
-            <p class="modal-desc">Choose how the sidebar looks when Notely opens.</p>
+            <p class="modal-desc">Choose how the sidebar looks when Notive opens.</p>
             <label class="setting-row"><input type="checkbox" id="start-collapsed" /><span class="setting-row-text"><strong>Start collapsed</strong><span>Open with the icon-only sidebar. Uncheck to start expanded.</span></span></label>
             <hr />
             <h3 class="settings-pane-title">Notes on this device</h3>
             <p class="modal-desc">Keep a copy of your notes on this desktop, or take them off the cloud entirely.</p>
-            <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Notely server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
+            <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Notive server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
             <hr />
             <h3 class="settings-pane-title">Import/Export</h3>
             <p class="modal-desc">Back up or restore notes as a single file. Export uses the format below; import detects it from the file. Folders travel with the notes, and imports land in their own section for sorting.</p>
@@ -685,7 +686,7 @@
           </div>
           <button class="icon-button" id="resync-close" aria-label="Close resync dialog" data-icon="x"></button>
         </div>
-        <p class="modal-desc">This device has notes saved in local storage. Upload, and they replace the notes on the Notely server — or keep the server copy and clear the local one.</p>
+        <p class="modal-desc">This device has notes saved in local storage. Upload, and they replace the notes on the Notive server — or keep the server copy and clear the local one.</p>
         <div class="modal-actions">
           <button class="btn btn-secondary" id="resync-cancel">Cancel</button>
           <button class="btn btn-danger" id="resync-keep">Keep server notes</button>
@@ -736,7 +737,7 @@
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
         <div class="modal-head">
           <div>
-            <p class="eyebrow" id="prompt-eyebrow">Notely</p>
+            <p class="eyebrow" id="prompt-eyebrow">Notive</p>
             <h2 id="prompt-title">Input needed</h2>
           </div>
           <button class="icon-button" id="prompt-cancel-x" aria-label="Cancel" data-icon="x"></button>
@@ -858,11 +859,11 @@
     </div>
     <!-- Right-click menu for shared notes / shared folders (items filled by JS) -->
     <div class="context-menu" id="shared-context-menu" role="menu" aria-label="Shared actions" hidden></div>
-    <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
+    <!-- All behavior lives in js/ modules (single page); backend API in server.py -->
     <!-- Vendored QR (MIT, qrcode-generator 1.5.0; adapter keeps the QRCode(...) API) for MFA setup. Local only: secret never leaves device. -->
     <script src="js/boot.js"></script>
     <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-fNse+GzXblndDsHPTGnb91FmFdpQmGqYCGhwecMIsHKDmKkjiuy5DZmjYggpKP6e" crossorigin="anonymous" defer></script>
     <script src="vendor/mermaid/mermaid.min.js" integrity="sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2" crossorigin="anonymous" defer></script>
-    <script type="module" src="js/app.js?v=dev168"></script>
+    <script type="module" src="js/app.js?v=dev172"></script>
   </body>
 </html>

@@ -3,7 +3,7 @@
 // plaintext and any single shard is cryptographically useless alone.
 //
 // Shard format (per user artifact):
-//   NOTELY-SHARD-n <BASE32 groups...> <CHECK>   — crockford base32 (no I/L/O/U)
+//   NOTIVE-SHARD-n <BASE32 groups...> <CHECK>   — crockford base32 (no I/L/O/U)
 // Bytes encoded per shard: [x (1|2|3)] ++ [secret bytes]. CHECK is 4 base32
 // chars of SHA-256 over the raw bytes (typo detection, not secrecy).
 
@@ -73,7 +73,7 @@ async function shardChecksum(dataBytes) {
 export function shamirSplit(secretBytes, threshold, count) {
   if (!(threshold >= 1 && threshold <= count && count <= 255)) throw new Error('shamir params');
   if (threshold === 1 || threshold === count) {
-    // Degenerate thresholds: not used by Notely's 2-of-3, kept for tests only.
+    // Degenerate thresholds: not used by Notive's 2-of-3, kept for tests only.
     const coeffs = [new Uint8Array(secretBytes)];
     for (let i = 1; i < threshold; i += 1) coeffs.push(e2eeRandom(secretBytes.length));
     return makeSharesFromCoeffs(coeffs, count);
@@ -152,7 +152,7 @@ function gfInv(a) {
   return GF_EXP[255 - GF_LOG[a]];
 }
 
-const SHARD_PREFIX = (x) => `NOTELY-SHARD-${x}`;
+const SHARD_PREFIX = (x) => `NOTIVE-SHARD-${x}`;
 
 // Public API used by the vault: split + encode each share to its printable
 // artifact. Shards are shown once; the caller never uploads paper shards.
@@ -176,7 +176,7 @@ export async function shamirParsePublic(shardTexts) {
   if (!Array.isArray(shardTexts) || shardTexts.length === 0) throw new Error('no shards');
   const shares = [];
   for (const text of shardTexts) {
-    const match = /^NOTELY-SHARD-([1-9])\s+(.+)$/i.exec(String(text || '').trim().toUpperCase());
+    const match = /^NOTIVE-SHARD-([1-9])\s+(.+)$/i.exec(String(text || '').trim().toUpperCase());
     if (!match) throw new Error('bad shard format');
     const x = Number(match[1]);
     if (!(x >= 1 && x <= 255)) throw new Error('bad shard point');

@@ -17,7 +17,7 @@ export function showToast(message) {
 // Open the shared prompt modal. Resolves with the entered value, or null when
 // dismissed (Escape / outside click / Cancel); a second call resolves any
 // pending one with null.
-export function askInput({ eyebrow = 'Notely', title = 'Input needed', desc = '', label = 'Value', password = true, placeholder = '', okText = 'Confirm' } = {}) {
+export function askInput({ eyebrow = 'Notive', title = 'Input needed', desc = '', label = 'Value', password = true, placeholder = '', okText = 'Confirm' } = {}) {
   if (state.askInputPending) {
     try { state.askInputPending(null); } catch (error) {}
     state.askInputPending = null;

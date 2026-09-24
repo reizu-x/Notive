@@ -152,7 +152,7 @@ function rawFolderPath(raw) {
 // ---------------------------------------------------------------------------
 
 function yamlDumpNotes(notes) {
-  const lines = ['app: Notely', 'version: 2', `exportedAt: ${yamlQuote(new Date().toISOString())}`, 'notes:'];
+  const lines = ['app: Notive', 'version: 2', `exportedAt: ${yamlQuote(new Date().toISOString())}`, 'notes:'];
   for (const note of notes) {
     const n = note && typeof note === 'object' ? note : {};
     const loc = noteLocation(n);
@@ -446,12 +446,12 @@ function txtParseNotes(text, fallbackTitle) {
 }
 
 // ---------------------------------------------------------------------------
-// JSON parsing (Notely envelope, raw array, single note)
+// JSON parsing (Notive envelope, raw array, single note)
 // ---------------------------------------------------------------------------
 
 function parseJsonNotes(text) {
   const parsed = JSON.parse(String(text || ''));
-  if (parsed && parsed.app === 'Notely' && Array.isArray(parsed.notes)) {
+  if (parsed && parsed.app === 'Notive' && Array.isArray(parsed.notes)) {
     return { notes: parsed.notes, sections: parsed.ui && Array.isArray(parsed.ui.customSections) ? parsed.ui.customSections : null };
   }
   if (Array.isArray(parsed)) return { notes: parsed, sections: null };
@@ -482,7 +482,7 @@ export async function exportWorkspace(format) {
   let mime = 'text/plain';
   if (fmt === 'json') {
     text = JSON.stringify({
-      app: 'Notely', version: 2, exportedAt: new Date().toISOString(),
+      app: 'Notive', version: 2, exportedAt: new Date().toISOString(),
       notes: docs.map((note) => ({ ...note, ...noteLocation(note) })),
     }, null, 2);
     ext = 'json';
@@ -500,7 +500,7 @@ export async function exportWorkspace(format) {
     ext = 'txt';
     mime = 'text/plain';
   }
-  downloadFile(sanitizeFilename(`Notely-notes-${stampStr}`, ext), text, mime);
+  downloadFile(sanitizeFilename(`Notive-notes-${stampStr}`, ext), text, mime);
   showToast(`Exported ${docs.length} note${docs.length === 1 ? '' : 's'} (${ext.toUpperCase()})`);
 }
 

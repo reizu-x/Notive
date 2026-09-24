@@ -5,6 +5,7 @@ import { tagList } from '../core/elements.js';
 import { icon } from '../core/icons.js';
 import { escapeHtml } from '../core/strings.js';
 import { sharedGroupTags } from '../domain/constants.js';
+import { IMPORTANT_TAG } from '../domain/constants.js';
 import { state } from '../domain/state.js';
 import { showToast } from './modal.js';
 import { activeEditorNote, persistNotes, renderNoteList } from './notes.js';
@@ -120,11 +121,14 @@ export function sharedTagList() {
 
 // Aggregate every tag with a note count (case-insensitive; first casing wins).
 // User-created tags with no notes yet are included with a count of 0.
+// The retired 'important' tag is excluded everywhere: importance lives on
+// the note flag shown in the Important tab.
 export function allTagCounts() {
   const map = new Map();
   state.notes.forEach((note) => {
     (Array.isArray(note.tags) ? note.tags : []).forEach((tag) => {
       const key = String(tag).toLowerCase();
+      if (!key || key === IMPORTANT_TAG) return;
       const entry = map.get(key);
       if (entry) entry.count += 1;
       else map.set(key, { label: String(tag), count: 1 });
@@ -132,7 +136,7 @@ export function allTagCounts() {
   });
   state.knownTags.forEach((tag) => {
     const key = String(tag).toLowerCase();
-    if (key && !map.has(key)) map.set(key, { label: String(tag), count: 0 });
+    if (key && key !== IMPORTANT_TAG && !map.has(key)) map.set(key, { label: String(tag), count: 0 });
   });
   return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
@@ -147,6 +151,9 @@ export function removeNoteTag(note, name) {
 export function addNoteTag(note, name) {
   const tag = normalizeTagName(name);
   if (!note || !tag) return false;
+  // The retired 'important' tag can no longer be added: use Mark as important.
+  if (tag.toLowerCase() === IMPORTANT_TAG) { showToast('Use Mark as important instead'); return false; }
+  if (!isValidTagName(tag)) { showToast('Tags allow letters only (A–Z)'); return false; }
   if (!Array.isArray(note.tags)) note.tags = [];
   if (noteTagIndex(note, tag) !== -1) return false;
   if (note.tags.length >= 20) { showToast('Tag limit reached (20 per note)'); return false; }
@@ -163,7 +170,15 @@ export function normalizeTagName(name) {
   return String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, 40);
 }
 
+// Tags allow letters only (A–Z, either case) — no numbers, spaces, or
+// special characters.
+export function isValidTagName(name) {
+  return /^[A-Za-z]+$/.test(String(name == null ? '' : name));
+}
+
 // User-created tags that may not be attached to any note yet (Settings → Tags).
+// The retired 'important' tag and anything outside letters-only are dropped
+// so they can never re-enter via sync.
 export function cleanTagList(value) {
   if (!Array.isArray(value)) return [];
   const seen = new Set();
@@ -171,7 +186,7 @@ export function cleanTagList(value) {
   value.slice(0, 500).forEach((raw) => {
     const tag = normalizeTagName(raw);
     const key = tag.toLowerCase();
-    if (!tag || seen.has(key)) return;
+    if (!tag || !isValidTagName(tag) || key === IMPORTANT_TAG || seen.has(key)) return;
     seen.add(key);
     out.push(tag);
   });
@@ -203,6 +218,7 @@ export function tagEditorAdd(raw) {
   if (!tag) return;
   if (state.tagEditorShared) {
     if (!state.collab.noteId || !state.collab.tags) return;
+    if (!isValidTagName(tag)) { showToast('Tags allow letters only (A–Z)'); return; }
     const list = sharedTagList();
     if (list.some((t) => String(t).toLowerCase() === tag.toLowerCase())) return;
     if (list.length >= 20) { showToast('Tag limit reached (20 per note)'); return; }
@@ -223,6 +239,7 @@ export function tagEditorAdd(raw) {
 export function addKnownTag(raw) {
   const tag = normalizeTagName(raw);
   if (!tag) { showToast('Enter a tag name'); return false; }
+  if (!isValidTagName(tag)) { showToast('Tags allow letters only (A–Z)'); return false; }
   if (state.knownTags.some((entry) => entry.toLowerCase() === tag.toLowerCase())) { showToast(`Tag “${tag}” already exists`); return false; }
   if (state.knownTags.length >= 500) { showToast('Tag limit reached (500)'); return false; }
   state.knownTags.push(tag);
@@ -257,6 +274,7 @@ export function renameTagEverywhere(oldName, rawNew) {
   const from = normalizeTagName(oldName).toLowerCase();
   const to = normalizeTagName(rawNew);
   if (!from || !to || from === to.toLowerCase()) return false;
+  if (!isValidTagName(to)) { showToast('Tags allow letters only (A–Z)'); return false; }
   let changed = 0;
   state.notes.forEach((note) => {
     if (!Array.isArray(note.tags)) return;
