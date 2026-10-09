@@ -28,12 +28,12 @@ jobs:
         run: |
           set -e
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          install -m 600 /dev/null ~/.ssh/notive
-          printf '%s\n' "${{ secrets.NOTIVE_SSH_KEY }}" > ~/.ssh/notive
+          # NOTIVE_SSH_KEY = the private key, base64-encoded (single line, no quotes)
+          # → immune to paste/multiline mangling in the GitHub secret editor
+          printf '%s' "${{ secrets.NOTIVE_SSH_KEY }}" | base64 -d > ~/.ssh/notive 2>base64.err || { cat base64.err; echo "ERROR: NOTIVE_SSH_KEY is not valid base64 — run: base64 -w0 /tmp/opencode/notive-actions-deploy and paste the single line"; exit 1; }
           CHARS=$(wc -c < ~/.ssh/notive)
-          echo "secret length: $CHARS bytes"
-          [ "$CHARS" -lt 200 ] && { echo "ERROR: NOTIVE_SSH_KEY looks missing/empty — add it at Settings -> Secrets -> Actions (raw key with no quotes)"; exit 1; } || true
-          chmod 600 ~/.ssh/notive
+          echo "decoded key size: $CHARS bytes"
+          if [ "$CHARS" -lt 200 ]; then echo "ERROR: decoded key too small; re-encode with: base64 -w0 /tmp/opencode/notive-actions-deploy"; exit 1; fi
           ssh-keygen -y -f ~/.ssh/notive > /tmp/pub_from_secret && echo "key parses OK, fingerprint:" && ssh-keygen -lf /tmp/pub_from_secret
           ssh-keyscan -H 87.232.225.109 2>/dev/null | tee ~/.ssh/known_hosts
           test -s ~/.ssh/known_hosts || { echo "ERROR: ssh-keyscan got nothing — VPS unreachable from runner"; exit 1; }
