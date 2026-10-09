@@ -49,18 +49,19 @@ jobs:
 
       - name: Rsync code to VPS
         run: |
-          ssh -vv notive-vps 'echo connected_raw_ok' 2>&1 | tail -30; echo "ssh rc: $?"
           rsync -az --delete \
             --exclude .git/ --exclude .github/ \
             --exclude .env --exclude certs/ --exclude notive.key \
+            --exclude wheels/ --exclude base64.err \
             --exclude '__pycache__/' --exclude '*.pyc' \
             ./ notive-vps:/opt/notive/
+          ls notive-vps:/opt/notive/wheels >/dev/null && echo "wheelhouse present on VPS"
 
       - name: Build image and restart app
         run: |
-          ssh notive-vps 'set -e
+          ssh notive-vps 'set -e; set -o pipefail
             cd /opt/notive
-            podman build -t notive_app:latest . 2>&1 | tail -2
+            podman build -t notive_app:latest --pull=false . 2>&1 | tail -2
             export XDG_RUNTIME_DIR=/run/user/$(id -u)
             systemctl --user restart notive-app.service
             sleep 8

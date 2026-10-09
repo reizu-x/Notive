@@ -4,6 +4,9 @@
 # app only. Single gunicorn worker + threads is load-bearing (see
 # gunicorn.conf.py) — do not raise workers without reworking SSE streams
 # and the backup loop.
+# Offline-safe builds: pypi/apt round-trips are impossible while VPS egress
+# is blocked upstream. apt layer stays cache-hit; python deps come from the
+# vendored wheelhouse (see README "Wheelhouse" section) instead of pypi.
 FROM docker.io/library/python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -17,7 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /srv/notive
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY wheels/ ./wheels/
+RUN pip install --no-cache-dir --no-index --find-links=/srv/notive/wheels -r requirements.txt
+RUN rm -rf /srv/notive/wheels
 
 COPY server.py gunicorn.conf.py index.html styles.css ./
 COPY js/ ./js/
