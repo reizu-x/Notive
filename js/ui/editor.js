@@ -463,9 +463,9 @@ export function renderPreview(note) {
   if (bottomHint) bottomHint.textContent = isMd ? 'Markdown' : plainLabel;
   if (typeBadge) typeBadge.textContent = EXT_LABELS[note.ext] || 'MD';
   if (beautifyBtn) beautifyBtn.hidden = !(note.ext === 'json' || note.ext === 'yaml');
-  // Formatting toolbar returns only for notes carrying the "md" tag.
-  const mdTagged = Array.isArray(note.tags) && note.tags.some((tag) => String(tag).toLowerCase() === 'md');
-  if (editorToolbar) editorToolbar.hidden = !mdTagged;
+  // Formatting toolbar: every markdown note gets it (recipe notes use the
+  // structured body instead, so their source toolbar stays hidden).
+  if (editorToolbar) editorToolbar.hidden = !(isMd && template !== 'recipe');
   if (!showPreview) autogrow();
   updateSyntaxLayer(note, showPreview);
   renderCheckboxOverlay(note, showPreview);
@@ -622,6 +622,112 @@ export function linePrefix(prefix) {
   const start = markdownInput.selectionStart;
   const lineStart = markdownInput.value.lastIndexOf('\n', start - 1) + 1;
   markdownInput.setRangeText(prefix, lineStart, lineStart, 'end');
+  markdownInput.focus();
+  saveCurrentNote();
+}
+
+// Cycle the current line's heading level: none → H1 → H2 → … → H6 → none.
+// Replaces whatever "#" prefix the line already has, so a single button
+// walks through the Markdown heading scale.
+export function cycleHeading() {
+  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
+  const value = markdownInput.value;
+  const start = markdownInput.selectionStart;
+  const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+  let lineEnd = value.indexOf('\n', start);
+  if (lineEnd === -1) lineEnd = value.length;
+  const line = value.slice(lineStart, lineEnd);
+  const at = (line.match(/^#+(?=\s|$)/) || [''])[0].length;
+  const nextLevel = { 0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 0 }[at] ?? 0;
+  const body = line.slice(at === 0 ? 0 : at).replace(/^\s+/, '') || line.slice(at) || line.trim();
+  const replaced = nextLevel === 0 ? body : `${'#'.repeat(nextLevel)} ${body}`;
+  markdownInput.setRangeText(replaced, lineStart, lineEnd, 'end');
+  markdownInput.focus();
+  saveCurrentNote();
+}
+
+// Indent / outdent the current line or selection (shared with the Tab key
+// path; exported so the toolbar can drive the same behavior).
+export function indentSelection(outdent) {
+  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
+  const value = markdownInput.value;
+  const start = markdownInput.selectionStart;
+  const end = markdownInput.selectionEnd;
+  const multiline = value.slice(start, end).includes('\n');
+  if (!multiline && !outdent && start === end) {
+    // Caret collapse (no selection): plain two-space insert, like the Tab key.
+    markdownInput.setRangeText('  ', start, end, 'end');
+    markdownInput.focus();
+    saveCurrentNote();
+    return;
+  }
+  const blockStart = start === 0 ? 0 : value.lastIndexOf('\n', start - 1) + 1;
+  let lineEnd = value.indexOf('\n', end);
+  if (lineEnd === -1) lineEnd = value.length;
+  const lines = value.slice(blockStart, lineEnd).split('\n');
+  const mapped = outdent
+    ? lines.map((l) => l.replace(/^\t/, '').replace(/^ {1,2}/, ''))
+    : lines.map((l) => '  ' + l);
+  const replacement = mapped.join('\n');
+  markdownInput.setRangeText(replacement, blockStart, lineEnd, 'end');
+  markdownInput.setSelectionRange(blockStart, blockStart + replacement.length);
+  markdownInput.focus();
+  saveCurrentNote();
+}
+
+// Fence the selection (or an empty block) as a Markdown code block.
+export function codeBlockSelection(lang = '') {
+  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+  const start = markdownInput.selectionStart;
+  const end = markdownInput.selectionEnd;
+  const selected = markdownInput.value.slice(start, end);
+  fenceSelection(lang, selected);
+  markdownInput.focus();
+  saveCurrentNote();
+}
+
+function fenceSelection(lang, selected) {
+  const pad = (needs) => (needs ? '\n' : '');
+  const before = markdownInput.value.slice(0, markdownInput.selectionStart);
+  const needsLead = before && !before.endsWith('\n') ? '\n' : '';
+  const body = selected || 'code';
+  markdownInput.setRangeText(
+    `${needsLead}\`\`\`${lang}\n${body}\n\`\`\`\n`,
+    markdownInput.selectionStart, markdownInput.selectionEnd, 'end');
+}
+
+// Hard line break for the Markdown Guide "line break" syntax (two trailing
+// spaces) — inserts the marker + newline at the caret.
+export function insertLineBreak() {
+  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+  markdownInput.setRangeText('  \n', markdownInput.selectionStart, markdownInput.selectionEnd, 'end');
+  markdownInput.focus();
+  saveCurrentNote();
+}
+
+// Insert a GFM table skeleton sized by [rows, cols].
+export function insertTable(rows = 2, cols = 2) {
+  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+  const header = `| ${Array.from({ length: cols }, (_, i) => `Col ${i + 1}`).join(' | ')} |`;
+  const align = `| ${Array.from({ length: cols }, () => '---').join(' | ')} |`;
+  const body = Array.from({ length: rows }, () => `| ${Array.from({ length: cols }, () => '').join(' | ')} |`).join('\n');
+  const start = markdownInput.selectionStart;
+  const before = markdownInput.value.slice(0, start);
+  const lead = before && !before.endsWith('\n') ? '\n' : '';
+  markdownInput.setRangeText(`${lead}${header}\n${align}\n${body}\n`, start, markdownInput.selectionEnd, 'end');
+  markdownInput.focus();
+  saveCurrentNote();
+}
+
+// Insert a horizontal rule on its own line.
+export function insertHr() {
+  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+  const start = markdownInput.selectionStart;
+  const before = markdownInput.value.slice(0, start);
+  const lead = before && !before.endsWith('\n') ? '\n' : '';
+  markdownInput.setRangeText(`${lead}---\n`, start, markdownInput.selectionEnd, 'end');
   markdownInput.focus();
   saveCurrentNote();
 }

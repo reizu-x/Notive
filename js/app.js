@@ -50,7 +50,7 @@ import { addNoteTag, cleanTagList, closeTagEditor, normalizeTagName, openSharedT
 import { applyUiSnapshot, decryptUiVaultRaw, openVaultModal, openVaultNoteDeleteConfirm, uiVaultKey, writeUiVaultLocal } from './ui/vault.js';
 import { acceptInvite, collabDeleteNote, confirmCollabNew, createSharedNoteWithTemplate, declineInvite, moveSharedNote, openCollabNote, openSharedNewNote, renderSharedView } from './data/collab-crypto.js';
 import { refreshPasskeys } from './ui/auth.js';
-import { applyBeautify, exitCoverRepos, handleCoverFile, initCheckboxOverlay, initMarkdownTabbing, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
+import { applyBeautify, codeBlockSelection, cycleHeading, exitCoverRepos, handleCoverFile, initCheckboxOverlay, initMarkdownTabbing, insertHr, insertLineBreak, insertTable, indentSelection, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
 import { bindNoteContextMenu, clearEditor, createNoteFromTemplate, goAllNotes, goAllNotesKeepNote, loadNotesFromServer, onNewNoteClick, persistNotes, purgeExpiredBin, renderNoteList, requestDeleteNoteById, saveCurrentNote, selectNote, stepListBack, syncNotesToServer } from './ui/notes.js';
 import { addSharedFolder, addSubfolder, applyStripFolderFilter, bindCustomSectionsEvents, bindFolderContextMenu, bindFolderDragDrop, bindSectionContextMenu, bindVaultContextMenu, bindSectionHeaderEvents, chooseSectionIcon, deleteCustomSection, isFavoritesView, leaveSharedSection, moveSharedNoteToFolder, persistCollapsedFolders, renameSharedFolder, reparentSharedFolder, selectCustomFolder, selectCustomSection, syncCustomSections } from './ui/sections.js';
 import { applyTheme, enterWorkspace, handleAvatarFile } from './ui/shell.js';
@@ -1962,12 +1962,22 @@ if (BUILD_NOTE_OK) {
     const action = button.dataset.action;
     if (action === 'bold') wrapSelection('**');
     if (action === 'italic') wrapSelection('*');
+    if (action === 'strike') wrapSelection('~~');
     if (action === 'code') wrapSelection('`');
+    if (action === 'codeblock') codeBlockSelection();
     if (action === 'heading') linePrefix('## ');
+    if (action === 'heading-cycle') cycleHeading();
     if (action === 'bullet') linePrefix('- ');
+    if (action === 'ordered') linePrefix('1. ');
     if (action === 'check') linePrefix('- [ ] ');
+    if (action === 'indent') indentSelection(false);
+    if (action === 'outdent') indentSelection(true);
     if (action === 'quote') linePrefix('> ');
     if (action === 'link') wrapSelection('[', '](https://)');
+    if (action === 'image') wrapSelection('![', '](https://)');
+    if (action === 'hr') insertHr();
+    if (action === 'linebreak') insertLineBreak();
+    if (action === 'table') insertTable();
   }));
 
   document.getElementById('favorite-button').addEventListener('click', () => {

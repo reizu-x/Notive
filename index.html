@@ -217,20 +217,34 @@
 
           <div class="editor-toolbar" id="editor-toolbar" role="toolbar" aria-label="Markdown formatting" hidden>
             <div class="toolbar-group">
-              <button class="toolbar-button" data-action="heading" aria-label="Heading"><span class="toolbar-heading">H</span></button>
-              <button class="toolbar-button" data-action="bold" aria-label="Bold"><strong>B</strong></button>
-              <button class="toolbar-button italic" data-action="italic" aria-label="Italic">I</button>
-              <button class="toolbar-button code" data-action="code" aria-label="Inline code">&lt;/&gt;</button>
-              <span class="toolbar-divider"></span>
-              <button class="toolbar-button" data-action="bullet" aria-label="Bullet list"><span data-icon="list"></span></button>
-              <button class="toolbar-button" data-action="check" aria-label="Checklist"><span data-icon="check-square"></span></button>
-              <button class="toolbar-button" data-action="quote" aria-label="Quote"><span class="quote-mark">&quot;</span></button>
-              <button class="toolbar-button" data-action="link" aria-label="Link"><span data-icon="link"></span></button>
+              <button class="toolbar-button" data-action="heading-cycle" aria-label="Heading (cycle level)" title="Heading (cycle H1–H6)"><span class="toolbar-heading">H</span></button>
+              <button class="toolbar-button" data-action="bold" aria-label="Bold" title="Bold (Ctrl+B)"><strong>B</strong></button>
+              <button class="toolbar-button italic" data-action="italic" aria-label="Italic" title="Italic (Ctrl+I)"><em>I</em></button>
+              <button class="toolbar-button" data-action="strike" aria-label="Strikethrough" title="Strikethrough"><del>S</del></button>
+              <button class="toolbar-button code" data-action="code" aria-label="Inline code" title="Inline code"><span>&lt;/&gt;</span></button>
+              <button class="toolbar-button" data-action="codeblock" aria-label="Code block" title="Code block (``` fenced)"><span data-icon="code"></span></button>
+            </div>
+            <span class="toolbar-divider"></span>
+            <div class="toolbar-group">
+              <button class="toolbar-button" data-action="bullet" aria-label="Bullet list" title="Bullet list"><span data-icon="list"></span></button>
+              <button class="toolbar-button" data-action="ordered" aria-label="Numbered list" title="Numbered list"><span class="ordered-mark">1.</span></button>
+              <button class="toolbar-button" data-action="check" aria-label="Checklist" title="Checklist"><span data-icon="check"></span></button>
+              <button class="toolbar-button" data-action="indent" aria-label="Indent (nest)" title="Indent item"><span data-icon="indent"></span></button>
+              <button class="toolbar-button" data-action="outdent" aria-label="Outdent" title="Outdent item"><span data-icon="outdent"></span></button>
+            </div>
+            <span class="toolbar-divider"></span>
+            <div class="toolbar-group">
+              <button class="toolbar-button" data-action="quote" aria-label="Quote" title="Blockquote"><span class="quote-mark">&quot;</span></button>
+              <button class="toolbar-button" data-action="link" aria-label="Link" title="Link"><span data-icon="link"></span></button>
+              <button class="toolbar-button" data-action="image" aria-label="Image" title="Image"><span data-icon="image"></span></button>
+              <button class="toolbar-button" data-action="hr" aria-label="Horizontal rule" title="Horizontal rule"><span class="hr-mark">—</span></button>
+              <button class="toolbar-button" data-action="linebreak" aria-label="Line break" title="Line break (two trailing spaces)"><span class="break-mark">␤</span></button>
+              <button class="toolbar-button" data-action="table" aria-label="Table" title="Table skeleton"><span data-icon="table"></span></button>
             </div>
             <div class="toolbar-right">
               <span class="markdown-label"><span class="markdown-dot">M</span> Markdown</span>
               <span class="toolbar-divider"></span>
-              <button class="toolbar-button" id="focus-editor" aria-label="Focus mode"><span data-icon="focus"></span></button>
+              <button class="toolbar-button" id="focus-editor" aria-label="Focus mode" title="Focus mode"><span data-icon="focus"></span></button>
             </div>
           </div>
 
