@@ -615,6 +615,14 @@ export function findTreeWrap(folder) {
 }
 
 
+
+// Focus the editor without the browser scrolling the caret into view
+// (toolbar clicks used to yank the whole writing area upward).
+function focusEditor() {
+  try { markdownInput.focus({ preventScroll: true }); }
+  catch (error) { markdownInput.focus(); }
+}
+
 // Insert a Markdown line prefix (heading/list/quote) at the start of the current line and save.
 export function linePrefix(prefix) {
   if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
@@ -622,7 +630,7 @@ export function linePrefix(prefix) {
   const start = markdownInput.selectionStart;
   const lineStart = markdownInput.value.lastIndexOf('\n', start - 1) + 1;
   markdownInput.setRangeText(prefix, lineStart, lineStart, 'end');
-  markdownInput.focus();
+  focusEditor();
   saveCurrentNote();
 }
 
@@ -643,7 +651,7 @@ export function cycleHeading() {
   const body = line.slice(at === 0 ? 0 : at).replace(/^\s+/, '') || line.slice(at) || line.trim();
   const replaced = nextLevel === 0 ? body : `${'#'.repeat(nextLevel)} ${body}`;
   markdownInput.setRangeText(replaced, lineStart, lineEnd, 'end');
-  markdownInput.focus();
+  focusEditor();
   saveCurrentNote();
 }
 
@@ -659,7 +667,7 @@ export function indentSelection(outdent) {
   if (!multiline && !outdent && start === end) {
     // Caret collapse (no selection): plain two-space insert, like the Tab key.
     markdownInput.setRangeText('  ', start, end, 'end');
-    markdownInput.focus();
+    focusEditor();
     saveCurrentNote();
     return;
   }
@@ -673,7 +681,7 @@ export function indentSelection(outdent) {
   const replacement = mapped.join('\n');
   markdownInput.setRangeText(replacement, blockStart, lineEnd, 'end');
   markdownInput.setSelectionRange(blockStart, blockStart + replacement.length);
-  markdownInput.focus();
+  focusEditor();
   saveCurrentNote();
 }
 
@@ -684,7 +692,7 @@ export function codeBlockSelection(lang = '') {
   const end = markdownInput.selectionEnd;
   const selected = markdownInput.value.slice(start, end);
   fenceSelection(lang, selected);
-  markdownInput.focus();
+  focusEditor();
   saveCurrentNote();
 }
 
@@ -703,7 +711,7 @@ function fenceSelection(lang, selected) {
 export function insertLineBreak() {
   if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
   markdownInput.setRangeText('  \n', markdownInput.selectionStart, markdownInput.selectionEnd, 'end');
-  markdownInput.focus();
+  focusEditor();
   saveCurrentNote();
 }
 
@@ -717,7 +725,7 @@ export function insertTable(rows = 2, cols = 2) {
   const before = markdownInput.value.slice(0, start);
   const lead = before && !before.endsWith('\n') ? '\n' : '';
   markdownInput.setRangeText(`${lead}${header}\n${align}\n${body}\n`, start, markdownInput.selectionEnd, 'end');
-  markdownInput.focus();
+  focusEditor();
   saveCurrentNote();
 }
 
@@ -728,7 +736,7 @@ export function insertHr() {
   const before = markdownInput.value.slice(0, start);
   const lead = before && !before.endsWith('\n') ? '\n' : '';
   markdownInput.setRangeText(`${lead}---\n`, start, markdownInput.selectionEnd, 'end');
-  markdownInput.focus();
+  focusEditor();
   saveCurrentNote();
 }
 
@@ -740,7 +748,7 @@ export function wrapSelection(before, after = before) {
   const end = markdownInput.selectionEnd;
   const selected = markdownInput.value.slice(start, end) || 'text';
   markdownInput.setRangeText(`${before}${selected}${after}`, start, end, 'select');
-  markdownInput.focus();
+  focusEditor();
   saveCurrentNote();
 }
 
@@ -826,7 +834,7 @@ export function setWriteMode(mode, { focus = false } = {}) {
       // Focus without jumping the caret to the end: setSelectionRange(end)
       // used to scroll the whole editor to the bottom on every Write click.
       try { markdownInput.focus({ preventScroll: true }); }
-      catch (error) { markdownInput.focus(); }
+      catch (error) { focusEditor(); }
     }
   }
 }

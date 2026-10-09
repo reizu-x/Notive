@@ -1958,10 +1958,13 @@ if (BUILD_NOTE_OK) {
     else showToast('Nothing to preview yet');
   });
 
+  // Toolbar buttons must not steal focus on click (a plain button click
+  // removes the textarea's selection and scrolls the caret into view);
+  // mousedown prevention keeps the caret, mirroring the To-do toolbox.
+  document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('mousedown', (event) => event.preventDefault()));
   document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => {
     if (state.writeMode === 'preview') setWriteMode('edit');
-    const action = button.dataset.action;
-    if (action === 'bold') wrapSelection('**');
+    const action = button.dataset.action;    if (action === 'bold') wrapSelection('**');
     if (action === 'italic') wrapSelection('*');
     if (action === 'strike') wrapSelection('~~');
     if (action === 'code') wrapSelection('`');
