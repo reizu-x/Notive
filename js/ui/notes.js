@@ -645,8 +645,8 @@ export function createNoteFromTemplate(templateKey) {
     return null;
   }
   const note = { id, title, date: 'Now', updatedAt: Date.now(), tags, favorite: false, archived: false, deleted: false, ext: normalizeExt(template.ext), sections: filedSections, body: seedFromTemplate(templateKey, title).body };
-  if (templateKey === 'recipe' || templateKey === 'todo') note.template = templateKey;
-  if (templateKey === 'recipe' || templateKey === 'todo') { if (!note.tags.includes(`_${templateKey}`)) note.tags.push(`_${templateKey}`); }
+  if (templateKey === 'recipe') note.template = 'recipe';
+  if (templateKey === 'recipe') { if (!note.tags.includes('_recipe')) note.tags.push('_recipe'); }
   if (templateKey === 'recipe' && template.recipe) {
     note.ingredients = sanitizeIngredients(template.recipe.ingredients);
     note.steps = sanitizeSteps(template.recipe.steps);

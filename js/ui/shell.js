@@ -367,9 +367,9 @@ by right-clicking a section and choosing **New folder**.
 
 When creating a note you can pick a template:
 
-- **Note** — free-form markdown, the default.
+- **Note** — free-form markdown, the default. To-do checkboxes use `- [ ]`
+  items (clickable in the editor).
 - **Recipe** — ingredients and steps with a tidy layout.
-- **To-do** — checkboxes that track progress as you go.
 
 ## Safety net
 

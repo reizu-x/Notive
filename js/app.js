@@ -50,7 +50,7 @@ import { addNoteTag, cleanTagList, closeTagEditor, normalizeTagName, openSharedT
 import { applyUiSnapshot, decryptUiVaultRaw, openVaultModal, openVaultNoteDeleteConfirm, uiVaultKey, writeUiVaultLocal } from './ui/vault.js';
 import { acceptInvite, collabDeleteNote, confirmCollabNew, createSharedNoteWithTemplate, declineInvite, moveSharedNote, openCollabNote, openSharedNewNote, renderSharedView } from './data/collab-crypto.js';
 import { refreshPasskeys } from './ui/auth.js';
-import { applyBeautify, exitCoverRepos, handleCoverFile, initCheckboxOverlay, initMarkdownTabbing, initTodoEditor, isTodoRenderedActive, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
+import { applyBeautify, exitCoverRepos, handleCoverFile, initCheckboxOverlay, initMarkdownTabbing, linePrefix, recipeMutate, removeCover, requestCollabCoverUpload, requestCoverUpload, resetIdleTimer, setWriteMode, wrapSelection } from './ui/editor.js';
 import { bindNoteContextMenu, clearEditor, createNoteFromTemplate, goAllNotes, goAllNotesKeepNote, loadNotesFromServer, onNewNoteClick, persistNotes, purgeExpiredBin, renderNoteList, requestDeleteNoteById, saveCurrentNote, selectNote, stepListBack, syncNotesToServer } from './ui/notes.js';
 import { addSharedFolder, addSubfolder, applyStripFolderFilter, bindCustomSectionsEvents, bindFolderContextMenu, bindFolderDragDrop, bindSectionContextMenu, bindVaultContextMenu, bindSectionHeaderEvents, chooseSectionIcon, deleteCustomSection, isFavoritesView, leaveSharedSection, moveSharedNoteToFolder, persistCollapsedFolders, renameSharedFolder, reparentSharedFolder, selectCustomFolder, selectCustomSection, syncCustomSections } from './ui/sections.js';
 import { applyTheme, enterWorkspace, handleAvatarFile } from './ui/shell.js';
@@ -1770,7 +1770,6 @@ if (BUILD_NOTE_OK) {
   markdownInput.addEventListener('select', () => collabPresenceLocal(false));
   initMarkdownTabbing();
   initCheckboxOverlay();
-  initTodoEditor();
   document.getElementById('recipe-desc').addEventListener('input', saveCurrentNote);
   document.getElementById('recipe-photo-btn').addEventListener('click', () => { if (state.collab.noteId) requestCollabCoverUpload(); else requestCoverUpload(); });
   // Structured recipe body: toggle, edit, add and remove Ingredients / Method.
@@ -3637,15 +3636,10 @@ if (BUILD_NOTE_OK) {
       showToast('Note saved');
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'b') {
-      // Inside the To-Do rendered editor the browser formats the live
-      // selection natively; the todo sync serializes it back to markdown.
-      // wrapSelection would write to the hidden textarea and be wiped.
-      if (isTodoRenderedActive()) return;
       event.preventDefault();
       wrapSelection('**');
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'i') {
-      if (isTodoRenderedActive()) return;
       event.preventDefault();
       wrapSelection('*');
     }

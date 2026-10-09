@@ -29,14 +29,6 @@ export const NOTE_TEMPLATES = {
     tags: ['recipe'],
     body: () => '',
     recipe: { ingredients: ['Ingredient one', 'Ingredient two'], steps: ['Step one', 'Step two'] }
-  },
-  todo: {
-    label: 'To-do list',
-    caption: 'To-do',
-    icon: 'check-square',
-    titleBase: 'New To-Do Note',
-    tags: ['todo'],
-    body: (title) => `# ${title}\n\n## Today\n\n- [ ] Most important task\n- [ ] Second task\n\n## Later\n\n- [ ] Someday task`
   }
 };
 
