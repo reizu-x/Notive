@@ -781,6 +781,39 @@ export function initMarkdownTabbing() {
   });
 }
 
+// "More Markdown" dropdown on the formatting toolbar: toggles the panel,
+// closes on outside click / Escape; the menu buttons reuse the shared
+// [data-action] handlers above the trick no separate wiring needed.
+export function initToolbarMenu() {
+  const btn = document.getElementById('toolbar-more-btn');
+  const menu = document.getElementById('toolbar-menu');
+  if (!btn || !menu || btn.dataset.menu === '1') return;
+  btn.dataset.menu = '1';
+  const close = () => {
+    menu.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+  };
+  btn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const open = menu.hidden;
+    menu.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+  });
+  document.addEventListener('click', (event) => {
+    if (menu.hidden) return;
+    if (event.target.closest('#toolbar-more')) return;
+    close();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !menu.hidden) {
+      close();
+      btn.focus();
+    }
+  });
+  // Any menu action closes the dropdown after its edit runs.
+  menu.addEventListener('click', close);
+}
+
 // Switch write/preview mode and refocus the editor when returning to edit.
 export function setWriteMode(mode, { focus = false } = {}) {
   state.writeMode = mode;

@@ -1310,6 +1310,12 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .tag-add:focus-visible { outline: 2px solid var(--search-focus-border); outline-offset: 1px; }
 .editor-toolbar { display: flex; align-items: center; justify-content: space-between; max-width: none; height: 34px; margin: 12px 0 0; padding: 0 2px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .toolbar-group, .toolbar-right { display: flex; align-items: center; gap: 1px; }
+.toolbar-more { position: relative; }
+.toolbar-more-trigger { color: var(--ink-muted); }
+.toolbar-menu { position: absolute; top: 30px; left: 50%; transform: translateX(-50%); z-index: 140; min-width: 200px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 1px; }
+.toolbar-menu[hidden] { display: none; }
+.toolbar-menu .context-item { padding: 7px 10px; font-size: 12px; }
+.toolbar-menu .context-item svg, .toolbar-menu .context-item .ordered-mark, .toolbar-menu .context-item .hr-mark, .toolbar-menu .context-item .break-mark, .toolbar-menu .context-item .quote-mark { width: 15px; text-align: center; color: var(--ink-muted); flex-shrink: 0; }
 .toolbar-button { display: grid; width: 24px; height: 24px; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--toolbar-ink); background: transparent; transition: color .18s ease, background .18s ease; }
 .toolbar-button:hover { color: var(--toolbar-hover-ink); background: var(--toolbar-hover-bg); }
 .toolbar-button strong { font-size: 11px; }

@@ -222,28 +222,28 @@
               <button class="toolbar-button italic" data-action="italic" aria-label="Italic" title="Italic (Ctrl+I)"><em>I</em></button>
               <button class="toolbar-button" data-action="strike" aria-label="Strikethrough" title="Strikethrough"><del>S</del></button>
               <button class="toolbar-button code" data-action="code" aria-label="Inline code" title="Inline code"><span>&lt;/&gt;</span></button>
-              <button class="toolbar-button" data-action="codeblock" aria-label="Code block" title="Code block (``` fenced)"><span data-icon="code"></span></button>
-            </div>
-            <span class="toolbar-divider"></span>
-            <div class="toolbar-group">
               <button class="toolbar-button" data-action="bullet" aria-label="Bullet list" title="Bullet list"><span data-icon="list"></span></button>
-              <button class="toolbar-button" data-action="ordered" aria-label="Numbered list" title="Numbered list"><span class="ordered-mark">1.</span></button>
               <button class="toolbar-button" data-action="check" aria-label="Checklist" title="Checklist"><span data-icon="check"></span></button>
-              <button class="toolbar-button" data-action="indent" aria-label="Indent (nest)" title="Indent item"><span data-icon="indent"></span></button>
-              <button class="toolbar-button" data-action="outdent" aria-label="Outdent" title="Outdent item"><span data-icon="outdent"></span></button>
-            </div>
-            <span class="toolbar-divider"></span>
-            <div class="toolbar-group">
-              <button class="toolbar-button" data-action="quote" aria-label="Quote" title="Blockquote"><span class="quote-mark">&quot;</span></button>
               <button class="toolbar-button" data-action="link" aria-label="Link" title="Link"><span data-icon="link"></span></button>
-              <button class="toolbar-button" data-action="image" aria-label="Image" title="Image"><span data-icon="image"></span></button>
-              <button class="toolbar-button" data-action="hr" aria-label="Horizontal rule" title="Horizontal rule"><span class="hr-mark">—</span></button>
-              <button class="toolbar-button" data-action="linebreak" aria-label="Line break" title="Line break (two trailing spaces)"><span class="break-mark">␤</span></button>
-              <button class="toolbar-button" data-action="table" aria-label="Table" title="Table skeleton"><span data-icon="table"></span></button>
+              <div class="toolbar-more" id="toolbar-more">
+                <button class="toolbar-button toolbar-more-trigger" id="toolbar-more-btn" aria-haspopup="true" aria-expanded="false" title="More Markdown" aria-label="More Markdown"><span data-icon="dots"></span></button>
+                <div class="toolbar-menu" id="toolbar-menu" role="menu" hidden>
+                  <button class="context-item" data-action="ordered"><span class="ordered-mark">1.</span> Numbered list</button>
+                  <button class="context-item" data-action="indent"><span data-icon="indent"></span> Indent item</button>
+                  <button class="context-item" data-action="outdent"><span data-icon="outdent"></span> Outdent item</button>
+                  <span class="context-separator"></span>
+                  <button class="context-item" data-action="quote"><span class="quote-mark">&quot;</span> Blockquote</button>
+                  <button class="context-item" data-action="codeblock"><span data-icon="code"></span> Code block</button>
+                  <button class="context-item" data-action="table"><span data-icon="table"></span> Table</button>
+                  <span class="context-separator"></span>
+                  <button class="context-item" data-action="image"><span data-icon="image"></span> Image</button>
+                  <button class="context-item" data-action="hr"><span class="hr-mark">—</span> Horizontal rule</button>
+                  <button class="context-item" data-action="linebreak"><span class="break-mark">␤</span> Line break</button>
+                </div>
+              </div>
             </div>
             <div class="toolbar-right">
               <span class="markdown-label"><span class="markdown-dot">M</span> Markdown</span>
-              <span class="toolbar-divider"></span>
               <button class="toolbar-button" id="focus-editor" aria-label="Focus mode" title="Focus mode"><span data-icon="focus"></span></button>
             </div>
           </div>
