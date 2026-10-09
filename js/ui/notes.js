@@ -1167,12 +1167,9 @@ export function renderNoteList() {
       : ((!state.activeCustom) ? state.customSections : []);
     customTargets.forEach((section) => {
       const sectionGroups = new Map();
-      // Seed every folder so newly added (still empty) folders show in the
-      // folder list instead of only folders that already hold notes — except
-      // in Starred/Archive views, where empty folders are noise and only
-      // folders with visible notes (plus their ancestors) are shown.
-      const seedEmpty = !(isFavoritesView() || state.activeView === 'archive');
-      if (seedEmpty) section.folders.forEach((folder) => { if (!sectionGroups.has(folder)) sectionGroups.set(folder, []); });
+      // Folder permanence: every folder of the section renders, even with no
+      // notes in this view (empty folders show a 0 count instead of vanishing).
+      section.folders.forEach((folder) => { if (!sectionGroups.has(folder)) sectionGroups.set(folder, []); });
       visible.forEach((note) => {
         const folder = customNoteFolder(note, section.id);
         if (!folder) return;

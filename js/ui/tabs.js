@@ -11,7 +11,7 @@ import { state } from '../domain/state.js';
 import { canEditCoverNote, moveCoverOnNote } from './editor.js';
 import { clearTabDropMarks, noteGlyphFor, updateSettingsScrollButtons, updateStripScrollButton, viewLabel } from './feedback.js';
 import { visibleNotes } from './notes.js';
-import { customFolderColor, customNoteFolder, isFavoritesView, sectionDisplayName } from './sections.js';
+import { customFolderColor, customNoteFolder, sectionDisplayName } from './sections.js';
 import { renderSettingsTags } from './tags.js';
 import { closeCollabNote, openCollabNote } from '../data/collab-crypto.js';
 import { e2ee } from '../data/crypto.js';
@@ -137,7 +137,17 @@ function collectStripFolders(section, parent, levels, rel, keep, pool) {
   let f = '';
   const groups = [];
   if (levels > 0 && section) {
-    (section.folders || []).filter((fl) => folderParent(fl) === parent && (!keep || keep.has(fl))).forEach((kid) => {
+    // Folder permanence + orphan tolerance: the folder list may reference
+    // parent paths that are not themselves registered (deep-created folders,
+    // renames, seed data). Those must render at root level anyway, not
+    // silently disappear because their parent path is unknown. `keep`, when
+    // set by a reflective caller, still filters folders outside that set.
+    const listed = section.folders || [];
+    const isChild = (fl) => {
+      const par = folderParent(fl) || '';
+      return parent ? (par === parent && listed.includes(parent)) : (par === '' || !listed.includes(par));
+    };
+    listed.filter((fl) => isChild(fl) && (!keep || keep.has(fl))).forEach((kid) => {
       const leaf = folderLeaf(kid);
       f += `<button type="button" class="strip-btn" data-strip-section="${escapeHtml(section.id)}" data-strip-folder="${escapeHtml(kid)}" title="${escapeHtml(leaf)}" aria-label="${escapeHtml(leaf)}"><span class="strip-folder-glyph strip-lvl${rel} ${customFolderColor(section, kid)}">${icon(folderIconForDepth(folderDepth(kid)))}</span></button>`;
       if (pool) {
@@ -159,10 +169,10 @@ function collectStripFolders(section, parent, levels, rel, keep, pool) {
 // data-strip-section/data-strip-folder.
 function renderStripSubfolders(section, parent, levels, ownNotesHtml, pool) {
   const sep = `<span class="strip-separator" aria-hidden="true"></span>`;
-  // True in Starred/Archive/Bin: the strip reflects the view by hiding
-  // folders (and sections) with no visible notes under them.
-  const reflectiveStrip = isFavoritesView() || state.activeView === 'archive' || state.activeView === 'bin';
-  const keep = (section && reflectiveStrip) ? stripFolderKeepSet(section, visibleNotes()) : null;
+  // Folder permanence: empty folders stay visible in every view (including
+  // Starred/Archive/Bin) — the section's folder tree is structure, so the
+  // note-dependent keep-set is never applied here.
+  const keep = null;
   const { f, groups } = collectStripFolders(section, parent, levels, 0, keep, pool || null);
   const all = ownNotesHtml ? [ownNotesHtml, ...groups] : groups;
   if (!f && !all.length) return '';
@@ -266,9 +276,8 @@ export function renderStripItems() {
   let html = '';
   sections.forEach((sec) => {
     if (!sec.folders.length) return;
-    // Reflective views skip sections with no visible notes (mirrors the list).
-    if ((isFavoritesView() || state.activeView === 'archive' || state.activeView === 'bin')
-      && !visibleNotes().some((n) => customNoteFolder(n, sec.id))) return;
+    // Folder permanence: sections stay in the strip in every view, even when
+    // no note matches (Starred/Archive/Bin previously hid note-less ones).
     const isMarked = markedSectionId != null && sec.id === markedSectionId;
     html += `<span class="strip-section-tag" data-strip-section="${escapeHtml(sec.id)}" title="${escapeHtml(sec.name)}" aria-hidden="true">${escapeHtml(sec.name.charAt(0).toUpperCase() || '?')}</span>`;
     html += `<button type="button" class="strip-btn${isMarked ? ' is-section-active' : ''}" data-strip-section="${escapeHtml(sec.id)}" data-strip-folder="" title="Open section ${escapeHtml(sec.name)}" aria-label="Open section ${escapeHtml(sec.name)}"><span class="strip-folder-glyph ${customFolderColor(sec, '')}">${icon('folder-solid')}</span></button>`;
