@@ -1274,7 +1274,7 @@ html:not([data-theme="light"]) .save-state .save-dot.is-error,
 html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f28ba8; box-shadow: 0 0 0 3px rgba(242, 139, 168, .12); }
 .editor-actions .icon-button { color: var(--action-ink); }
 .editor-actions .icon-button:hover { color: var(--ink); background: var(--action-hover-bg); }
-.editor-scroll { overflow: auto; width: 100%; padding: 43px 50px 0; }
+.editor-scroll { overflow: auto; width: 100%; padding: 43px 50px 0; --editor-pad-top: 43px; }
 .editor-heading { max-width: none; margin: 0; }
 .editor-heading.has-cover .title-input { position: relative; z-index: 1; margin-top: -1.05em; text-shadow: 0 1px 14px var(--paper), 0 0 4px var(--paper); }
 .cover-wrap { position: relative; margin: 0 0 18px; border-radius: 14px; overflow: hidden; background: var(--paper-deep); cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -1308,7 +1308,11 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .tag-add { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 4px; border: 1px dashed var(--line-strong); border-radius: 4px; color: var(--meta-ink); background: transparent; font-family: inherit; font-size: 11px; line-height: 1; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease; }
 .tag-add:hover { color: var(--ink); border-color: var(--btn-hover-border); background: var(--tree-hover-bg); }
 .tag-add:focus-visible { outline: 2px solid var(--search-focus-border); outline-offset: 1px; }
-.editor-toolbar { display: flex; align-items: center; justify-content: space-between; max-width: none; height: 34px; margin: 12px 0 0; padding: 0 2px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.editor-toolbar { display: flex; align-items: center; justify-content: space-between; position: sticky; top: calc(-1 * var(--editor-pad-top, 43px)); z-index: 10; max-width: none; height: 34px; margin: 12px 0 0; padding: 0 2px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--paper); }
+/* Sticky toolbar: on deep scrolls it parks flush under the editor top bar
+   (the top bar lives outside the scroll container). The negative offset
+   cancels the scroll container's top padding, which sticky otherwise keeps. */
+.editor-toolbar [data-open] { z-index: 20; }
 .toolbar-group, .toolbar-right { display: flex; align-items: center; gap: 1px; }
 .toolbar-more { position: relative; }
 .toolbar-more-trigger { color: var(--ink-muted); }
@@ -1616,7 +1620,7 @@ html[data-font="verdana"] body :not(pre):not(code):not(kbd) { font-family: Verda
   .breadcrumbs strong { max-width: 180px; }
   .save-state { margin-right: 2px; }
   .editor-actions .icon-button { width: 30px; }
-  .editor-scroll { padding: 30px 17px 24px; }
+  .editor-scroll { padding: 30px 17px 24px; --editor-pad-top: 30px; }
   .title-input { font-size: 31px; }
   .editor-toolbar { margin-top: 10px; }
   .toolbar-right .markdown-label, .toolbar-right .toolbar-divider { display: none; }
