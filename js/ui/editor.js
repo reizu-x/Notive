@@ -623,79 +623,95 @@ function focusEditor() {
   catch (error) { markdownInput.focus(); }
 }
 
-// Insert a Markdown line prefix (heading/list/quote) at the start of the current line and save.
-export function linePrefix(prefix) {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
-  const start = markdownInput.selectionStart;
-  const lineStart = markdownInput.value.lastIndexOf('\n', start - 1) + 1;
-  markdownInput.setRangeText(prefix, lineStart, lineStart, 'end');
-  focusEditor();
-  saveCurrentNote();
+  try { markdownInput.focus({ preventScroll: true }); }
+  catch (error) { markdownInput.focus(); }
 }
 
+// Run a text edit while pinning the scroll container in place: caret updates
+// (setRangeText / setSelectionRange) make the browser scroll the caret into
+// view, which jumps the pane back to the caret — undo that in the same tick.
+function withScrollLocked(fn) {
+  const sc = markdownInput.closest('.editor-scroll') || document.querySelector('.editor-scroll');
+  const top = sc ? sc.scrollTop : 0;
+  fn();
+  if (sc) sc.scrollTop = top;
+}
+
+// Insert a Markdown line prefix (heading/list/quote) at the start of the current line and save.
+export function linePrefix(prefix) {  withScrollLocked(() => {
+
+    if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+    if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
+    const start = markdownInput.selectionStart;
+    const lineStart = markdownInput.value.lastIndexOf('\n', start - 1) + 1;
+    markdownInput.setRangeText(prefix, lineStart, lineStart, 'end');
+    focusEditor();
+    saveCurrentNote();
+  });
+}
 // Cycle the current line's heading level: none → H1 → H2 → … → H6 → none.
 // Replaces whatever "#" prefix the line already has, so a single button
 // walks through the Markdown heading scale.
-export function cycleHeading() {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
-  const value = markdownInput.value;
-  const start = markdownInput.selectionStart;
-  const lineStart = value.lastIndexOf('\n', start - 1) + 1;
-  let lineEnd = value.indexOf('\n', start);
-  if (lineEnd === -1) lineEnd = value.length;
-  const line = value.slice(lineStart, lineEnd);
-  const at = (line.match(/^#+(?=\s|$)/) || [''])[0].length;
-  const nextLevel = { 0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 0 }[at] ?? 0;
-  const body = line.slice(at === 0 ? 0 : at).replace(/^\s+/, '') || line.slice(at) || line.trim();
-  const replaced = nextLevel === 0 ? body : `${'#'.repeat(nextLevel)} ${body}`;
-  markdownInput.setRangeText(replaced, lineStart, lineEnd, 'end');
-  focusEditor();
-  saveCurrentNote();
-}
+export function cycleHeading() {  withScrollLocked(() => {
 
-// Indent / outdent the current line or selection (shared with the Tab key
-// path; exported so the toolbar can drive the same behavior).
-export function indentSelection(outdent) {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
-  const value = markdownInput.value;
-  const start = markdownInput.selectionStart;
-  const end = markdownInput.selectionEnd;
-  const multiline = value.slice(start, end).includes('\n');
-  if (!multiline && !outdent && start === end) {
-    // Caret collapse (no selection): plain two-space insert, like the Tab key.
-    markdownInput.setRangeText('  ', start, end, 'end');
+    if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+    if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
+    const value = markdownInput.value;
+    const start = markdownInput.selectionStart;
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    let lineEnd = value.indexOf('\n', start);
+    if (lineEnd === -1) lineEnd = value.length;
+    const line = value.slice(lineStart, lineEnd);
+    const at = (line.match(/^#+(?=\s|$)/) || [''])[0].length;
+    const nextLevel = { 0: 1, 1: 2, 2: 3, 3: 4, 4: 5, 5: 6, 6: 0 }[at] ?? 0;
+    const body = line.slice(at === 0 ? 0 : at).replace(/^\s+/, '') || line.slice(at) || line.trim();
+    const replaced = nextLevel === 0 ? body : `${'#'.repeat(nextLevel)} ${body}`;
+    markdownInput.setRangeText(replaced, lineStart, lineEnd, 'end');
     focusEditor();
     saveCurrentNote();
-    return;
-  }
-  const blockStart = start === 0 ? 0 : value.lastIndexOf('\n', start - 1) + 1;
-  let lineEnd = value.indexOf('\n', end);
-  if (lineEnd === -1) lineEnd = value.length;
-  const lines = value.slice(blockStart, lineEnd).split('\n');
-  const mapped = outdent
-    ? lines.map((l) => l.replace(/^\t/, '').replace(/^ {1,2}/, ''))
-    : lines.map((l) => '  ' + l);
-  const replacement = mapped.join('\n');
-  markdownInput.setRangeText(replacement, blockStart, lineEnd, 'end');
-  markdownInput.setSelectionRange(blockStart, blockStart + replacement.length);
-  focusEditor();
-  saveCurrentNote();
+  });
 }
-
+// Indent / outdent the current line or selection (shared with the Tab key
+// path; exported so the toolbar can drive the same behavior).
+export function indentSelection  withScrollLocked(() => {
+    if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+    if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
+    const value = markdownInput.value;
+    const start = markdownInput.selectionStart;
+    const end = markdownInput.selectionEnd;
+    const multiline = value.slice(start, end).includes('\n');
+    if (!multiline && !outdent && start === end) {
+      // Caret collapse (no selection): plain two-space insert, like the Tab key.
+      markdownInput.setRangeText('  ', start, end, 'end');
+      focusEditor();
+      saveCurrentNote();
+      return;
+    }
+    const blockStart = start === 0 ? 0 : value.lastIndexOf('\n', start - 1) + 1;
+    let lineEnd = value.indexOf('\n', end);
+    if (lineEnd === -1) lineEnd = value.length;
+    const lines = value.slice(blockStart, lineEnd).split('\n');
+    const mapped = outdent
+      ? lines.map((l) => l.replace(/^\t/, '').replace(/^ {1,2}/, ''))
+      : lines.map((l) => '  ' + l);
+    const replacement = mapped.join('\n');
+    markdownInput.setRangeText(replacement, blockStart, lineEnd, 'end');
+    markdownInput.setSelectionRange(blockStart, blockStart + replacement.length);
+    focusEditor();
+    saveCurrentNote();
+  });
+}
 // Fence the selection (or an empty block) as a Markdown code block.
-export function codeBlockSelection(lang = '') {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  const start = markdownInput.selectionStart;
-  const end = markdownInput.selectionEnd;
-  const selected = markdownInput.value.slice(start, end);
-  fenceSelection(lang, selected);
-  focusEditor();
-  saveCurrentNote();
+export function codeBlockSelection  withScrollLocked(() => {
+    if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+    const start = markdownInput.selectionStart;
+    const end = markdownInput.selectionEnd;
+    const selected = markdownInput.value.slice(start, end);
+    fenceSelection(lang, selected);
+    focusEditor();
+    saveCurrentNote();
+  });
 }
-
 function fenceSelection(lang, selected) {
   const pad = (needs) => (needs ? '\n' : '');
   const before = markdownInput.value.slice(0, markdownInput.selectionStart);
@@ -708,50 +724,52 @@ function fenceSelection(lang, selected) {
 
 // Hard line break for the Markdown Guide "line break" syntax (two trailing
 // spaces) — inserts the marker + newline at the caret.
-export function insertLineBreak() {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  markdownInput.setRangeText('  \n', markdownInput.selectionStart, markdownInput.selectionEnd, 'end');
-  focusEditor();
-  saveCurrentNote();
+export function insertLineBreak  withScrollLocked(() => {
+    if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+    markdownInput.setRangeText('  \n', markdownInput.selectionStart, markdownInput.selectionEnd, 'end');
+    focusEditor();
+    saveCurrentNote();
+  });
 }
-
 // Insert a GFM table skeleton sized by [rows, cols].
-export function insertTable(rows = 2, cols = 2) {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  const header = `| ${Array.from({ length: cols }, (_, i) => `Col ${i + 1}`).join(' | ')} |`;
-  const align = `| ${Array.from({ length: cols }, () => '---').join(' | ')} |`;
-  const body = Array.from({ length: rows }, () => `| ${Array.from({ length: cols }, () => '').join(' | ')} |`).join('\n');
-  const start = markdownInput.selectionStart;
-  const before = markdownInput.value.slice(0, start);
-  const lead = before && !before.endsWith('\n') ? '\n' : '';
-  markdownInput.setRangeText(`${lead}${header}\n${align}\n${body}\n`, start, markdownInput.selectionEnd, 'end');
-  focusEditor();
-  saveCurrentNote();
-}
+export function insertTable(rows = 2, cols = 2) {  withScrollLocked(() => {
 
+    if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+    const header = `| ${Array.from({ length: cols }, (_, i) => `Col ${i + 1}`).join(' | ')} |`;
+    const align = `| ${Array.from({ length: cols }, () => '---').join(' | ')} |`;
+    const body = Array.from({ length: rows }, () => `| ${Array.from({ length: cols }, () => '').join(' | ')} |`).join('\n');
+    const start = markdownInput.selectionStart;
+    const before = markdownInput.value.slice(0, start);
+    const lead = before && !before.endsWith('\n') ? '\n' : '';
+    markdownInput.setRangeText(`${lead}${header}\n${align}\n${body}\n`, start, markdownInput.selectionEnd, 'end');
+    focusEditor();
+    saveCurrentNote();
+  });
+}
 // Insert a horizontal rule on its own line.
-export function insertHr() {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  const start = markdownInput.selectionStart;
-  const before = markdownInput.value.slice(0, start);
-  const lead = before && !before.endsWith('\n') ? '\n' : '';
-  markdownInput.setRangeText(`${lead}---\n`, start, markdownInput.selectionEnd, 'end');
-  focusEditor();
-  saveCurrentNote();
+export function insertHr  withScrollLocked(() => {
+    if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+    const start = markdownInput.selectionStart;
+    const before = markdownInput.value.slice(0, start);
+    const lead = before && !before.endsWith('\n') ? '\n' : '';
+    markdownInput.setRangeText(`${lead}---\n`, start, markdownInput.selectionEnd, 'end');
+    focusEditor();
+    saveCurrentNote();
+  });
 }
-
 // Wrap the editor selection (or placeholder word) with a Markdown marker and save.
 export function wrapSelection(before, after = before) {
-  if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
-  if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
-  const start = markdownInput.selectionStart;
-  const end = markdownInput.selectionEnd;
-  const selected = markdownInput.value.slice(start, end) || 'text';
-  markdownInput.setRangeText(`${before}${selected}${after}`, start, end, 'select');
-  focusEditor();
-  saveCurrentNote();
+  withScrollLocked(() => {
+    if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
+    if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
+    const start = markdownInput.selectionStart;
+    const end = markdownInput.selectionEnd;
+    const selected = markdownInput.value.slice(start, end) || 'text';
+    markdownInput.setRangeText(`${before}${selected}${after}`, start, end, 'select');
+    focusEditor();
+    saveCurrentNote();
+  });
 }
-
 // Tab in the Markdown editor indents instead of leaving the textarea.
 // Tab — insert two spaces at the caret; with a selection, indent every line.
 // Shift+Tab — remove up to two spaces (or one tab) from the line start.
@@ -759,26 +777,27 @@ export function wrapSelection(before, after = before) {
 const MD_INDENT_UNIT = '  ';
 
 function markdownIndent(outdent) {
-  const value = markdownInput.value;
-  const start = markdownInput.selectionStart;
-  const end = markdownInput.selectionEnd;
-  const multiline = value.slice(start, end).includes('\n');
-  if (!outdent && start === end && !multiline) {
-    markdownInput.setRangeText(MD_INDENT_UNIT, start, end, 'end');
+  withScrollLocked(() => {
+    const value = markdownInput.value;
+    const start = markdownInput.selectionStart;
+    const end = markdownInput.selectionEnd;
+    const multiline = value.slice(start, end).includes('\n');
+    if (!outdent && start === end && !multiline) {
+      markdownInput.setRangeText(MD_INDENT_UNIT, start, end, 'end');
+      markdownInput.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    let lineEnd = value.indexOf('\n', end);
+    if (lineEnd === -1) lineEnd = value.length;
+    const mapped = value.slice(lineStart, lineEnd).split('\n').map((line) =>
+      outdent ? line.replace(/^\t/, '').replace(/^ {1,2}/, '') : MD_INDENT_UNIT + line);
+    const replacement = mapped.join('\n');
+    markdownInput.setRangeText(replacement, lineStart, lineEnd, 'end');
+    markdownInput.setSelectionRange(lineStart + replacement.length, lineStart + replacement.length);
     markdownInput.dispatchEvent(new Event('input', { bubbles: true }));
-    return;
-  }
-  const lineStart = value.lastIndexOf('\n', start - 1) + 1;
-  let lineEnd = value.indexOf('\n', end);
-  if (lineEnd === -1) lineEnd = value.length;
-  const mapped = value.slice(lineStart, lineEnd).split('\n').map((line) =>
-    outdent ? line.replace(/^\t/, '').replace(/^ {1,2}/, '') : MD_INDENT_UNIT + line);
-  const replacement = mapped.join('\n');
-  markdownInput.setRangeText(replacement, lineStart, lineEnd, 'end');
-  markdownInput.setSelectionRange(lineStart + replacement.length, lineStart + replacement.length);
-  markdownInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
-
 export function initMarkdownTabbing() {
   if (!markdownInput || markdownInput.dataset.tabbing === '1') return;
   markdownInput.dataset.tabbing = '1';
