@@ -22,6 +22,10 @@
 
 ## Working agreements
 
+- **Never push to any remote without explicit approval in the current
+  request.** Commits stay local; always show the diff/summary and ask
+  "push?" before `git push`. Before this rule, push-triggered CI deploys ran
+  automatically — from now on they only fire when the user approves the push.
 - **Never generate any image (screenshots, mockups, previews, icons, exports)
   unless the user explicitly asks for that image in the request.**
 - **Never write files to the user's Desktop (~/Desktop) unless the user

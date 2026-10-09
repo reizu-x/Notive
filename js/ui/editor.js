@@ -1041,6 +1041,43 @@ export function wrapSelection(before, after = before) {
   saveCurrentNote();
 }
 
+// Tab in the Markdown editor indents instead of leaving the textarea.
+// Tab — insert two spaces at the caret; with a selection, indent every line.
+// Shift+Tab — remove up to two spaces (or one tab) from the line start.
+// Each step ends with a save so the note syncs like a normal edit.
+const MD_INDENT_UNIT = '  ';
+
+function markdownIndent(outdent) {
+  const value = markdownInput.value;
+  const start = markdownInput.selectionStart;
+  const end = markdownInput.selectionEnd;
+  const multiline = value.slice(start, end).includes('\n');
+  if (!outdent && start === end && !multiline) {
+    markdownInput.setRangeText(MD_INDENT_UNIT, start, end, 'end');
+    markdownInput.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+  const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+  let lineEnd = value.indexOf('\n', end);
+  if (lineEnd === -1) lineEnd = value.length;
+  const mapped = value.slice(lineStart, lineEnd).split('\n').map((line) =>
+    outdent ? line.replace(/^\t/, '').replace(/^ {1,2}/, '') : MD_INDENT_UNIT + line);
+  const replacement = mapped.join('\n');
+  markdownInput.setRangeText(replacement, lineStart, lineEnd, 'end');
+  markdownInput.setSelectionRange(lineStart + replacement.length, lineStart + replacement.length);
+  markdownInput.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+export function initMarkdownTabbing() {
+  if (!markdownInput || markdownInput.dataset.tabbing === '1') return;
+  markdownInput.dataset.tabbing = '1';
+  markdownInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab' || event.ctrlKey || event.metaKey || event.altKey) return;
+    event.preventDefault();
+    markdownIndent(event.shiftKey);
+  });
+}
+
 // Switch write/preview mode and refocus the editor when returning to edit.
 export function setWriteMode(mode, { focus = false } = {}) {
   state.writeMode = mode;
