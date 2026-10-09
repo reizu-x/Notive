@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Notely server: serves the app and backs logins with an encrypted SQLite DB.
+"""Notive server: serves the app and backs logins with an encrypted SQLite DB.
 
 Layout (all in this folder):
   server.py    this backend
-  notely.db    SQLite database file (users + sessions + notes + rate data).
-  notely.key   32-byte database encryption key — created on first run (0600).
-               In production set NOTELY_DB_KEY (base64) instead of using the file.
+  notive.db    SQLite database file (users + sessions + notes + rate data).
+  notive.key   32-byte database encryption key — created on first run (0600).
+               In production set NOTIVE_DB_KEY (base64) instead of using the file.
 
 Security model (end-to-end encryption for note contents):
   * NOTE CONTENTS are end-to-end encrypted: each account owns a random 256-bit
@@ -36,33 +36,48 @@ Security model (end-to-end encryption for note contents):
 """
 
 import base64
-import fcntl
 import hashlib
 import hmac
 import json
+import queue
 import os
-import py_compile
 import re
 import secrets
-import sqlite3
+import ssl
 import struct
-import subprocess
 import sys
 import threading
 import time
+
+import psycopg2
+import psycopg2.extras
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from flask import Flask, jsonify, request, send_from_directory
 from argon2.low_level import Type as Argon2Type, hash_secret_raw
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.environ.get('NOTELY_DB_PATH', os.path.join(BASE_DIR, 'notely.db'))
-KEY_PATH = os.environ.get('NOTELY_KEY_PATH', os.path.join(BASE_DIR, 'notely.key'))
+# Env override is tracked explicitly: a stale NOTIVE_PG_DSN once pointed a
+# live server at a dropped database (every request 500'd). The boot banner
+# below always states the source, and the restart runbook (AGENTS.md)
+# requires verifying the live process env after every restart.
+_PG_DSN_ENV = os.environ.get('NOTIVE_PG_DSN')
+PG_DSN = _PG_DSN_ENV or 'dbname=notivedb user=notive password=notive_secure_2026 host=localhost'
+print(f'NOTIVE DB: using PostgreSQL ({PG_DSN.split("dbname=")[1].split()[0] if "dbname=" in PG_DSN else PG_DSN})'
+      f'{" [NOTIVE_PG_DSN override]" if _PG_DSN_ENV else " [compiled default]"}', flush=True)
+KEY_PATH = os.environ.get('NOTIVE_KEY_PATH', os.path.join(BASE_DIR, 'notive.key'))
+# Automatic backups: pg_dump copies of the PostgreSQL database, taken on a daemon
+# thread. Copies (not moves) — the DB itself is never touched. Env overrides:
+#   NOTIVE_BACKUP_INTERVAL_SECONDS  cadence (0 disables backups entirely)
+#   NOTIVE_BACKUP_KEEP              how many timestamped copies to retain
+BACKUP_DIR = os.environ.get('NOTIVE_BACKUP_DIR', '/home/r3izu/Documents/dbbackup')
+BACKUP_INTERVAL_SECONDS = int(os.environ.get('NOTIVE_BACKUP_INTERVAL_SECONDS', '3600'))
+BACKUP_KEEP = max(1, int(os.environ.get('NOTIVE_BACKUP_KEEP', '48')))
 # __Host- prefix enforces Secure + Path=/ + no Domain (cookie tossing defense).
-# Transition: server still accepts legacy 'notely_session' for 7 days (see
+# Transition: server still accepts legacy 'notive_session' for 7 days (see
 # get_session_token_from_request), but always sets the __Host- cookie.
-SESSION_COOKIE = '__Host-notely_session'
-LEGACY_SESSION_COOKIE = 'notely_session'
+SESSION_COOKIE = '__Host-notive_session'
+LEGACY_SESSION_COOKIE = 'notive_session'
 SESSION_MAX_AGE_SECONDS = 12 * 3600
 SESSION_IDLE_SECONDS = 30 * 60
 SESSION_ROTATE_AFTER_SECONDS = 4 * 3600
@@ -79,29 +94,6 @@ ARGON2_DESCRIPTOR = {'kdf': 'argon2id', 't': ARGON2_TIME_COST, 'm': ARGON2_MEMOR
 # {t, m, p} plus a top-level 'kdf' field). Accepts the historical descriptor
 # shape too so clients written against either form keep working.
 ARGON2_CLIENT_PARAMS = {'t': ARGON2_TIME_COST, 'm': ARGON2_MEMORY_KIB, 'p': ARGON2_PARALLELISM}
-
-# --- Periodic pull-only auto-update -----------------------------------------
-# The server mirrors its GitHub remote: every NOTELY_UPDATE_INTERVAL seconds it
-# runs `git fetch`, and when local is strictly behind remote/<branch> with a
-# clean working tree it fast-forwards (ff-only, never merging unpublished local
-# work) and restarts in-place via os.execv so the new code is actually served.
-# It never pushes and never touches a dirty tree. Controls:
-#   NOTELY_AUTO_UPDATE        '0' disables the loop (default enabled)
-#   NOTELY_UPDATE_INTERVAL    seconds between checks (default 300)
-#   NOTELY_UPDATE_FIRST_DELAY seconds before the first check (default 15)
-#   NOTELY_UPDATE_REMOTE      git remote to fetch (default 'origin')
-#   NOTELY_UPDATE_BRANCH      branch to track (default 'main')
-#   NOTELY_UPDATE_FETCH_TIMEOUT  seconds for each git command (default 60)
-#   NOTELY_UPDATE_LOG         log file (default /tmp/notely-auto-update.log)
-#   NOTELY_UPDATE_LOCK        cross-process lock file (default /tmp/notely-auto-update.lock)
-AUTO_UPDATE_ENABLED = os.environ.get('NOTELY_AUTO_UPDATE', '1').lower() != '0'
-AUTO_UPDATE_INTERVAL = int(os.environ.get('NOTELY_UPDATE_INTERVAL', '300'))
-AUTO_UPDATE_FIRST_DELAY = int(os.environ.get('NOTELY_UPDATE_FIRST_DELAY', '15'))
-AUTO_UPDATE_REMOTE = os.environ.get('NOTELY_UPDATE_REMOTE', 'origin')
-AUTO_UPDATE_BRANCH = os.environ.get('NOTELY_UPDATE_BRANCH', 'main')
-AUTO_UPDATE_FETCH_TIMEOUT = int(os.environ.get('NOTELY_UPDATE_FETCH_TIMEOUT', '60'))
-AUTO_UPDATE_LOG = os.environ.get('NOTELY_UPDATE_LOG', '/tmp/notely-auto-update.log')
-AUTO_UPDATE_LOCK = os.environ.get('NOTELY_UPDATE_LOCK', '/tmp/notely-auto-update.lock')
 
 
 def valid_argon2_params(params):
@@ -130,34 +122,81 @@ NOTES_PUT_MAX = 60
 NOTES_MAX_COUNT = 2000
 NOTES_MAX_BODY_CHARS = 500000
 NOTES_MAX_TOTAL_BYTES = 6 * 1024 * 1024
+# Collaborative note shares/updates reuse the notes size cap (opaque blobs).
+# Pentest F-15: per-section note count cap (2000 shared notes per group).
+SHARE_MAX_BYTES = NOTES_MAX_TOTAL_BYTES
+SHARE_MAX_NOTES = 2000
+# Shared-section administration: at most SHARE_MAX_MEMBERS people (owner
+# included) may share a section, and the sharing surface is throttled per user.
+SHARE_MAX_MEMBERS = 4
+SHARE_UPDATE_MAX_BYTES = 256 * 1024
+SHARE_ADMIN_WINDOW_SECONDS = 3600
+SHARE_ADMIN_MAX = 60
 NOTES_MAX_REQUEST_BYTES = 7 * 1024 * 1024
 
-# Password policy: min 12 chars, at least 1 upper, 1 lower, 1 digit, 1 special.
-PASSWORD_MIN_LENGTH = 12
-PASSWORD_SPECIAL_RE = re.compile(r'[^A-Za-z0-9]')
+# Collab SSE stream limits: bounded queue per subscriber + per-user cap.
+SSE_QUEUE_MAX_EVENTS = 200
+SSE_MAX_SUBSCRIBERS_PER_USER = 5
+
+# Password policy — aligned to NIST SP 800-63B (800-63-4): length is the
+# primary factor, composition rules are NOT imposed, long passwords allowed,
+# and a blocklist of common/compromised values is enforced. Applies to
+# server-visible passwords (legacy change path, bootstrap env values); E2EE
+# registrations are checked client-side plus the server weak-screen.
+PASSWORD_MIN_LENGTH = 15
+PASSWORD_MAX_LENGTH = 256
 USERNAME_RE = re.compile(r'^[A-Za-z0-9_-]{3,32}$')
 # Person names: letters first, then letters/spaces/hyphens/apostrophes/periods.
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z'.\- ]{0,39}$")
 NOTE_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
 
+# Blocklist of commonly used / expected / compromised passwords. The embedded
+# set is intentionally small; real deployments should point
+# NOTIVE_PASSWORD_BLOCKLIST at a large list (one password per line, e.g. a
+# SecLists or Pwned Passwords export) — entries are merged at startup.
+_EMBEDDED_BLOCKLIST = frozenset(word.lower() for word in (
+    '123456', '123456789', '12345678', '1234567', '1234567890', '12345', '1234',
+    '123', '111111', '000000', '121212', '123123', 'password', 'password1',
+    'password1!', 'password123', 'password123!', 'passw0rd', 'pass1234', 'abc123',
+    'qwerty', 'qwerty123', 'qwertyuiop', 'qwertyuiopas', 'qazwsx', '1q2w3e4r',
+    'asdfghjkl', 'zaq12wsx', 'admin', 'admin123', 'admin123!', 'administrator',
+    'root', 'toor', 'login', 'letmein', 'welcome', 'welcome1', 'monkey', 'dragon',
+    'iloveyou', 'sunshine', 'princess', 'football', 'trustno1', 'whatever',
+    'freedom', 'hello', 'changeme', 'secret', 'master', 'shadow', 'superman',
+    'michael', 'aaaaaaaaaaaa', 'aaaaaaaaaaaaaaaa', 'notive', 'notive123',
+    'notive123!', 'notes12345', 'notes123456',
+))
 
-# Enforce the password policy for server-visible passwords (legacy change path, bootstrap env values). E2EE registrations are strength-checked client-side.
+
+def _load_password_blocklist():
+    words = set(_EMBEDDED_BLOCKLIST)
+    path = os.environ.get('NOTIVE_PASSWORD_BLOCKLIST')
+    if path and os.path.exists(path):
+        try:
+            with open(path, 'r', errors='ignore') as handle:
+                for line in handle:
+                    word = line.strip().lower()
+                    if word:
+                        words.add(word)
+        except Exception:
+            pass
+    return frozenset(words)
+
+
+PASSWORD_BLOCKLIST = _load_password_blocklist()
+
+
+# Enforce the policy for server-visible passwords. Returns (ok, message).
 def validate_password(password):
-    """Enforce the Notely password policy. Returns (ok, message)."""
+    """NIST-aligned check: length only (no composition) + blocklist."""
     if not isinstance(password, str):
         return False, 'Password must be a string.'
     if len(password) < PASSWORD_MIN_LENGTH:
         return False, f'Password must be at least {PASSWORD_MIN_LENGTH} characters.'
-    if len(password) > 256:
-        return False, 'Password must be at most 256 characters.'
-    if not re.search(r'[A-Z]', password):
-        return False, 'Password must contain at least 1 capital letter.'
-    if not re.search(r'[a-z]', password):
-        return False, 'Password must contain at least 1 small letter.'
-    if not re.search(r'[0-9]', password):
-        return False, 'Password must contain at least 1 number.'
-    if not PASSWORD_SPECIAL_RE.search(password):
-        return False, 'Password must contain at least 1 special character.'
+    if len(password) > PASSWORD_MAX_LENGTH:
+        return False, f'Password must be at most {PASSWORD_MAX_LENGTH} characters.'
+    if password.lower() in PASSWORD_BLOCKLIST:
+        return False, 'That password is too common — choose a different one.'
     return True, 'OK'
 
 
@@ -202,24 +241,22 @@ def generate_policy_password(length=20):
 
 
 # Bootstrap account PROFILES only — no secrets here. Passwords come from the
-# environment (NOTELY_PASSWORD_<USERNAME>, e.g. NOTELY_PASSWORD_ADMIN). On a
+# environment (NOTIVE_PASSWORD_<USERNAME>, e.g. NOTIVE_PASSWORD_ADMIN). On a
 # fresh database, any bootstrap user without an env password gets a random
 # policy-compliant one printed ONCE to the server log; rotate it immediately.
 BOOTSTRAP_PROFILES = {
-    'admin': ('Admin', 'Nimda', 'Personal space'),
-    'reizu': ('Anthony', 'Samson', 'Personal space'),
 }
 
 
-# Resolve a bootstrap password: NOTELY_PASSWORD_<USER> env var wins, else generate + print once to the server log.
+# Resolve a bootstrap password: NOTIVE_PASSWORD_<USER> env var wins, else generate + print once to the server log.
 def bootstrap_password(username):
-    env_name = 'NOTELY_PASSWORD_' + username.upper()
+    env_name = 'NOTIVE_PASSWORD_' + username.upper()
     configured = os.environ.get(env_name)
     if configured:
         return configured, 'env'
     return generate_policy_password(), 'generated'
 
-PUBLIC_FILES = {'app.js', 'styles.css', 'favicon.ico',
+PUBLIC_FILES = {'styles.css', 'favicon.ico',
                 'vendor/argon2/argon2.js', 'vendor/argon2/argon2-wrapper.js', 'vendor/argon2/argon2.wasm',
                 'vendor/qrcode/qrcode.min.js'}
 
@@ -228,20 +265,20 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = NOTES_MAX_REQUEST_BYTES + 1024
 
 
-# Load the 32-byte database key: NOTELY_DB_KEY env wins, else the 0600 notely.key file (created once). Validates exact length.
+# Load the 32-byte database key: NOTIVE_DB_KEY env wins, else the 0600 notive.key file (created once). Validates exact length.
 def get_db_key():
     """32-byte AES key: env var wins, else the local key file (created once)."""
-    env_key = os.environ.get('NOTELY_DB_KEY')
+    env_key = os.environ.get('NOTIVE_DB_KEY')
     if env_key:
         try:
             key = base64.b64decode(env_key, validate=True)
         except Exception:
             raise RuntimeError(
-                'Invalid NOTELY_DB_KEY: must be base64 of exactly 32 bytes.'
+                'Invalid NOTIVE_DB_KEY: must be base64 of exactly 32 bytes.'
             )
         if len(key) != 32:
             raise RuntimeError(
-                'Invalid NOTELY_DB_KEY: must decode to exactly 32 bytes.'
+                'Invalid NOTIVE_DB_KEY: must decode to exactly 32 bytes.'
             )
         return key
     if os.path.exists(KEY_PATH):
@@ -262,47 +299,140 @@ def get_db_key():
     return key
 
 
-# Open a SQLite connection with Row access to notely.db.
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Open a PostgreSQL connection with dict-like row access.
+class _PgResult:
+    """Thin wrapper to mimic sqlite3 cursor result behaviour."""
+    def __init__(self, cursor):
+        self._cursor = cursor
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        return _PgRow(row, self._cursor.description) if row else None
+    def fetchall(self):
+        if not self._cursor.description:
+            return []
+        return [_PgRow(r, self._cursor.description) for r in self._cursor.fetchall()]
+    def __iter__(self):
+        if not self._cursor.description:
+            return iter([])
+        return iter(self.fetchall())
+    @property
+    def lastrowid(self):
+        try:
+            return self._cursor.fetchone()[0]
+        except Exception:
+            return None
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+class _PgRow:
+    """Dict-like row that supports both index and key access (like sqlite3.Row)."""
+    __slots__ = ('_data', '_keys')
+    def __init__(self, row, description):
+        self._keys = [d[0] for d in description]
+        self._data = dict(zip(self._keys, row))
+    def __getitem__(self, key):
+        if isinstance(key, (int, slice)):
+            return list(self._data.values())[key]
+        return self._data[key]
+    def __contains__(self, key):
+        return key in self._data
+    def keys(self):
+        return self._keys
+    def __repr__(self):
+        return repr(self._data)
+
+class _PgConnection:
+    """Thin wrapper around psycopg2 that mimics the sqlite3 connection API.
+
+    Auto-converts ? placeholders to %s, returns _PgResult from execute(),
+    and provides commit/rollback/close. This lets the rest of server.py
+    keep its existing conn.execute(sql, params) pattern with minimal changes."""
+    def __init__(self, dsn):
+        self._conn = psycopg2.connect(dsn)
+        self._conn.autocommit = False
+    def execute(self, sql, params=None):
+        # Pentest F-50: the placeholder swap is a blanket string replace. Never
+        # write a literal '?' inside a SQL string (even inside quotes) — it
+        # would be silently converted to %s and corrupt the statement. Use a
+        # parameter placeholder or spell it differently. Verified: no current
+        # SQL string in server.py contains a bare '?' — keep it that way.
+        sql = sql.replace('?', '%s')
+        cur = self._conn.cursor()
+        cur.execute(sql, params or ())
+        return _PgResult(cur)
+    def commit(self):
+        self._conn.commit()
+    def rollback(self):
+        self._conn.rollback()
+    def close(self):
+        self._conn.close()
+    @property
+    def in_transaction(self):
+        return self._conn.status != psycopg2.extensions.STATUS_READY
+
+def get_db(attempt=0):
+    try:
+        return _PgConnection(PG_DSN)
+    except psycopg2.OperationalError:
+        if attempt >= 2:
+            raise
+        time.sleep(0.3 * (attempt + 1))
+        return get_db(attempt + 1)
 
 
 DB_KEY = get_db_key()
 
 
-# AES-GCM encrypt bytes under the database key; returns nonce+ciphertext. Server-side (non-E2EE) data only.
-def encrypt_blob(plaintext_bytes):
+def _pg_columns(conn, table):
+    """Get column names for a table (replaces PRAGMA table_info)."""
+    cur = conn.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+        (table,),
+    )
+    return {row['column_name'] for row in cur.fetchall()}
+
+
+# AES-GCM encrypt bytes under the database key; optional AAD binds the blob
+# to its account/field (cross-account swap resistance). Server-side data only.
+# Returns nonce+ciphertext.
+def encrypt_blob(plaintext_bytes, aad=None):
     aesgcm = AESGCM(DB_KEY)
     nonce = secrets.token_bytes(12)
-    return nonce + aesgcm.encrypt(nonce, bytes(plaintext_bytes), None)
+    return nonce + aesgcm.encrypt(nonce, bytes(plaintext_bytes), aad)
 
 
 # AES-GCM decrypt a nonce+ciphertext blob; throws on tampering or wrong key.
-def decrypt_blob(blob):
+# Dual-read: AAD-bound (new) blobs and unbound (legacy) blobs both decrypt, so
+# the rollout needs no one-shot migration; new writes always carry the AAD.
+def decrypt_blob(blob, aad=None):
     aesgcm = AESGCM(DB_KEY)
-    return aesgcm.decrypt(bytes(blob[:12]), bytes(blob[12:]), None)
+    try:
+        return aesgcm.decrypt(bytes(blob[:12]), bytes(blob[12:]), aad)
+    except Exception:
+        if aad:
+            return aesgcm.decrypt(bytes(blob[:12]), bytes(blob[12:]), None)
+        raise
 
 
-# Encrypt the display profile JSON (first/last name, subtitle) for storage.
-def encrypt_profile(profile):
-    return encrypt_blob(json.dumps(profile).encode('utf-8'))
+def blob_aad(kind, username):
+    return f'notive-{kind}-v1:{username or ""}'.encode('utf-8')
 
 
-# Decrypt a stored display profile.
-def decrypt_profile(blob):
-    return json.loads(decrypt_blob(blob).decode('utf-8'))
+def encrypt_profile(profile, username=None):
+    return encrypt_blob(json.dumps(profile).encode('utf-8'), blob_aad('profile', username))
 
 
-# Encrypt a legacy (pre-E2EE) notes array for storage. E2EE blobs bypass this entirely.
-def encrypt_notes(notes):
-    return encrypt_blob(json.dumps(notes).encode('utf-8'))
+def decrypt_profile(blob, username=None):
+    return json.loads(decrypt_blob(blob, blob_aad('profile', username) if username else None).decode('utf-8'))
 
 
-# Decrypt a legacy notes array (used by reads and the E2EE upgrade path).
-def decrypt_notes(blob):
-    return json.loads(decrypt_blob(blob).decode('utf-8'))
+def encrypt_notes(notes, username=None):
+    return encrypt_blob(json.dumps(notes).encode('utf-8'), blob_aad('notes-legacy', username))
+
+
+def decrypt_notes(blob, username=None):
+    return json.loads(decrypt_blob(blob, blob_aad('notes-legacy', username) if username else None).decode('utf-8'))
 
 
 # PBKDF2-HMAC-SHA256 password hash for legacy verifiers.
@@ -311,8 +441,8 @@ def hash_password(password, salt):
 
 
 def argon2id_raw(password, salt):
-    """Memory-hard KDF shared bit-for-bit with the browser (argon2-browser
-    1.18.0, Argon2id t=3 m=64MiB p=1). Used for auth verifiers and KEKs."""
+    """Memory-hard KDF shared bit-for-bit with the browser (argon2-browser,
+    Argon2id t=3 m=64MiB p=1). Used for auth verifiers and KEKs."""
     return hash_secret_raw(secret=password.encode('utf-8'), salt=bytes(salt),
                            time_cost=ARGON2_TIME_COST, memory_cost=ARGON2_MEMORY_KIB,
                            parallelism=ARGON2_PARALLELISM, hash_len=ARGON2_HASH_LEN,
@@ -335,17 +465,27 @@ def b64decode_strict(value, expected_len):
 
 # True once an account carries wrapped-key material; gates E2EE vs legacy code paths.
 def is_e2ee_account(row):
-    """An account is E2EE once it carries wrapped-key material."""
+    """An account is E2EE once it carries wrapped-key material and a verifier.
+
+    Accepts either the raw verifier (legacy, pre-pepper) or the peppered one
+    (auth_hash2). Raw is dropped once a row is peppered (M-4 migration)."""
     try:
-        return bool(row['salt_auth'] and row['auth_hash'] and row['salt_enc'] and row['enc_master_key'])
+        verifier = row['auth_hash2'] or row['auth_hash']
+    except Exception:
+        try:
+            verifier = row['auth_hash']
+        except Exception:
+            return False
+    try:
+        return bool(row['salt_auth'] and verifier and row['salt_enc'] and row['enc_master_key'])
     except Exception:
         return False
 
 
 # Fixed dummy hash so unknown usernames take the same PBKDF2 work as
 # real ones (timing-attack mitigation for user enumeration).
-_DUMMY_SALT = b'notely-enumeration-dummy-salt-01'
-_DUMMY_HASH = hashlib.pbkdf2_hmac('sha256', b'notely-dummy-password', _DUMMY_SALT, PBKDF2_ITERATIONS)
+_DUMMY_SALT = b'notive-enumeration-dummy-salt-01'
+_DUMMY_HASH = hashlib.pbkdf2_hmac('sha256', b'notive-dummy-password', _DUMMY_SALT, PBKDF2_ITERATIONS)
 
 
 def dummy_kdf_salt_for(username):
@@ -364,61 +504,135 @@ def dummy_kdf_salt_for(username):
     return hmac.new(DB_KEY, b'kdf-dummy-v1:' + name, hashlib.sha256).digest()[:16]
 
 
-# Small weak-password screen for E2EE verifiers. The server never sees the
-# password, but it knows saltAuth+authHash, so it can test a tiny dictionary
-# (top leaked passwords + trivial strings). Each check is one Argon2id (64MiB,
-# ~0.3-1s); only ~8 candidates to keep registration <5s. This catches
-# "123"/"password"/"qwerty" style bypasses of client-side policy without
-# learning anything about strong passwords. Not a substitute for OPAQUE.
+# Weak-password screen for E2EE verifiers. The server never sees the password,
+# only Argon2id(password, saltAuth), so it cannot measure length or character
+# classes — the client policy check remains the primary gate. What the server
+# CAN do is reject verifiers that match a known-weak password, plus identity-
+# derived guesses. Every candidate costs one pinned Argon2id (~0.1 s at 64 MiB),
+# so the search is bounded by NOTIVE_WEAK_SCREEN_MAX (default 40) to keep
+# registration responsive. This is a bar-raiser against scripted policy bypass,
+# NOT a complete policy: a determined API client can still register a weak
+# password the list misses. The definitive fix is OPAQUE/PAKE (server never
+# sees the password yet can still bind policy at the protocol level).
+WEAK_SCREEN_MAX = max(1, int(os.environ.get('NOTIVE_WEAK_SCREEN_MAX', '40')))
+IDENTITY_SCREEN_MAX = max(0, int(os.environ.get('NOTIVE_IDENTITY_SCREEN_MAX', '12')))
+
+# Top leaked / trivial passwords, including the common capitalised variants a
+# naive lowercase-only dictionary misses and obvious repeated-character
+# patterns. Order matters: entries past WEAK_SCREEN_MAX after identity guesses
+# are not tested, so the highest-value candidates come first.
 _WEAK_PASSWORD_CANDIDATES = (
-    '123', 'password', '123456', '123456789', 'qwerty', '12345678',
-    'password123', 'admin123',
+    '123456', '123456789', '12345678', '12345', '1234', '123',
+    '111111', '000000', '123123',
+    'password', 'password1', 'Password1!', 'password123', 'Password123!',
+    'passw0rd', 'pass1234', 'abc123',
+    'admin', 'admin123', 'Admin123!', 'administrator', 'root', 'login',
+    'qwerty', 'qwerty123', 'qwertyuiopas', 'qazwsx', '1q2w3e4r', 'asdfghjkl',
+    'aaaaaaaaaaaa',
+    # Pentest F-39: extended builtin blocklist (top-common leaked passwords).
+    # Static cost — matched within the same bounded per-candidate budget.
+    'letmein', 'welcome', 'monkey', 'dragon', 'football', 'baseball',
+    'sunshine', 'princess', 'superman', 'batman', 'starwars', 'master',
+    'iloveyou', 'trustno1', 'janedoe', 'johncena', 'ninja', 'hunter2',
+    'passwort', 'motdepasse', 'contrasena', 'heslo', 'geheim', 'vindiesel',
+    '123qwe', 'qwe123', '1qaz2wsx', 'zxcvbnm', 'abcd1234', 'abcd1234!',
+    'changeme', 'ChangeMe123', 'secret', 'letmein1', 'freckle', 'patrick',
+    'soccer', 'hockey', 'killer', 'george', 'charlie', 'pepper',
+    'friends', 'whatever', 'lovely', 'nothing',
 )
 
+# Suffixes appended to identity bases ("reizu" -> "reizu123", "reizu!" ...).
+_IDENTITY_SUFFIXES = ('', '1', '12', '123', '1234', '12345', '123456',
+                      '!', '@', '1!', '!1', '2024', '2025', '2026')
 
-def is_weak_verifier(auth_hash_bytes, salt_auth_bytes):
-    """True if authHash matches a trivial password under the given salt.
 
-    Constant-time over candidates (no early exit) so timing does not reveal
-    whether/which weak password matched.
+def identity_password_candidates(*values):
+    """Bounded weak-password guesses derived from an account's own identifiers.
+
+    Catches the very common "username123" / "firstname!" class of weak
+    passwords cheaply. Output is capped by IDENTITY_SCREEN_MAX so the total
+    Argon2id budget stays predictable.
+    """
+    if IDENTITY_SCREEN_MAX <= 0:
+        return []
+    bases = []
+    seen_base = set()
+
+    def add_base(text):
+        text = str(text or '').strip().lower()
+        if 3 <= len(text) <= 32 and text not in seen_base:
+            seen_base.add(text)
+            bases.append(text)
+
+    for value in values:
+        text = str(value or '').strip().lower()
+        if not text:
+            continue
+        add_base(text)
+        if '@' in text:
+            add_base(text.split('@', 1)[0])
+        for part in re.split(r'[^a-z0-9]+', text):
+            add_base(part)
+
+    out = []
+    for base in bases:
+        for suffix in _IDENTITY_SUFFIXES:
+            out.append(base + suffix)
+            if len(out) >= IDENTITY_SCREEN_MAX:
+                return out
+    return out
+
+
+def bounded_weak_candidates(extra_candidates=()):
+    """Merge identity guesses (first) with the curated list, deduped and capped."""
+    merged = []
+    seen = set()
+    for candidate in list(extra_candidates) + list(_WEAK_PASSWORD_CANDIDATES):
+        text = str(candidate)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        merged.append(text)
+        if len(merged) >= WEAK_SCREEN_MAX:
+            break
+    return merged
+
+
+def verifier_matches_any(target_bytes, salt_auth_bytes, candidates):
+    """Constant-time-over-candidates Argon2id match against a bounded list.
+
+    No early exit, so timing does not reveal whether/which weak password
+    matched. Returns False on any malformed input.
     """
     try:
-        matched = False
-        for candidate in _WEAK_PASSWORD_CANDIDATES:
-            try:
-                cand = argon2id_raw(candidate, bytes(salt_auth_bytes))
-            except Exception:
-                continue
-            if hmac.compare_digest(cand, bytes(auth_hash_bytes)):
-                matched = True
-        return matched
+        target = bytes(target_bytes)
+        salt = bytes(salt_auth_bytes)
     except Exception:
         return False
-    return False
+    matched = False
+    for candidate in candidates:
+        try:
+            if hmac.compare_digest(argon2id_raw(candidate, salt), target):
+                matched = True
+        except Exception:
+            continue
+    return matched
 
 
-# Tiny weak-password screen for VAULT verifiers. The vault password never
-# reaches the server (E2EE), so the full length/complexity policy is enforced
-# only client-side. This mirrors is_weak_verifier for the vault's verifier to
-# catch trivially weak but policy-compliant vault passwords (e.g. "Vault123!")
-# that a scripted registration could otherwise smuggle past the client check.
-# Same ~8 Argon2id candidates, constant-time, ~0.3-1s — imperceptible one-time
-# cost on vault setup.
+def is_weak_verifier(auth_hash_bytes, salt_auth_bytes, extra_candidates=()):
+    """True if authHash matches a weak/identity-derived password under its salt."""
+    return verifier_matches_any(auth_hash_bytes, salt_auth_bytes,
+                                bounded_weak_candidates(extra_candidates))
+
+
+# Same screen for VAULT verifiers. The vault password never reaches the server
+# (E2EE), so the full length/complexity policy is enforced only client-side;
+# this catches trivially weak vault passwords a scripted client could smuggle
+# past the browser check.
 def is_weak_vault_verifier(verifier_bytes, salt_auth_bytes):
     """True if the vault verifier matches a trivial password under its salt."""
-    try:
-        matched = False
-        for candidate in _WEAK_PASSWORD_CANDIDATES:
-            try:
-                cand = argon2id_raw(candidate, bytes(salt_auth_bytes))
-            except Exception:
-                continue
-            if hmac.compare_digest(cand, bytes(verifier_bytes)):
-                matched = True
-        return matched
-    except Exception:
-        return False
-    return False
+    return verifier_matches_any(verifier_bytes, salt_auth_bytes,
+                                bounded_weak_candidates())
 
 
 # --- MFA TOTP (RFC 6238, 6-digit, SHA1, 30s) + pepper (OPAQUE interim) ---
@@ -454,15 +668,22 @@ def totp_verify(secret_bytes, code, window=1, step=30):
 
 
 def pepper_auth_hash(auth_hash_bytes):
-    """Server-side pepper: HMAC(DB_KEY, 'notely-auth-v1:' + authHash)."""
-    return hmac.new(DB_KEY, b'notely-auth-v1:' + bytes(auth_hash_bytes), hashlib.sha256).digest()
+    """Server-side pepper: HMAC(DB_KEY, 'notive-auth-v1:' + authHash)."""
+    return hmac.new(DB_KEY, b'notive-auth-v1:' + bytes(auth_hash_bytes), hashlib.sha256).digest()
 
 
 def verify_auth_hash(candidate_bytes, row):
-    """Dual-verify (non-breaking pepper migration).
+    """Dual-verify during the pepper migration.
 
-    Returns ('peppered'|'raw'|None). New rows have auth_hash2; old rows only
-    auth_hash. Caller upgrades raw->peppered on success.
+    Returns ('peppered'|'raw'|None). A row with a valid peppered hash
+    (auth_hash2) is verified only through the pepper; a row still holding only
+    the legacy raw hash returns 'raw' and is upgraded by the caller on success.
+
+    NOTE: this is a consistency/defence-in-depth hardening, not a complete fix
+    for the DB-leak replay case. Because the server peppers the client-supplied
+    candidate, a leaked raw 'auth_hash' can still authenticate through the
+    peppered branch. Fully closing M-4 requires dropping/encrypting the stored
+    raw verifier (a storage migration), which is intentionally NOT done here.
     """
     try:
         cand = bytes(candidate_bytes)
@@ -478,6 +699,9 @@ def verify_auth_hash(candidate_bytes, row):
                 return 'peppered'
         except Exception:
             pass
+        # Peppered row: do not fall back to the stored raw verifier (e.g. after
+        # a key change the stale peppered hash must fail closed, not downgrade).
+        return None
     try:
         stored = bytes(row['auth_hash']) if row['auth_hash'] else None
     except Exception:
@@ -531,12 +755,19 @@ def b64url_decode(value):
         raise ValueError('Invalid base64url.')
 
 
-def cbor_decode_minimal(data, pos=0):
+# WebAuthn CBOR (attestationObject/COSE keys) is shallow; a hard cap stops a
+# crafted deeply-nested object from exhausting the C stack (RecursionError).
+CBOR_MAX_DEPTH = 16
+
+
+def cbor_decode_minimal(data, pos=0, depth=0):
     """Minimal definite-length CBOR decoder (maps/arrays/bstr/tstr/uint/negint/tags).
 
     Returns (value, next_pos). Byte strings -> bytes, text -> str, arrays ->
     list, maps -> dict, tags -> inner value (tag ignored). Enough for
     attestationObject and COSE keys (no indefinite lengths/floats)."""
+    if depth > CBOR_MAX_DEPTH:
+        raise ValueError('CBOR nested too deeply.')
     if pos >= len(data):
         raise ValueError('CBOR truncated.')
     initial = data[pos]
@@ -573,20 +804,20 @@ def cbor_decode_minimal(data, pos=0):
         n, pos = read_length(info, pos)
         out = []
         for _ in range(n):
-            val, pos = cbor_decode_minimal(data, pos)
+            val, pos = cbor_decode_minimal(data, pos, depth + 1)
             out.append(val)
         return out, pos
     if major == 5:
         n, pos = read_length(info, pos)
         out = {}
         for _ in range(n):
-            key, pos = cbor_decode_minimal(data, pos)
-            val, pos = cbor_decode_minimal(data, pos)
+            key, pos = cbor_decode_minimal(data, pos, depth + 1)
+            val, pos = cbor_decode_minimal(data, pos, depth + 1)
             out[key] = val
         return out, pos
     if major == 6:
         _tag, pos = read_length(info, pos)
-        return cbor_decode_minimal(data, pos)
+        return cbor_decode_minimal(data, pos, depth + 1)
     if major == 7:
         if info == 20:
             return False, pos
@@ -626,7 +857,7 @@ def parse_authenticator_data(auth_data):
 
 def cose_ec_p256_pubkey(cose_bytes):
     """Extract uncompressed 65B pubkey from COSE EC2 P-256 map. Requires alg -7."""
-    cose, pos = cbor_decode_minimal(bytes(cose_bytes), 0)
+    cose, _ = cbor_decode_minimal(bytes(cose_bytes), 0)
     if not isinstance(cose, dict):
         raise ValueError('Bad COSE key.')
     if cose.get(1) != 2 or cose.get(3) != -7 or cose.get(-1) != 1:
@@ -639,7 +870,6 @@ def cose_ec_p256_pubkey(cose_bytes):
 
 def verify_es256(uncompressed_pubkey, data, signature_der_or_raw):
     """Verify ES256. Accepts DER or raw 64B R||S signatures."""
-    from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
@@ -661,7 +891,11 @@ def verify_es256(uncompressed_pubkey, data, signature_der_or_raw):
 # Constant-time legacy password check against the stored verifier.
 def verify_password(password, salt, expected_hash, iterations):
     try:
-        candidate = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), bytes(salt), iterations)
+        # Bounded count: a DB-write attacker could inflate iterations to make
+        # login CPU-bound (DoS). (Lower-bound floor enforced client-side with
+        # dual-read fallback for historical rows.)
+        bounded = min(max(int(iterations or 0), 1), 2_000_000)
+        candidate = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), bytes(salt), bounded)
     except Exception:
         return False
     return hmac.compare_digest(candidate, bytes(expected_hash))
@@ -672,126 +906,117 @@ def init_db():
     conn = get_db()
     conn.execute(
         'CREATE TABLE IF NOT EXISTS users ('
-        'username TEXT PRIMARY KEY, pwd_salt BLOB NOT NULL, pwd_hash BLOB NOT NULL, '
-        'iterations INTEGER NOT NULL, enc_profile BLOB NOT NULL, created_at INTEGER NOT NULL)'
+        'username TEXT PRIMARY KEY, pwd_salt BYTEA NOT NULL, pwd_hash BYTEA NOT NULL, '
+        'iterations INTEGER NOT NULL, enc_profile BYTEA NOT NULL, created_at INTEGER NOT NULL)'
     )
     conn.execute(
         'CREATE TABLE IF NOT EXISTS sessions ('
         'token_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
         'expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, '
-        'last_seen INTEGER NOT NULL)'
+        'last_seen INTEGER NOT NULL DEFAULT 0)'
     )
-    # Migration for databases created before idle tracking existed.
-    cols = {row['name'] for row in conn.execute('PRAGMA table_info(sessions)')}
-    if 'last_seen' not in cols:
-        conn.execute('ALTER TABLE sessions ADD COLUMN last_seen INTEGER NOT NULL DEFAULT 0')
-        conn.execute('UPDATE sessions SET last_seen = created_at WHERE last_seen = 0')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS rate_hits ('
-        'bucket TEXT NOT NULL, ts REAL NOT NULL)'
+        'bucket TEXT NOT NULL, ts DOUBLE PRECISION NOT NULL)'
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_rate_hits ON rate_hits (bucket, ts)')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS user_notes ('
-        'username TEXT PRIMARY KEY, enc_notes BLOB NOT NULL, updated_at INTEGER NOT NULL)'
+        'username TEXT PRIMARY KEY, enc_notes BYTEA NOT NULL, updated_at INTEGER NOT NULL, '
+        'enc_blob BYTEA)'
     )
-    # Private Vault (user feature, separate password): verifier + wrapped vault
-    # key. Vault note contents never touch this table — they ride inside the
-    # user's E2EE notes blob, encrypted with the vault key.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS vault_meta ('
-        'username TEXT PRIMARY KEY, salt_auth BLOB NOT NULL, verifier BLOB NOT NULL, '
-        'salt_enc BLOB NOT NULL, enc_dek BLOB NOT NULL, created_at INTEGER NOT NULL)'
+        'username TEXT NOT NULL, vault_id INTEGER NOT NULL DEFAULT 1, '
+        'vault_name TEXT NOT NULL DEFAULT \'Vault\', '
+        'salt_auth BYTEA NOT NULL, verifier BYTEA NOT NULL, '
+        'salt_enc BYTEA NOT NULL, enc_dek BYTEA NOT NULL, created_at INTEGER NOT NULL, '
+        'PRIMARY KEY (username, vault_id))'
     )
-    # E2EE migration: wrapped-key auth columns plus the opaque notes blob.
-    # Legacy rows (NULL/empty new columns) keep working and transparently
-    # upgrade on their next password login.
-    user_cols = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
-    for col in ('salt_auth', 'salt_enc', 'auth_hash', 'enc_master_key', 'kdf', 'kdf_params'):
+    # Multi-vault migration (max 3 per user, shared password): older single-key
+    # tables carry one row per user with no vault_id/vault_name.
+    try:
+        vm_cols = _pg_columns(conn, 'vault_meta')
+        if 'vault_id' not in vm_cols:
+            conn.execute('ALTER TABLE vault_meta ADD COLUMN vault_id INTEGER NOT NULL DEFAULT 1')
+        if 'vault_name' not in vm_cols:
+            conn.execute('ALTER TABLE vault_meta ADD COLUMN vault_name TEXT NOT NULL DEFAULT \'Vault\'')
+        # Widen a legacy single-column primary key to (username, vault_id).
+        pk_cols = [row['column_name'] for row in conn.execute(
+            "SELECT kcu.column_name FROM information_schema.table_constraints tc"
+            " JOIN information_schema.key_column_usage kcu"
+            " ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema"
+            " WHERE tc.table_name = 'vault_meta' AND tc.constraint_type = 'PRIMARY KEY'"
+            " ORDER BY kcu.ordinal_position")]
+        if pk_cols == ['username']:
+            conn.execute('ALTER TABLE vault_meta DROP CONSTRAINT vault_meta_pkey')
+            conn.execute('ALTER TABLE vault_meta ADD PRIMARY KEY (username, vault_id)')
+    except Exception as error:
+        print(f'NOTIVE MIGRATION: vault multi-key skipped: {error}', flush=True)
+    # E2EE migration: add columns if missing.
+    user_cols = _pg_columns(conn, 'users')
+    for col, coltype in (('salt_auth', 'BYTEA'), ('salt_enc', 'BYTEA'), ('auth_hash', 'BYTEA'),
+                         ('enc_master_key', 'BYTEA'), ('kdf', 'TEXT'), ('kdf_params', 'TEXT'),
+                         ('auth_hash2', 'BYTEA')):
         if col not in user_cols:
-            conn.execute(f'ALTER TABLE users ADD COLUMN {col} {"TEXT" if col.startswith("kdf") else "BLOB"}')
+            conn.execute(f'ALTER TABLE users ADD COLUMN {col} {coltype}')
     # Backfill: E2EE-PBKDF2 rows (wrapped key present, no descriptor yet).
     for row in conn.execute("SELECT username, iterations FROM users WHERE enc_master_key IS NOT NULL AND (kdf IS NULL OR kdf = '')"):
-        conn.execute('UPDATE users SET kdf = ?, kdf_params = ? WHERE username = ?',
+        conn.execute('UPDATE users SET kdf = %s, kdf_params = %s WHERE username = %s',
                      ('pbkdf2', json.dumps({'i': row['iterations'] or PBKDF2_ITERATIONS}), row['username']))
-    notes_cols = {row['name'] for row in conn.execute('PRAGMA table_info(user_notes)')}
+    notes_cols = _pg_columns(conn, 'user_notes')
     if 'enc_blob' not in notes_cols:
-        conn.execute('ALTER TABLE user_notes ADD COLUMN enc_blob BLOB')
-    # Notes history (LWW fix): keep last 5 opaque blobs per user so a hijacked
-    # session overwrite can be rolled back. Pruned on every PUT.
+        conn.execute('ALTER TABLE user_notes ADD COLUMN enc_blob BYTEA')
     conn.execute(
         'CREATE TABLE IF NOT EXISTS user_notes_history ('
-        'id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, '
-        'enc_blob BLOB NOT NULL, updated_at INTEGER NOT NULL)'
+        'id SERIAL PRIMARY KEY, username TEXT NOT NULL, '
+        'enc_blob BYTEA NOT NULL, updated_at INTEGER NOT NULL)'
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_hist_user ON user_notes_history (username, id)')
-    # MFA TOTP (optional, non-breaking): secret encrypted with DB_KEY, confirmed
-    # flag so setup must be verified before login starts challenging.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS mfa_totp ('
-        'username TEXT PRIMARY KEY, enc_secret BLOB NOT NULL, '
+        'username TEXT PRIMARY KEY, enc_secret BYTEA NOT NULL, '
         'confirmed INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, '
         'last_used INTEGER NOT NULL DEFAULT 0)'
     )
-    # Short-lived MFA tickets issued after password-verifier passes but before
-    # TOTP passes. Ticket is SHA256 hash only; plaintext goes to client once.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS mfa_challenges ('
         'ticket_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
         'expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)'
     )
-    # Retired table (MFA-bypass codes, removed 2026-09): account recovery now
-    # clears MFA itself, so the second code system is unnecessary. Drop once
-    # if left over from an older database; nothing references it anymore.
+    # Clean up legacy table (replaced by email_recovery below). Safe to drop
+    # on every startup — no code references this table.
     conn.execute('DROP TABLE IF EXISTS recovery_codes')
-    # Email password-reset tokens (hashes only, 15-min expiry, single-use).
     conn.execute(
         'CREATE TABLE IF NOT EXISTS email_recovery ('
         'token_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
         'expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, used_at INTEGER)'
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_email_recovery_user ON email_recovery (username)')
-    # Password-loss recovery (E2EE-safe): client generates high-entropy codes,
-    # wraps the master key locally (Argon2 KEK + AES-GCM) and uploads ONLY
-    # {codeHash, salt, iv+data}. Server never sees codes or keys; lookup is by
-    # hash so even the lookup does not reveal the code.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS account_recovery ('
         'code_hash TEXT PRIMARY KEY, username TEXT NOT NULL, '
-        'salt BLOB NOT NULL, wrapped_key BLOB NOT NULL, '
+        'salt BYTEA NOT NULL, wrapped_key BYTEA NOT NULL, '
         'created_at INTEGER NOT NULL, used_at INTEGER)'
     )
     conn.execute('CREATE INDEX IF NOT EXISTS idx_acct_recovery_user ON account_recovery (username)')
-    # Passkeys (WebAuthn, option-1 login): public creds only. Private keys never
-    # leave the authenticator. Challenges short-lived, hashes stored.
     conn.execute(
         'CREATE TABLE IF NOT EXISTS passkey_creds ('
         'cred_id TEXT PRIMARY KEY, username TEXT NOT NULL, '
-        'pubkey BLOB NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0, '
-        'transports TEXT NOT NULL DEFAULT \'\', created_at INTEGER NOT NULL)'
+        'pubkey BYTEA NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0, '
+        'transports TEXT NOT NULL DEFAULT \'\', created_at INTEGER NOT NULL, '
+        'prf_wrap BYTEA)'
     )
-    # Migration for PRF passwordless unlock (nullable: older creds lack it and
-    # keep the password-unlock fallback).
-    cred_cols = {row['name'] for row in conn.execute('PRAGMA table_info(passkey_creds)')}
-    if 'prf_wrap' not in cred_cols:
-        conn.execute('ALTER TABLE passkey_creds ADD COLUMN prf_wrap BLOB')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_passkey_user ON passkey_creds (username)')
-    # PRF salt for passwordless unlock (one per user; each credential yields
-    # its own secret from it, so per-cred wraps stay independent).
     conn.execute(
         'CREATE TABLE IF NOT EXISTS passkey_prf ('
-        'username TEXT PRIMARY KEY, salt BLOB NOT NULL, created_at INTEGER NOT NULL)'
+        'username TEXT PRIMARY KEY, salt BYTEA NOT NULL, created_at INTEGER NOT NULL)'
     )
     conn.execute(
         'CREATE TABLE IF NOT EXISTS passkey_challenges ('
         'chash TEXT PRIMARY KEY, username TEXT NOT NULL, kind TEXT NOT NULL, '
         'expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)'
     )
-    # Pepper migration (toward OPAQUE, non-breaking): auth_hash2 =
-    # HMAC(DB_KEY, 'notely-auth-v1:' + auth_hash). Old rows have NULL and keep
-    # working via raw compare, then upgrade on next successful login.
-    if 'auth_hash2' not in user_cols:
-        conn.execute('ALTER TABLE users ADD COLUMN auth_hash2 BLOB')
     existing = {row['username'] for row in conn.execute('SELECT username FROM users')}
     for username, (first, last, subtitle) in BOOTSTRAP_PROFILES.items():
         if username in existing:
@@ -800,9 +1025,6 @@ def init_db():
         ok, msg = validate_password(password)
         if not ok:
             raise RuntimeError(f'Bootstrap password for {username!r} violates password policy: {msg}')
-        # Bootstrap accounts start fully E2EE under Argon2id: random master
-        # key wrapped under a password-derived KEK, plus a separate auth
-        # verifier. The password itself is never stored.
         master_key = secrets.token_bytes(32)
         salt_auth = secrets.token_bytes(16)
         salt_enc = secrets.token_bytes(16)
@@ -810,33 +1032,138 @@ def init_db():
         wrap_aesgcm = AESGCM(argon2id_raw(password, salt_enc))
         wrap_nonce = secrets.token_bytes(12)
         wrap_ct = wrap_aesgcm.encrypt(wrap_nonce, master_key, None)
+        try:
+            auth_hash2 = pepper_auth_hash(bytes(auth_hash))
+        except Exception:
+            auth_hash2 = None
         conn.execute(
             'INSERT INTO users (username, pwd_salt, pwd_hash, iterations, enc_profile, created_at,'
-            ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params)'
-            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params, auth_hash2)'
+            ' VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)',
             (
                 username,
                 b'', b'', 0,
-                encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': subtitle, 'email': ''}),
+                encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': subtitle, 'email': ''}, username),
                 int(time.time()),
-                salt_auth, salt_enc, auth_hash, wrap_nonce + wrap_ct,
-                'argon2id', json.dumps(ARGON2_DESCRIPTOR),
+                salt_auth, salt_enc, (None if auth_hash2 else auth_hash), wrap_nonce + wrap_ct,
+                'argon2id', json.dumps(ARGON2_DESCRIPTOR), auth_hash2,
             ),
         )
         if source == 'generated':
-            print(
-                f'NOTELY FIRST-RUN: generated password for {username!r}: {password} — '
-                'log in and change it immediately.',
-                flush=True,
-            )
+            if sys.stdout.isatty():
+                print(
+                    f'NOTIVE FIRST-RUN: generated password for {username!r}: {password} — '
+                    'log in and change it immediately.',
+                    flush=True,
+                )
+            else:
+                cred_path = os.path.join(BASE_DIR, '.bootstrap-credentials')
+                fd = os.open(cred_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                os.write(fd, (f'{username} {password}\n').encode('utf-8'))
+                os.close(fd)
+                print(
+                    f'NOTIVE FIRST-RUN: credentials for {username!r} written to '
+                    f'0600 file {cred_path} (stdout is redirected). Change the password on first login.',
+                    flush=True,
+                )
+    # Collaborative notes tables.
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS user_keys ('
+        'username TEXT PRIMARY KEY, pubkey BYTEA NOT NULL, enc_priv BYTEA NOT NULL, '
+        'algo TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, '
+        'sig_pubkey BYTEA, sig_enc_priv BYTEA)'
+    )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS collab_groups ('
+        'id SERIAL PRIMARY KEY, owner TEXT NOT NULL, name TEXT NOT NULL, '
+        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_meta BYTEA, '
+        'key_version INTEGER NOT NULL DEFAULT 1, rekey_needed INTEGER NOT NULL DEFAULT 0)'
+    )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS collab_members ('
+        'group_id INTEGER NOT NULL, username TEXT NOT NULL, wrapped_key BYTEA NOT NULL, '
+        'eph_pub BYTEA NOT NULL, wrap_iv BYTEA NOT NULL, added_at INTEGER NOT NULL, '
+        'accepted INTEGER NOT NULL DEFAULT 0, wrap_sig BYTEA, wrap_signer TEXT, '
+        'key_version INTEGER NOT NULL DEFAULT 1, '
+        'PRIMARY KEY (group_id, username))'
+    )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS collab_notes ('
+        'id SERIAL PRIMARY KEY, group_id INTEGER NOT NULL, owner TEXT NOT NULL, '
+        'created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, enc_state BYTEA, '
+        'enc_meta BYTEA, key_version INTEGER NOT NULL DEFAULT 1)'
+    )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS collab_updates ('
+        'id SERIAL PRIMARY KEY, note_id INTEGER NOT NULL, '
+        'payload BYTEA NOT NULL, created_at INTEGER NOT NULL, '
+        'key_version INTEGER NOT NULL DEFAULT 1)'
+    )
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_updates ON collab_updates (note_id, id)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_members_user ON collab_members (username)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_collab_notes_group ON collab_notes (group_id, id)')
     conn.commit()
     conn.close()
-    # Harden file perms: DB holds verifier material + opaque blobs. 0600 even
-    # if umask created it 0644.
+
+
+# --- Automatic DB backups (pg_dump on a daemon thread) ---
+
+def take_db_backup():
+    """Take a PostgreSQL backup using pg_dump. Returns the final path, or None on failure."""
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime())
+    final_path = os.path.join(BACKUP_DIR, f'notive-{stamp}.sql.gz')
     try:
-        os.chmod(DB_PATH, 0o600)
+        import subprocess, gzip
+        proc = subprocess.run(
+            ['pg_dump', '--dbname=' + PG_DSN, '--format=plain'],
+            capture_output=True, timeout=60,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.decode('utf-8', errors='replace'))
+        with gzip.open(final_path, 'wb') as f:
+            f.write(proc.stdout)
+    except Exception as error:
+        print(f'NOTIVE BACKUP: failed: {error}', flush=True)
+        try:
+            os.remove(final_path)
+        except OSError:
+            pass
+        return None
+    _prune_old_backups()
+    return final_path
+
+
+# Keep only the newest BACKUP_KEEP timestamped copies.
+def _prune_old_backups():
+    try:
+        names = sorted(n for n in os.listdir(BACKUP_DIR)
+                       if n.startswith('notive-') and (n.endswith('.sql.gz') or n.endswith('.db')))
     except OSError:
-        pass
+        return
+    for name in names[:-BACKUP_KEEP] if len(names) > BACKUP_KEEP else []:
+        try:
+            os.remove(os.path.join(BACKUP_DIR, name))
+        except OSError:
+            pass
+
+
+# Daemon loop: sleep first (a fresh start needs no backup of an unchanged DB),
+# then take one snapshot per interval and exit cleanly with the interpreter.
+# NOTIVE_BACKUP_INTERVAL_SECONDS=0 disables the thread entirely.
+def _backup_loop():
+    while True:
+        time.sleep(max(1, BACKUP_INTERVAL_SECONDS))
+        take_db_backup()
+
+
+def start_backup_thread():
+    if BACKUP_INTERVAL_SECONDS <= 0:
+        print('NOTIVE BACKUP: disabled (NOTIVE_BACKUP_INTERVAL_SECONDS=0).', flush=True)
+        return
+    threading.Thread(target=_backup_loop, name='notive-backup', daemon=True).start()
+    print(f'NOTIVE BACKUP: every {BACKUP_INTERVAL_SECONDS}s, keeping {BACKUP_KEEP} '
+          f'copies in {BACKUP_DIR}', flush=True)
 
 
 # --- DB-backed rate limiting (shared across processes/restarts) ---
@@ -864,6 +1191,40 @@ def rate_exceeded(conn, buckets, max_n, window):
         if count >= max_n:
             return True
     return False
+
+
+# Record failure hits under an exclusive write lock, re-checking the ceiling
+# inside the same transaction (pentest F-4: closes the check-then-act burst
+# race where N concurrent requests all pass the pre-read and then each burn
+# a hit). Once the ceiling is reached the event is dropped, not appended, so
+# the bounded account/IP budget stays bounded under any concurrency.
+def rate_fail_bounded(conn, buckets, max_n, window):
+    now = time.time()
+    try:
+        # Use a PostgreSQL advisory lock to serialize rate-limit writes.
+        # The lock key is derived from the first bucket name (stable, deterministic).
+        lock_key = int(hashlib.md5(buckets[0].encode()).hexdigest()[:8], 16) if buckets else 0
+        conn.execute('SELECT pg_advisory_lock(%s)', (lock_key,))
+    except Exception:
+        print(f'NOTIVE: advisory lock failed for {buckets!r}, proceeding without lock', flush=True)
+        lock_key = None
+    try:
+        _prune_rate_hits(conn, now, max(window, 3600))
+        if not rate_exceeded(conn, buckets, max_n, window):
+            for bucket in buckets:
+                conn.execute('INSERT INTO rate_hits (bucket, ts) VALUES (%s, %s)', (bucket, now))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        if lock_key is not None:
+            try:
+                conn.execute('SELECT pg_advisory_unlock(%s)', (lock_key,))
+            except Exception:
+                pass
 
 
 def recovery_fail_bucket(username):
@@ -914,44 +1275,55 @@ def ip_user_bucket(endpoint, username):
 # is present, and must carry JSON (or no body for logout). Blocks classic
 # cross-site form/fetch POSTs; SameSite=Lax remains as second layer.
 def csrf_check_failed():
-    """True when the request looks cross-site (reject with 403)."""
+    """True when the request looks cross-site (reject with 403).
+
+    Compares the FULL origin: scheme, host and effective port. Comparing only
+    the hostname let any other service on the same host (different port) or
+    scheme forge state-changing requests.
+    """
     try:
         if request.method not in ('POST', 'PUT', 'DELETE', 'PATCH'):
             return False
         if not request.path.startswith('/api/'):
             return False
+        # Body-type layer (as documented): state-changing /api requests must
+        # carry JSON (or have no body at all, e.g. logout). A classic
+        # cross-site <form> POST is form-encoded, and fetch()-based forgeries
+        # cannot legitimately send this origin's JSON either.
+        content_type = (request.content_type or '').split(';')[0].strip().lower()
+        if content_type and content_type != 'application/json' and content_type != 'application/json+structured':
+            return True
+        from urllib.parse import urlparse
+
+        def _parts(url):
+            try:
+                parsed = urlparse(url)
+                scheme = (parsed.scheme or '').lower()
+                host = (parsed.hostname or '').lower()
+                port = parsed.port
+                if port is None:
+                    port = 443 if scheme == 'https' else (80 if scheme == 'http' else None)
+                return scheme, host, port
+            except Exception:
+                return '', '', None
+
+        req_scheme, req_host, req_port = _parts(f'{request.scheme}://{request.host}')
+        if not req_host:
+            return True
         origin = request.headers.get('Origin')
         referer = request.headers.get('Referer')
-        host = request.host or ''
-        # Normalise: compare host (with port) case-insensitively.
-        def _host_of(url):
-            try:
-                from urllib.parse import urlparse
-                return (urlparse(url).hostname or '').lower(), urlparse(url).port
-            except Exception:
-                return '', None
         if origin:
-            oh, oport = _host_of(origin)
-            try:
-                rh = (request.host.split(':')[0] or '').lower()
-                rport = request.host.split(':')[1] if ':' in request.host else None
-                # Allow same host regardless of scheme/port mismatch behind proxies?
-                # Strict: hostname must match; port must match if Origin specifies one.
-                if oh != rh:
-                    return True
-            except Exception:
+            return _parts(origin) != (req_scheme, req_host, req_port)
+        if referer:
+            ref_scheme, ref_host, ref_port = _parts(referer)
+            if not ref_host:
                 return True
-        elif referer:
-            rh, _ = _host_of(referer)
-            try:
-                myhost = (request.host.split(':')[0] or '').lower()
-                if rh and rh != myhost:
-                    return True
-            except Exception:
-                return True
+            return (ref_scheme, ref_host, ref_port) != (req_scheme, req_host, req_port)
         return False
     except Exception:
-        return False
+        # Fail closed (OWASP A10): an unexpected error while evaluating a
+        # state-changing /api request must reject, not allow.
+        return True
 
 
 # JSON body as a dict, or {} for missing/unparseable/non-object payloads.
@@ -978,18 +1350,18 @@ def issue_session_token(conn, username, now):
 
 
 # Whether the session cookie carries the Secure flag: explicit
-# NOTELY_COOKIE_SECURE=1/0 always wins (default Secure ON, even for
+# NOTIVE_COOKIE_SECURE=1/0 always wins (default Secure ON, even for
 # loopback — modern browsers accept Secure on http://localhost as a secure
 # context; plain-HTTP LAN deployments must set up TLS).
 def session_cookie_secure():
-    env = os.environ.get('NOTELY_COOKIE_SECURE')
+    env = os.environ.get('NOTIVE_COOKIE_SECURE')
     if env is not None:
         return env == '1'
     return True
 
 
 # Set the HttpOnly __Host- SameSite=Lax session cookie (Secure always unless
-# NOTELY_COOKIE_SECURE=0). __Host- requires Secure + Path=/ + no Domain.
+# NOTIVE_COOKIE_SECURE=0). __Host- requires Secure + Path=/ + no Domain.
 def set_session_cookie(response, token):
     response.set_cookie(
         SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS,
@@ -1032,33 +1404,36 @@ def current_session_user():
         return None
     now = int(time.time())
     conn = get_db()
-    row = conn.execute(
-        'SELECT username, expires_at, created_at, last_seen FROM sessions WHERE token_hash = ?',
-        (digest,),
-    ).fetchone()
-    if row and row['expires_at'] > now and (now - (row['last_seen'] or 0)) <= SESSION_IDLE_SECONDS:
-        conn.execute('UPDATE sessions SET last_seen = ? WHERE token_hash = ?', (now, digest))
-        conn.commit()
-        user = conn.execute('SELECT username, enc_profile FROM users WHERE username = ?', (row['username'],)).fetchone()
-        conn.close()
-        if user:
-            try:
-                profile = decrypt_profile(user['enc_profile'])
-            except Exception:
-                return None
-            return {
-                'username': user['username'],
-                **profile,
-                '_token_digest': digest,
-                '_token_created': row['created_at'],
-                '_used_legacy': bool(used_legacy),
-            }
+    try:
+        row = conn.execute(
+            'SELECT username, expires_at, created_at, last_seen FROM sessions WHERE token_hash = ?',
+            (digest,),
+        ).fetchone()
+        if row and row['expires_at'] > now and (now - (row['last_seen'] or 0)) <= SESSION_IDLE_SECONDS:
+            conn.execute('UPDATE sessions SET last_seen = ? WHERE token_hash = ?', (now, digest))
+            conn.commit()
+            user = conn.execute('SELECT username, enc_profile FROM users WHERE username = ?', (row['username'],)).fetchone()
+            if user:
+                try:
+                    profile = decrypt_profile(user['enc_profile'], user['username'] if user else None)
+                except Exception:
+                    return None
+                request._notive_session_due_rotation = (
+                    int(row['created_at'] or 0) + SESSION_ROTATE_AFTER_SECONDS) <= int(time.time())
+                return {
+                    'username': user['username'],
+                    **profile,
+                    '_token_digest': digest,
+                    '_token_created': row['created_at'],
+                    '_used_legacy': bool(used_legacy),
+                }
+            return None
+        if row:
+            conn.execute('DELETE FROM sessions WHERE token_hash = ?', (digest,))
+            conn.commit()
         return None
-    if row:
-        conn.execute('DELETE FROM sessions WHERE token_hash = ?', (digest,))
-        conn.commit()
-    conn.close()
-    return None
+    finally:
+        conn.close()
 
 
 # Issue a fresh token for sessions older than 12h and retire the old one (rotation).
@@ -1073,6 +1448,79 @@ def rotate_session_if_due(conn, user, now):
     return token, digest
 
 
+# --- Security audit logging + alerting (OWASP A09) -------------------------
+# Structured JSONL of security-relevant events (auth outcomes, recovery, MFA,
+# CSRF rejects, rate-limit trips, unhandled errors). Written append-only; the
+# optional NOTIVE_ALERT_WEBHOOK receives a POST for events at or above
+# NOTIVE_ALERT_MIN_SEVERITY (default 'high'). Callers pass identifiers only —
+# never passwords, verifiers or key material.
+AUDIT_LOG_PATH = os.environ.get('NOTIVE_AUDIT_LOG', '/home/r3izu/Documents/audit/audit.log')
+AUDIT_ENABLED = os.environ.get('NOTIVE_AUDIT', '1').lower() != '0'
+ALERT_WEBHOOK = os.environ.get('NOTIVE_ALERT_WEBHOOK', '').strip()
+try:
+    from urllib.parse import urlparse as _awparse
+    _aw = _awparse(ALERT_WEBHOOK) if ALERT_WEBHOOK else None
+    if _aw is not None and _aw.scheme != 'https':
+        print(f'NOTIVE ALERT: NOTIVE_ALERT_WEBHOOK must be https:// (got {_aw.scheme or "none"!r}) — webhook disabled.', flush=True)
+        ALERT_WEBHOOK = ''
+except Exception:
+    ALERT_WEBHOOK = ''
+ALERT_MIN_SEVERITY = os.environ.get('NOTIVE_ALERT_MIN_SEVERITY', 'high').lower()
+_SEVERITY_RANK = {'info': 0, 'warning': 1, 'high': 2, 'critical': 3}
+AUDITED_ENDPOINTS = {
+    '/api/login', '/api/register', '/api/change-password', '/api/upgrade-kdf',
+    '/api/mfa/setup', '/api/mfa/confirm', '/api/mfa/disable', '/api/mfa/challenge',
+    '/api/passkey/register-begin', '/api/passkey/register-finish',
+    '/api/passkey/login-begin', '/api/passkey/login-finish', '/api/passkey/remove',
+    '/api/recovery/email/start', '/api/recovery/email/complete',
+    '/api/recovery/account/generate', '/api/recovery/account/lookup',
+    '/api/recovery/account/reset', '/api/account', '/api/account/email', '/api/logout',
+}
+
+
+def security_event(event, severity='info', **fields):
+    """Append one structured security event and optionally fire an alert.
+
+    Must never raise into request handling. Values are serialised defensively
+    and callers must not pass secrets."""
+    if not AUDIT_ENABLED:
+        return
+    try:
+        record = {'ts': int(time.time()), 'event': event, 'severity': severity}
+        try:
+            record['ip'] = request.remote_addr
+        except Exception:
+            pass
+        record.update({key: value for key, value in fields.items() if value is not None})
+        line = json.dumps(record, separators=(',', ':'), default=str)
+        try:
+            if not os.path.exists(AUDIT_LOG_PATH):
+                # Create 0600: the audit log holds usernames/IPs, not secrets.
+                try:
+                    os.close(os.open(AUDIT_LOG_PATH, os.O_CREAT | os.O_WRONLY, 0o600))
+                except Exception:
+                    pass
+            with open(AUDIT_LOG_PATH, 'a') as handle:
+                handle.write(line + '\n')
+        except Exception:
+            # A failed audit write must be observable somewhere.
+            try:
+                print(f'NOTIVE AUDIT WRITE FAILED: {event} ({severity})', file=sys.stderr, flush=True)
+            except Exception:
+                pass
+        if ALERT_WEBHOOK and _SEVERITY_RANK.get(severity, 0) >= _SEVERITY_RANK.get(ALERT_MIN_SEVERITY, 2):
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    ALERT_WEBHOOK, data=line.encode('utf-8'),
+                    headers={'Content-Type': 'application/json'})
+                urllib.request.urlopen(req, timeout=3)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 @app.route('/')
 def root():
     response = send_from_directory(BASE_DIR, 'index.html')
@@ -1084,7 +1532,18 @@ def root():
 
 @app.route('/<path:filename>')
 def public_files(filename):
-    if filename in PUBLIC_FILES:
+    # Vendored modules (argon2, qrcode, yjs + lib0) are served from vendor/.
+    # The front-end is split into ES modules under js/ (entry: js/app.js).
+    # Pentest M-16 (round-16, CRITICAL): `send_from_directory`'s safe_join
+    # normalizes `vendor/../notive.key` to `notive.key` (still inside BASE_DIR),
+    # so the prefix check passed while `..` collapsed the path to the CWD root —
+    # leaking notive.key (32-byte DB key), server.py, notive.db. Fix: reject
+    # any path whose segments contain '..' at all (string match on the path
+    # AND on the URL-decoded wire form — they are pre-decoded by Flask).
+    parts = filename.replace('\\', '/').split('/')
+    if '..' in parts:
+        return jsonify({'error': 'Not found'}), 404
+    if filename in PUBLIC_FILES or filename.startswith('vendor/') or filename.startswith('js/'):
         response = send_from_directory(BASE_DIR, filename)
         response.cache_control.no_store = True
         return response
@@ -1099,8 +1558,9 @@ def security_headers(response):
     # Server banner hidden via WSGIRequestHandler override in __main__
     # (gunicorn emits unversioned 'gunicorn' natively). Do NOT set here:
     # Werkzeug would then send two Server headers (duplicate).
-    # HSTS always (browsers ignore over HTTP; enforced over HTTPS).
-    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    # HSTS always (browsers ignore over HTTP; enforced over HTTPS). Two years,
+    # matching current Mozilla TLSRef guidance.
+    response.headers['Strict-Transport-Security'] = 'max-age=63072000; includeSubDomains'
     response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=(), payment=()'
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
@@ -1114,11 +1574,18 @@ def security_headers(response):
         # wasm-unsafe-eval: required to compile the vendored Argon2 WASM
         # module (strictly narrower than unsafe-eval: JS eval stays blocked).
         "script-src 'self' 'wasm-unsafe-eval'; "
+        # unsafe-inline needed: CSP blocks event handlers/dom styles from the
+        # dynamically-built strip/invite rows (element.style CSP-escaped),
+        # and meta CSP now matches this value.
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "img-src 'self' https: data:; "
-        "font-src 'self' https://fonts.gstatic.com; "
+        "font-src 'self'; "
         "connect-src 'self'; "
         "frame-ancestors 'self'; "
+        "frame-src 'none'; "
+        "worker-src 'self'; "
+        "manifest-src 'self'; "
+        "media-src 'none'; "
         "base-uri 'self'; "
         "form-action 'self'; "
         "object-src 'none'; "
@@ -1127,9 +1594,59 @@ def security_headers(response):
     return response
 
 
+@app.after_request
+def maybe_rotate_session(response):
+    # Central rotation: any authorized /api response whose session is due rotates
+    # its cookie on that response (not only /api/me polls).
+    due = getattr(request, '_notive_session_due_rotation', None)
+    if not due or not request.path.startswith('/api/') or request.method not in ('GET', 'POST', 'PUT', 'DELETE'):
+        return response
+    if response.status_code >= 400:
+        return response
+    user = current_session_user()
+    if not user:
+        request._notive_session_due_rotation = None
+        return response
+    conn = get_db()
+    try:
+        token, digest = rotate_session_if_due(conn, user, int(time.time()))
+    finally:
+        conn.close()
+    if token:
+        set_session_cookie(response, token)
+    request._notive_session_due_rotation = None
+    return response
+
+
+@app.after_request
+def audit_trail(response):
+    """Audit auth/security endpoint outcomes (OWASP A09). Username is read from
+    the cached JSON body when present; the body is never re-parsed twice."""
+    try:
+        if request.path in AUDITED_ENDPOINTS:
+            severity = 'info' if response.status_code < 400 else 'warning'
+            event = 'auth.' + request.path[len('/api/'):].replace('/', '.')
+            username = None
+            try:
+                payload = request.get_json(silent=True)
+                if isinstance(payload, dict):
+                    username = payload.get('username')
+            except Exception:
+                username = None
+            security_event(event, severity=severity, status=response.status_code,
+                           method=request.method, username=username)
+        elif request.path.startswith('/api/') and response.status_code == 429:
+            security_event('rate_limit.blocked', severity='warning', path=request.path)
+    except Exception:
+        pass
+    return response
+
+
 @app.before_request
 def csrf_protect():
     if csrf_check_failed():
+        security_event('csrf.rejected', severity='warning',
+                       method=request.method, path=request.path)
         return jsonify({'error': 'Cross-site request rejected.'}), 403
 
 
@@ -1148,6 +1665,20 @@ def request_too_large(error):
     return jsonify({'error': 'Request too large.'}), 413
 
 
+@app.errorhandler(Exception)
+def unhandled_exception(error):
+    """Log unexpected exceptions (A09/A10) and never leak internals.
+
+    HTTPExceptions (404/405/413/etc.) are re-dispatched to their own handlers;
+    everything else becomes a generic 500 with an audit event."""
+    from werkzeug.exceptions import HTTPException
+    if isinstance(error, HTTPException):
+        return error
+    security_event('error.unhandled', severity='high', path=request.path,
+                   method=request.method, error=type(error).__name__)
+    return jsonify({'error': 'Internal server error.'}), 500
+
+
 # NOTE: unknown usernames get per-name dummy salts from dummy_kdf_salt_for()
 # (defined near the top with the other KDF helpers). There is deliberately no
 # global dummy constant anymore: one shared value let attackers enumerate
@@ -1161,6 +1692,17 @@ def api_kdf_params():
     E2EE accounts get their real salts; legacy and unknown names get an
     identical shape with dummy values so callers cannot distinguish them.
     """
+    # Pentest F-5: legacy (pre-E2EE) accounts are still structurally
+    # distinguishable here (the legacy shape is needed so their client sends
+    # the password for transparent upgrade on next login). Blunt mass
+    # enumeration with a generous per-IP budget — real logins fetch this once
+    # per attempt, so 120/15min is far above human need.
+    conn0 = get_db()
+    if rate_exceeded(conn0, [ip_bucket('kdfparams')], 120, 900):
+        conn0.close()
+        return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
+    rate_hit(conn0, ip_bucket('kdfparams'))
+    conn0.close()
     username = str(request.args.get('username', '')).strip()
     conn = get_db()
     row = None
@@ -1227,18 +1769,22 @@ def upgrade_legacy_account(conn, username, password):
     wrap_aesgcm = AESGCM(argon2id_raw(password, salt_enc))
     wrap_nonce = secrets.token_bytes(12)
     wrap_ct = wrap_aesgcm.encrypt(wrap_nonce, master_key, None)
+    try:
+        auth_hash2 = pepper_auth_hash(bytes(auth_hash))
+    except Exception:
+        auth_hash2 = None
     conn.execute(
         'UPDATE users SET pwd_salt = ?, pwd_hash = ?, iterations = ?,'
         ' salt_auth = ?, salt_enc = ?, auth_hash = ?, enc_master_key = ?,'
-        " kdf = 'argon2id', kdf_params = ?"
+        " kdf = 'argon2id', kdf_params = ?, auth_hash2 = ?"
         ' WHERE username = ?',
-        (b'', b'', 0, salt_auth, salt_enc, auth_hash,
-         wrap_nonce + wrap_ct, json.dumps(ARGON2_DESCRIPTOR), username),
+        (b'', b'', 0, salt_auth, salt_enc, (None if auth_hash2 else auth_hash),
+         wrap_nonce + wrap_ct, json.dumps(ARGON2_DESCRIPTOR), auth_hash2, username),
     )
     notes_row = conn.execute('SELECT enc_notes FROM user_notes WHERE username = ?', (username,)).fetchone()
     if notes_row and notes_row['enc_notes']:
         try:
-            plaintext_notes = decrypt_notes(bytes(notes_row['enc_notes']))
+            plaintext_notes = decrypt_notes(bytes(notes_row['enc_notes']), username)
         except Exception:
             plaintext_notes = []
         if not isinstance(plaintext_notes, list):
@@ -1282,7 +1828,7 @@ def api_login():
     if not validate_username(username):
         # Dummy work to keep timing uniform for invalid input.
         hmac.compare_digest(_DUMMY_HASH, _DUMMY_HASH)
-        rate_hit(conn, ip_bucket('login'))
+        rate_fail_bounded(conn, [ip_bucket('login')], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
         conn.close()
         return jsonify({'error': 'Incorrect username or password.'}), 401
     user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
@@ -1300,8 +1846,7 @@ def api_login():
             # Burn equal PBKDF2 work so E2EE accounts are not distinguishable
             # from legacy/unknown ones by response timing.
             hashlib.pbkdf2_hmac('sha256', secrets.token_bytes(16), _DUMMY_SALT, PBKDF2_ITERATIONS)
-            rate_hit(conn, ip_bucket('login'))
-            rate_hit(conn, user_bucket)
+            rate_fail_bounded(conn, [ip_bucket('login'), user_bucket], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
             conn.close()
             return jsonify({'error': 'Incorrect username or password.'}), 401
         ok = verify_auth_hash(candidate, user)
@@ -1309,14 +1854,14 @@ def api_login():
             # Burn equal PBKDF2 work so a wrong verifier on a real account
             # costs the same as an unknown-user attempt (timing-oracle fix).
             hashlib.pbkdf2_hmac('sha256', secrets.token_bytes(16), _DUMMY_SALT, PBKDF2_ITERATIONS)
-            rate_hit(conn, ip_bucket('login'))
-            rate_hit(conn, user_bucket)
+            rate_fail_bounded(conn, [ip_bucket('login'), user_bucket], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
             conn.close()
             return jsonify({'error': 'Incorrect username or password.'}), 401
-        # Non-breaking pepper upgrade: raw -> peppered on successful login.
+        # Non-breaking pepper upgrade: raw -> peppered on successful login, then
+        # drop the raw verifier (M-4: no replayable bearer token at rest).
         try:
             if ok == 'raw':
-                conn.execute('UPDATE users SET auth_hash2 = ? WHERE username = ?',
+                conn.execute('UPDATE users SET auth_hash2 = ?, auth_hash = NULL WHERE username = ?',
                              (pepper_auth_hash(bytes(candidate)), username))
         except Exception:
             pass
@@ -1332,7 +1877,7 @@ def api_login():
         if mfa_on:
             ticket = issue_mfa_ticket(conn, username)
             try:
-                profile = decrypt_profile(user['enc_profile'])
+                profile = decrypt_profile(user['enc_profile'], user['username'] if user else None)
             except Exception:
                 conn.close()
                 return jsonify({'error': 'Login failed.'}), 500
@@ -1347,7 +1892,7 @@ def api_login():
                 'encMasterKey': enc_master_key_parts(user['enc_master_key']),
             }), 202
         try:
-            profile = decrypt_profile(user['enc_profile'])
+            profile = decrypt_profile(user['enc_profile'], user['username'] if user else None)
         except Exception:
             conn.close()
             return jsonify({'error': 'Login failed.'}), 500
@@ -1367,7 +1912,7 @@ def api_login():
         # Burn equal PBKDF2 work so unknown/legacy names cost the same as a
         # wrong E2EE verifier (timing-oracle fix).
         hashlib.pbkdf2_hmac('sha256', secrets.token_bytes(16), _DUMMY_SALT, PBKDF2_ITERATIONS)
-        rate_hit(conn, ip_bucket('login'))
+        rate_fail_bounded(conn, [ip_bucket('login')], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
         conn.close()
         return jsonify({'error': 'Incorrect username or password.'}), 401
     if user and not is_e2ee_account(user):
@@ -1377,19 +1922,18 @@ def api_login():
         # Unencodable passwords (e.g. lone surrogates) fail closed too
         # instead of escaping as a 500.
         try:
-            dummy = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), _DUMMY_SALT, PBKDF2_ITERATIONS)
+            hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), _DUMMY_SALT, PBKDF2_ITERATIONS)
         except Exception:
-            dummy = _DUMMY_HASH
-        ok = hmac.compare_digest(dummy, _DUMMY_HASH) and False
+            pass
+        ok = False
     if not ok:
-        rate_hit(conn, ip_bucket('login'))
-        rate_hit(conn, user_bucket)
+        rate_fail_bounded(conn, [ip_bucket('login'), user_bucket], LOGIN_MAX_FAILURES, LOGIN_WINDOW_SECONDS)
         conn.close()
         return jsonify({'error': 'Incorrect username or password.'}), 401
     # Legacy account with a correct password: transparently upgrade to E2EE.
     bundle = upgrade_legacy_account(conn, username, password)
     try:
-        profile = decrypt_profile(user['enc_profile'])
+        profile = decrypt_profile(user['enc_profile'], user['username'] if user else None)
     except Exception:
         conn.close()
         return jsonify({'error': 'Login failed.'}), 500
@@ -1445,11 +1989,11 @@ def api_register():
         conn.close()
         return jsonify({'error': 'First and last name must be 1-40 letters (spaces, hyphens, apostrophes OK).'}), 400
     # E2EE: server never sees the password, but it can still screen the
-    # verifier against a tiny weak-password dictionary under the provided
-    # salt (see is_weak_verifier). Strong passwords learn nothing; weak ones
-    # are rejected with the same 400 as other policy failures. Client-side
-    # passwordPolicyCheck remains the primary gate.
-    if is_weak_verifier(auth_hash, salt_auth):
+    # verifier against the bounded weak-password list plus guesses derived from
+    # the account's own identifiers (see is_weak_verifier). Strong passwords
+    # learn nothing; weak ones are rejected with the same 400 as other policy
+    # failures. Client-side passwordPolicyCheck remains the primary gate.
+    if is_weak_verifier(auth_hash, salt_auth, identity_password_candidates(username, email, first, last)):
         rate_hit(conn, ip_bucket('register'))
         conn.close()
         return jsonify({'error': 'Password too weak: choose a longer, less common password.'}), 400
@@ -1471,17 +2015,31 @@ def api_register():
         auth_hash2 = pepper_auth_hash(bytes(auth_hash))
     except Exception:
         auth_hash2 = None
-    conn.execute(
-        'INSERT INTO users (username, pwd_salt, pwd_hash, iterations, enc_profile, created_at,'
-        ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params, auth_hash2)'
-        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        (username, b'', b'', 0,
-         encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': 'Personal space', 'email': email}),
-         int(time.time()), salt_auth, salt_enc, auth_hash, wrap_iv + wrap_ct,
-         'argon2id', json.dumps(ARGON2_DESCRIPTOR), auth_hash2),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            'INSERT INTO users (username, pwd_salt, pwd_hash, iterations, enc_profile, created_at,'
+            ' salt_auth, salt_enc, auth_hash, enc_master_key, kdf, kdf_params, auth_hash2)'
+            ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (username, b'', b'', 0,
+             encrypt_profile({'firstName': first, 'lastName': last, 'subtitle': 'Notive User', 'email': email}, username),
+             int(time.time()), salt_auth, salt_enc, (None if auth_hash2 else auth_hash), wrap_iv + wrap_ct,
+             'argon2id', json.dumps(ARGON2_DESCRIPTOR), auth_hash2),
+        )
+        conn.commit()
+    except psycopg2.IntegrityError:
+        # Concurrent registration of the same username: answer exactly like the
+        # pre-check path (uniform 202) instead of a 500, and never leak the
+        # connection/lock.
+        conn.close()
+        return jsonify({
+            'ok': True,
+            'message': 'If the username is available, the account was created. You can now log in.',
+        }), 202
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
     return jsonify({
         'ok': True,
         'message': 'If the username is available, the account was created. You can now log in.',
@@ -1525,7 +2083,7 @@ def api_change_password():
             rate_hit(conn, 'pwchange:' + user['username'].lower())
             conn.close()
             return jsonify({'error': 'Current password is incorrect.'}), 401
-        if is_weak_verifier(new_auth, new_salt_auth):
+        if is_weak_verifier(new_auth, new_salt_auth, identity_password_candidates(user['username'])):
             conn.close()
             return jsonify({'error': 'New password too weak: choose a longer, less common password.'}), 400
         try:
@@ -1536,7 +2094,7 @@ def api_change_password():
             'UPDATE users SET salt_auth = ?, salt_enc = ?, auth_hash = ?, enc_master_key = ?,'
             " kdf = 'argon2id', kdf_params = ?, auth_hash2 = ?"
             ' WHERE username = ?',
-            (new_salt_auth, new_salt_enc, new_auth, new_wrap_iv + new_wrap_ct,
+            (new_salt_auth, new_salt_enc, (None if new_hash2 else new_auth), new_wrap_iv + new_wrap_ct,
              json.dumps(ARGON2_DESCRIPTOR), new_hash2, user['username']),
         )
     else:
@@ -1620,7 +2178,7 @@ def api_upgrade_kdf():
         'UPDATE users SET salt_auth = ?, salt_enc = ?, auth_hash = ?, enc_master_key = ?,'
         " kdf = 'argon2id', kdf_params = ?, auth_hash2 = ?"
         ' WHERE username = ?',
-        (new_salt_auth, new_salt_enc, new_auth, new_wrap_iv + new_wrap_ct,
+        (new_salt_auth, new_salt_enc, (None if up_hash2 else new_auth), new_wrap_iv + new_wrap_ct,
          json.dumps(ARGON2_DESCRIPTOR), up_hash2, user['username']),
     )
     conn.commit()
@@ -1730,7 +2288,7 @@ def api_get_notes():
     if not legacy:
         return jsonify({'notes': [], 'updated_at': row['updated_at']})
     try:
-        notes = decrypt_notes(legacy)
+        notes = decrypt_notes(legacy, user['username'])
     except Exception:
         return jsonify({'error': 'Notes undecodable.'}), 500
     if not isinstance(notes, list):
@@ -1764,16 +2322,15 @@ def api_put_notes():
         conn.close()
         return jsonify({'error': 'Missing baseVersion — reload and retry.',
                         'updated_at': int(cur_version or 0)}), 400
-    if base_version is not None:
-        try:
-            if int(base_version) != int(cur_version or 0):
-                conn.close()
-                return jsonify({'error': 'Notes changed on server — reload and retry.',
-                                'updated_at': int(cur_version or 0)}), 409
-        except (ValueError, TypeError):
+    try:
+        if int(base_version) != int(cur_version or 0):
             conn.close()
-            return jsonify({'error': 'Invalid baseVersion.'}), 400
-    row = conn.execute('SELECT salt_auth, auth_hash, salt_enc, enc_master_key FROM users WHERE username = ?',
+            return jsonify({'error': 'Notes changed on server — reload and retry.',
+                            'updated_at': int(cur_version or 0)}), 409
+    except (ValueError, TypeError):
+        conn.close()
+        return jsonify({'error': 'Invalid baseVersion.'}), 400
+    row = conn.execute('SELECT salt_auth, auth_hash, auth_hash2, salt_enc, enc_master_key FROM users WHERE username = ?',
                        (user['username'],)).fetchone()
     if row and is_e2ee_account(row):
         # E2EE account: the body is opaque ciphertext. Only size/format is
@@ -1836,7 +2393,7 @@ def api_put_notes():
         'INSERT INTO user_notes (username, enc_notes, updated_at, enc_blob) VALUES (?, ?, ?, ?)'
         ' ON CONFLICT(username) DO UPDATE SET enc_notes = excluded.enc_notes,'
         ' updated_at = excluded.updated_at, enc_blob = excluded.enc_blob',
-        (user['username'], encrypt_notes(cleaned), now, b''),
+        (user['username'], encrypt_notes(cleaned, user['username']), now, b''),
     )
     rate_hit(conn, 'notes:' + user['username'].lower())
     conn.commit()
@@ -1877,9 +2434,26 @@ def vault_proof_ok(conn, username, data, vault_verifier):
     return False
 
 
+VAULT_MAX_PER_USER = 3
+
+
+def _vault_row_payload(row):
+    return {
+        'id': row['vault_id'],
+        'name': row['vault_name'] or 'Vault',
+        'saltAuth': base64.b64encode(bytes(row['salt_auth'])).decode('ascii'),
+        'verifier': base64.b64encode(bytes(row['verifier'])).decode('ascii'),
+        'saltEnc': base64.b64encode(bytes(row['salt_enc'])).decode('ascii'),
+        'encDek': {
+            'iv': base64.b64encode(bytes(row['enc_dek'])[:12]).decode('ascii'),
+            'data': base64.b64encode(bytes(row['enc_dek'])[12:]).decode('ascii'),
+        },
+    }
+
+
 @app.route('/api/vault-meta', methods=['GET'])
 def api_vault_meta_get():
-    """Return the vault verifier material (salts + wrapped key) for unlocking.
+    """Return every vault's verifier material (salts + wrapped key) for unlocking.
     Verification itself happens client-side, so unlocking costs the server
     nothing and reveals nothing beyond what the session already proves.
     Rate-limited to slow offline brute-force against the vault password."""
@@ -1896,30 +2470,24 @@ def api_vault_meta_get():
         return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
     rate_hit(conn, ip_bucket('vault'))
     rate_hit(conn, 'vault:' + user['username'].lower())
-    row = conn.execute('SELECT salt_auth, verifier, salt_enc, enc_dek FROM vault_meta WHERE username = ?',
-                       (user['username'],)).fetchone()
+    rows = conn.execute('SELECT vault_id, vault_name, salt_auth, verifier, salt_enc, enc_dek'
+                        ' FROM vault_meta WHERE username = ? ORDER BY vault_id',
+                        (user['username'],)).fetchall()
     conn.close()
-    if not row:
-        return jsonify({'exists': False})
-    return jsonify({
-        'exists': True,
-        'saltAuth': base64.b64encode(bytes(row['salt_auth'])).decode('ascii'),
-        'verifier': base64.b64encode(bytes(row['verifier'])).decode('ascii'),
-        'saltEnc': base64.b64encode(bytes(row['salt_enc'])).decode('ascii'),
-        'encDek': {
-            'iv': base64.b64encode(bytes(row['enc_dek'])[:12]).decode('ascii'),
-            'data': base64.b64encode(bytes(row['enc_dek'])[12:]).decode('ascii'),
-        },
-    })
+    if not rows:
+        return jsonify({'exists': False, 'vaults': []})
+    return jsonify({'exists': True, 'vaults': [_vault_row_payload(row) for row in rows]})
 
 
 @app.route('/api/vault-meta', methods=['POST'])
 def api_vault_meta_set():
-    """Create (or re-create after a reset) the vault verifier + wrapped key.
-    Sizes are strictly validated; the password itself never arrives.
-    Overwrite requires proof: currentVaultAuth (old vault verifier) OR
-    currentAccountAuth (login verifier) so a stolen cookie alone cannot
-    destroy/replace the vault. Initial creation needs no proof."""
+    """Create vaults (up to VAULT_MAX_PER_USER sharing one password).
+    First vault: full verifier material, no proof needed (weak-screened).
+    Additional vaults: the client reuses the existing salts and proves the
+    shared password (currentVaultAuth) or the login (currentAccountAuth);
+    only a fresh wrapped DEK is stored — salts/verifier are copied from vault 1
+    so the password stays single. Overwriting vault 1 keeps the old proof rule.
+    Sizes are strictly validated; the password itself never arrives."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
@@ -1929,71 +2497,154 @@ def api_vault_meta_set():
         return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
     data = request.get_json(silent=True) or {}
     try:
-        verifier = b64decode_strict(data.get('verifier'), 32)
-        salt_auth = b64decode_strict(data.get('saltAuth'), 16)
-        salt_enc = b64decode_strict(data.get('saltEnc'), 16)
         wrap = data.get('encDek') or {}
         wrap_iv = b64decode_strict(wrap.get('iv'), 12)
         wrap_ct = b64decode_strict(wrap.get('data'), 48)
     except (ValueError, AttributeError):
         conn.close()
         return jsonify({'error': 'Invalid vault payload.'}), 400
-    # Server-side weak-password screen for the vault verifier. The vault
-    # password never reaches the server, but a trivially weak one can be
-    # rejected here (same tiny-dictionary check as account registration).
-    if is_weak_vault_verifier(verifier, salt_auth):
-        rate_hit(conn, ip_bucket('vault'))
-        rate_hit(conn, 'vault:' + user['username'].lower())
-        conn.close()
-        return jsonify({'error': 'Vault password too weak: choose a longer, less common password.'}), 400
-    existing = conn.execute('SELECT verifier FROM vault_meta WHERE username = ?',
-                            (user['username'],)).fetchone()
-    if existing and not vault_proof_ok(conn, user['username'], data, existing['verifier']):
-        rate_hit(conn, ip_bucket('vault'))
-        rate_hit(conn, 'vault:' + user['username'].lower())
-        conn.close()
-        return jsonify({'error': 'Vault overwrite requires current vault or account password proof.'}), 401
+    existing = conn.execute('SELECT vault_id, verifier, salt_auth, salt_enc FROM vault_meta'
+                            ' WHERE username = ? ORDER BY vault_id',
+                            (user['username'],)).fetchall()
     now = int(time.time())
+    if not existing:
+        # First vault: full verifier material required.
+        try:
+            verifier = b64decode_strict(data.get('verifier'), 32)
+            salt_auth = b64decode_strict(data.get('saltAuth'), 16)
+            salt_enc = b64decode_strict(data.get('saltEnc'), 16)
+        except (ValueError, AttributeError):
+            conn.close()
+            return jsonify({'error': 'Invalid vault payload.'}), 400
+        # Server-side weak-password screen for the vault verifier. The vault
+        # password never reaches the server, but a trivially weak one can be
+        # rejected here (same tiny-dictionary check as account registration).
+        if is_weak_vault_verifier(verifier, salt_auth):
+            rate_hit(conn, ip_bucket('vault'))
+            rate_hit(conn, 'vault:' + user['username'].lower())
+            conn.close()
+            return jsonify({'error': 'Vault password too weak: choose a longer, less common password.'}), 400
+        name = str(data.get('name') or 'Vault').strip()[:40] or 'Vault'
+        conn.execute(
+            'INSERT INTO vault_meta (username, vault_id, vault_name, salt_auth, verifier, salt_enc, enc_dek, created_at)'
+            ' VALUES (?, 1, ?, ?, ?, ?, ?, ?)',
+            (user['username'], name, salt_auth, verifier, salt_enc, wrap_iv + wrap_ct, now),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'id': 1})
+    # Additional vault (shared password): proof required, max enforced.
+    if len(existing) >= VAULT_MAX_PER_USER:
+        conn.close()
+        return jsonify({'error': f'Maximum of {VAULT_MAX_PER_USER} vaults.'}), 409
+    if not vault_proof_ok(conn, user['username'], data, existing[0]['verifier']):
+        rate_hit(conn, ip_bucket('vault'))
+        rate_hit(conn, 'vault:' + user['username'].lower())
+        conn.close()
+        return jsonify({'error': 'Vault creation requires current vault or account password proof.'}), 401
+    # Pentest F-53: belt-and-braces — since vault-1's verifier/salts are
+    # copied verbatim into additional vaults, the additional-vault password
+    # IS the shared vetted one. Re-screening here would only add cost for
+    # zero benefit (the verifier is the same). This comment documents the
+    # design decision so future maintainers know the screen IS omitted
+    # deliberately on additional vaults because the shared verifier was
+    # weak-screened at vault-1 creation time.
+    first = existing[0]
+    new_id = max(int(row['vault_id']) for row in existing) + 1
     conn.execute(
-        'INSERT INTO vault_meta (username, salt_auth, verifier, salt_enc, enc_dek, created_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?)'
-        ' ON CONFLICT(username) DO UPDATE SET salt_auth = excluded.salt_auth,'
-        ' verifier = excluded.verifier, salt_enc = excluded.salt_enc,'
-        ' enc_dek = excluded.enc_dek, created_at = excluded.created_at',
-        (user['username'], salt_auth, verifier, salt_enc, wrap_iv + wrap_ct, now),
+        'INSERT INTO vault_meta (username, vault_id, vault_name, salt_auth, verifier, salt_enc, enc_dek, created_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        (user['username'], new_id, name,
+         bytes(first['salt_auth']), bytes(first['verifier']), bytes(first['salt_enc']),
+         wrap_iv + wrap_ct, now),
     )
     conn.commit()
     conn.close()
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'id': new_id})
 
 
 @app.route('/api/vault-meta', methods=['DELETE'])
 def api_vault_meta_delete():
-    """Reset the vault: drops the verifier so contents become unreadable.
-    Requires current vault OR account password proof (stolen-cookie DoS fix).
-    Forgot-password reset uses currentAccountAuth + explicit confirm."""
+    """Reset vaults: full reset AND single-vault delete both require password
+    proof (F-52 restores the F-33 posture: stolen cookie never wipes a vault)."""
     user = current_session_user()
     if not user:
         return jsonify({'error': 'Not signed in.'}), 401
     conn = get_db()
-    existing = conn.execute('SELECT verifier FROM vault_meta WHERE username = ?',
-                            (user['username'],)).fetchone()
+    if rate_exceeded(conn, [ip_bucket('vault'), 'vault:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
+        conn.close()
+        return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
+    existing = conn.execute('SELECT vault_id, verifier FROM vault_meta WHERE username = ? ORDER BY vault_id',
+                            (user['username'],)).fetchall()
     if not existing:
         conn.close()
         return jsonify({'ok': True})
     data = request.get_json(silent=True) or {}
-    if not vault_proof_ok(conn, user['username'], data, existing['verifier']):
+    try:
+        vault_id = int(data.get('vaultId')) if data.get('vaultId') is not None else None
+    except (TypeError, ValueError):
+        vault_id = None
+    # Pentest F-52 (round-13 remediation): ALL vault deletions now require
+    # password proof — the previous session-only single-vault-delete allowed
+    # a stolen cookie to silently wipe one vault. Proof uses the shared
+    # verifier (inherited across vaults, so any one will match).
+    proof_target = None
+    for row in existing:
+        if vault_id is None or int(row['vault_id']) == vault_id:
+            proof_target = row['verifier']
+            break
+    if proof_target is None:
+        proof_target = existing[0]['verifier']
+    if not vault_proof_ok(conn, user['username'], data, proof_target):
         rate_hit(conn, ip_bucket('vault'))
         rate_hit(conn, 'vault:' + user['username'].lower())
         conn.close()
-        return jsonify({'error': 'Vault reset requires current vault or account password proof.'}), 401
-    conn.execute('DELETE FROM vault_meta WHERE username = ?', (user['username'],))
+        return jsonify({'error': 'Vault deletion requires current vault or account password proof.'}), 401
+    rate_hit(conn, ip_bucket('vault'))
+    rate_hit(conn, 'vault:' + user['username'].lower())
+    if vault_id is not None:
+        conn.execute('DELETE FROM vault_meta WHERE username = ? AND vault_id = ?',
+                     (user['username'], vault_id))
+    else:
+        conn.execute('DELETE FROM vault_meta WHERE username = ?', (user['username'],))
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
 
 
-@app.route('/api/me')
+@app.route('/api/vault-meta', methods=['PATCH'])
+def api_vault_meta_rename():
+    """Rename a vault. Requires the vault ID and a new name (1-40 chars).
+    No password proof needed — the session itself is sufficient."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    if rate_exceeded(conn, [ip_bucket('vault'), 'vault:' + user['username'].lower()], CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS):
+        conn.close()
+        return jsonify({'error': 'Too many attempts — try again in a few minutes.'}), 429
+    data = request.get_json(silent=True) or {}
+    try:
+        vault_id = int(data.get('vaultId'))
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({'error': 'Invalid vault ID.'}), 400
+    name = str(data.get('name') or '').strip()[:40]
+    if not name:
+        conn.close()
+        return jsonify({'error': 'Vault name cannot be empty.'}), 400
+    existing = conn.execute('SELECT vault_id FROM vault_meta WHERE username = ? AND vault_id = ?',
+                            (user['username'], vault_id)).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({'error': 'Vault not found.'}), 404
+    rate_hit(conn, ip_bucket('vault'))
+    rate_hit(conn, 'vault:' + user['username'].lower())
+    conn.execute('UPDATE vault_meta SET vault_name = ? WHERE username = ? AND vault_id = ?',
+                 (name, user['username'], vault_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'id': vault_id, 'name': name})
 def api_me():
     user = current_session_user()
     if not user:
@@ -2043,12 +2694,12 @@ def api_mfa_setup():
         ' VALUES (?, ?, 0, ?, 0)'
         ' ON CONFLICT(username) DO UPDATE SET enc_secret = excluded.enc_secret,'
         ' confirmed = 0, created_at = excluded.created_at',
-        (user['username'], encrypt_blob(secret), int(time.time())),
+        (user['username'], encrypt_blob(secret, blob_aad('mfa-secret', user['username'])), int(time.time())),
     )
     conn.commit()
     conn.close()
     b32 = base64.b32encode(secret).decode('ascii')
-    uri = f'otpauth://totp/Notely:{user["username"]}?secret={b32}&issuer=Notely&digits=6&period=30'
+    uri = f'otpauth://totp/Notive:{user["username"]}?secret={b32}&issuer=Notive&digits=6&period=30'
     return jsonify({'secret': b32, 'otpauth': uri})
 
 
@@ -2071,7 +2722,7 @@ def api_mfa_confirm():
         conn.close()
         return jsonify({'error': 'No MFA setup in progress.'}), 409
     try:
-        secret = bytes(decrypt_blob(bytes(row['enc_secret'])))
+        secret = bytes(decrypt_blob(bytes(row['enc_secret']), blob_aad('mfa-secret', user['username'])))
     except Exception:
         conn.close()
         return jsonify({'error': 'MFA setup corrupted. Restart enrolment.'}), 500
@@ -2101,7 +2752,7 @@ def api_mfa_disable():
         conn.close()
         return jsonify({'ok': True})
     try:
-        secret = bytes(decrypt_blob(bytes(row['enc_secret'])))
+        secret = bytes(decrypt_blob(bytes(row['enc_secret']), blob_aad('mfa-secret', user['username'])))
     except Exception:
         secret = None
     if not (secret and totp_verify(secret, str(data.get('code', '')))):
@@ -2148,17 +2799,25 @@ def api_mfa_challenge():
         conn.close()
         return jsonify({'error': 'MFA not enabled.'}), 409
     try:
-        secret = bytes(decrypt_blob(bytes(mfa['enc_secret'])))
+        secret = bytes(decrypt_blob(bytes(mfa['enc_secret']), blob_aad('mfa-secret', mfa['username'] if 'username' in mfa.keys() else None)))
     except Exception:
         conn.close()
         return jsonify({'error': 'MFA error.'}), 500
     ok = totp_verify(secret, str(data.get('code', '')))
     if not ok:
-        rate_hit(conn, ip_bucket('mfa'))
-        rate_hit(conn, user_mfa_bucket)
+        rate_fail_bounded(conn, [ip_bucket('mfa'), user_mfa_bucket],
+                          CHANGE_MAX_FAILURES, CHANGE_WINDOW_SECONDS)
         conn.close()
         return jsonify({'error': 'Incorrect code.'}), 401
-    conn.execute('DELETE FROM mfa_challenges WHERE ticket_hash = ?', (digest,))
+    # Single-use, race-safe (pentest F-4): consume the ticket atomically.
+    # With N concurrent requests presenting the same ticket, exactly one
+    # DELETE reports rowcount 1; all others are rejected instead of each
+    # minting their own session.
+    consumed = conn.execute('DELETE FROM mfa_challenges WHERE ticket_hash = ?', (digest,))
+    if consumed.rowcount != 1:
+        conn.rollback()
+        conn.close()
+        return jsonify({'error': 'Ticket expired. Log in again.'}), 401
     try:
         conn.execute('UPDATE mfa_totp SET last_used = ? WHERE username = ?', (int(time.time()), username))
     except Exception:
@@ -2169,7 +2828,7 @@ def api_mfa_challenge():
         conn.close()
         return jsonify({'error': 'Login failed.'}), 500
     try:
-        profile = decrypt_profile(user['enc_profile'])
+        profile = decrypt_profile(user['enc_profile'], user['username'] if user else None)
     except Exception:
         conn.commit()
         conn.close()
@@ -2220,10 +2879,10 @@ def api_passkey_register_begin():
                      (user['username'], prf_salt, int(time.time())))
         conn.commit()
     conn.close()
-    user_handle = b64url_encode(hashlib.sha256(b'notely-user-v1:' + user['username'].lower().encode('utf-8')).digest())
+    user_handle = b64url_encode(hashlib.sha256(b'notive-user-v1:' + user['username'].lower().encode('utf-8')).digest())
     return jsonify({
         'challenge': b64url_encode(challenge),
-        'rp': {'name': 'Notely', 'id': rp_id},
+        'rp': {'name': 'Notive', 'id': rp_id},
         'user': {'id': user_handle, 'name': user['username'], 'displayName': user['username']},
         'pubKeyCredParams': [{'type': 'public-key', 'alg': -7}],
         'timeout': 60000,
@@ -2285,6 +2944,10 @@ def api_passkey_register_finish():
             raise ValueError('rpIdHash mismatch.')
         if not (parsed['flags'] & 0x01):
             raise ValueError('User not present.')
+        # User verification is required — the PRF passwordless chain needs a
+        # positively verified user, not mere presence.
+        if not (parsed['flags'] & 0x04):
+            raise ValueError('User not verified.')
         if not (parsed['flags'] & 0x40):
             raise ValueError('No attested data.')
         rest = parsed['remainder']
@@ -2346,10 +3009,44 @@ def api_passkey_list():
     conn = get_db()
     rows = conn.execute('SELECT cred_id, created_at, transports, prf_wrap FROM passkey_creds WHERE username = ?'
                         ' ORDER BY created_at', (user['username'],)).fetchall()
+    prf_row = conn.execute('SELECT salt FROM passkey_prf WHERE username = ?', (user['username'],)).fetchone()
     conn.close()
-    return jsonify({'keys': [{'id': r['cred_id'], 'created_at': r['created_at'],
-                              'transports': r['transports'],
-                              'passwordless': bool(r['prf_wrap'])} for r in rows]})
+    return jsonify({
+        'keys': [{'id': r['cred_id'], 'created_at': r['created_at'],
+                  'transports': r['transports'],
+                  'passwordless': bool(r['prf_wrap'])} for r in rows],
+        'prfSalt': b64url_encode(bytes(prf_row['salt'])) if prf_row else None,
+    })
+
+
+@app.route('/api/passkey/prf-wrap', methods=['POST'])
+def api_passkey_prf_wrap():
+    """Attach a PRF wrap to an EXISTING credential so it can unlock notes with
+    no password. The caller runs a PRF assertion for that credential and sends
+    the master key wrapped under SHA-256(PRF); the secret never leaves the
+    device. Enables passwordless without removing and re-adding the passkey."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    cred_id = str(data.get('id', ''))
+    if not cred_id or len(cred_id) > 256:
+        return jsonify({'error': 'Invalid credential.'}), 400
+    prf_in = data.get('prfWrap')
+    try:
+        prf_iv = b64decode_strict((prf_in or {}).get('iv'), 12)
+        prf_ct = b64decode_strict((prf_in or {}).get('data'), 48)
+    except (ValueError, AttributeError):
+        return jsonify({'error': 'Invalid wrap.'}), 400
+    conn = get_db()
+    cur = conn.execute('UPDATE passkey_creds SET prf_wrap = ? WHERE cred_id = ? AND username = ?',
+                       (bytes(prf_iv) + bytes(prf_ct), cred_id, user['username']))
+    if cur.rowcount == 0:
+        conn.close()
+        return jsonify({'error': 'Unknown credential.'}), 404
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route('/api/passkey/remove', methods=['POST'])
@@ -2476,6 +3173,9 @@ def api_passkey_login_finish():
             raise ValueError('rpIdHash mismatch.')
         if not (parsed['flags'] & 0x01):
             raise ValueError('User not present.')
+        # Require user verification for passwordless logins as well.
+        if not (parsed['flags'] & 0x04):
+            raise ValueError('User not verified.')
         signed = bytes(auth_raw) + hashlib.sha256(client_raw).digest()
         verify_es256(bytes(cred['pubkey']), signed, bytes(sig))
         new_count = parsed['signCount']
@@ -2583,12 +3283,44 @@ def api_account_email():
                  (encrypt_profile({
                      'firstName': profile.get('firstName', ''),
                      'lastName': profile.get('lastName', ''),
-                     'subtitle': profile.get('subtitle', 'Personal space'),
+                     'subtitle': profile.get('subtitle', 'Notive User'),
                      'email': email,
                  }), user['username']))
     conn.commit()
     conn.close()
     return jsonify({'ok': True, 'email': email})
+
+
+@app.route('/api/account/profile', methods=['POST'])
+def api_account_profile():
+    """Set the display first/last name (stored inside the server-encrypted
+    profile). Session-authenticated: a display name is not credential-adjacent,
+    unlike the recovery email."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    first = ' '.join(str(data.get('firstName', '')).split())[:60]
+    last = ' '.join(str(data.get('lastName', '')).split())[:60]
+    conn = get_db()
+    row = conn.execute('SELECT enc_profile FROM users WHERE username = ?', (user['username'],)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'Not signed in.'}), 401
+    try:
+        profile = decrypt_profile(row['enc_profile'])
+    except Exception:
+        profile = {}
+    conn.execute('UPDATE users SET enc_profile = ? WHERE username = ?',
+                 (encrypt_profile({
+                     'firstName': first,
+                     'lastName': last,
+                     'subtitle': profile.get('subtitle', 'Notive User'),
+                     'email': profile.get('email', ''),
+                 }), user['username']))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'firstName': first, 'lastName': last})
 
 
 @app.route('/api/account', methods=['DELETE'])
@@ -2637,12 +3369,955 @@ def api_account_delete():
     conn.execute('DELETE FROM account_recovery WHERE username = ?', (uname,))
     conn.execute('DELETE FROM passkey_creds WHERE username = ?', (uname,))
     conn.execute('DELETE FROM passkey_challenges WHERE username = ?', (uname,))
+    # Shared sections: drop the deleted user's memberships, hand off any section
+    # they owned to a remaining member, and flag the rest so remaining members
+    # rotate the section key on next open — the server holds no key and cannot
+    # rotate by itself, and a deleted account must not keep decrypting.
+    gone_note_ids = []
+    for gr in conn.execute('SELECT id FROM collab_groups WHERE owner = ?', (uname,)).fetchall():
+        gid = gr['id']
+        successor = conn.execute(
+            'SELECT username FROM collab_members WHERE group_id = ? AND username != ? AND accepted = 1'
+            ' ORDER BY added_at LIMIT 1', (gid, uname)).fetchone()
+        if successor:
+            conn.execute('UPDATE collab_groups SET owner = ?, rekey_needed = 1 WHERE id = ?',
+                         (successor['username'], gid))
+        else:
+            gone_note_ids += [nr['id'] for nr in conn.execute(
+                'SELECT id FROM collab_notes WHERE group_id = ?', (gid,)).fetchall()]
+            conn.execute('DELETE FROM collab_notes WHERE group_id = ?', (gid,))
+            conn.execute('DELETE FROM collab_members WHERE group_id = ?', (gid,))
+            conn.execute('DELETE FROM collab_groups WHERE id = ?', (gid,))
+    for mr in conn.execute('SELECT DISTINCT group_id FROM collab_members WHERE username = ?', (uname,)).fetchall():
+        conn.execute('DELETE FROM collab_members WHERE group_id = ? AND username = ?', (mr['group_id'], uname))
+        conn.execute('UPDATE collab_groups SET rekey_needed = 1 WHERE id = ?', (mr['group_id'],))
+    for nid in gone_note_ids:
+        conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (nid,))
     conn.commit()
     conn.close()
+    _close_user_streams(uname)
+    for nid in gone_note_ids:
+        _close_streams(nid)
     resp = jsonify({'ok': True})
     resp.delete_cookie(SESSION_COOKIE, path='/', httponly=True, samesite='Lax', secure=session_cookie_secure())
     resp.delete_cookie(LEGACY_SESSION_COOKIE, path='/', httponly=True, samesite='Lax', secure=session_cookie_secure())
     return resp
+
+
+# --- E2EE account keys (for wrapping collaborative-note keys) -------------
+# Each account publishes an ECDH P-256 public key and its private key wrapped
+# under the account master key (opaque). The server can never read either.
+
+@app.route('/api/keys', methods=['POST'])
+def api_keys_publish():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    algo = str(data.get('algo') or 'ECDH-P256')[:32]
+    if algo != 'ECDH-P256':
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    try:
+        pubkey = base64.b64decode(str(data.get('pubkey', '')).encode('ascii'), validate=True)
+        enc_priv = base64.b64decode(str(data.get('encPriv', '')).encode('ascii'), validate=True)
+        raw_sig_pub = str(data.get('sigPubkey', '')).strip()
+        raw_sig_priv = str(data.get('sigEncPriv', '')).strip()
+        sig_pubkey = base64.b64decode(raw_sig_pub.encode('ascii'), validate=True) if raw_sig_pub else None
+        sig_enc_priv = base64.b64decode(raw_sig_priv.encode('ascii'), validate=True) if raw_sig_priv else None
+    except (base64.binascii.Error, ValueError, AttributeError):
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    # Raw P-256 point is 65 bytes; wrapped private keys are nonce(12)+ct(>=48).
+    if len(pubkey) != 65 or not (60 <= len(enc_priv) <= 4096):
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    if sig_pubkey is not None and len(sig_pubkey) != 65:
+        return jsonify({'error': 'Invalid signing key.'}), 400
+    if sig_enc_priv is not None and not (60 <= len(sig_enc_priv) <= 4096):
+        return jsonify({'error': 'Invalid signing key.'}), 400
+    now = int(time.time())
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO user_keys (username, pubkey, enc_priv, algo, sig_pubkey, sig_enc_priv, created_at, updated_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        ' ON CONFLICT(username) DO UPDATE SET pubkey = excluded.pubkey,'
+        ' enc_priv = excluded.enc_priv, algo = excluded.algo,'
+        ' sig_pubkey = COALESCE(excluded.sig_pubkey, user_keys.sig_pubkey),'
+        ' sig_enc_priv = COALESCE(excluded.sig_enc_priv, user_keys.sig_enc_priv),'
+        ' updated_at = excluded.updated_at',
+        (user['username'], pubkey, enc_priv, algo, sig_pubkey, sig_enc_priv, now, now),
+    )
+    conn.commit()
+    conn.close()
+    security_event('keys.publish', severity='info', actor=user['username'], algo=algo)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/keys/me', methods=['GET'])
+def api_keys_me():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    row = conn.execute('SELECT pubkey, enc_priv, algo, updated_at, sig_pubkey, sig_enc_priv FROM user_keys WHERE username = ?',
+                       (user['username'],)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'exists': False})
+    return jsonify({
+        'exists': True,
+        'algo': row['algo'],
+        'pubkey': base64.b64encode(bytes(row['pubkey'])).decode('ascii'),
+        'encPriv': base64.b64encode(bytes(row['enc_priv'])).decode('ascii'),
+        'sigPubkey': base64.b64encode(bytes(row['sig_pubkey'])).decode('ascii') if row['sig_pubkey'] else '',
+        'sigEncPriv': base64.b64encode(bytes(row['sig_enc_priv'])).decode('ascii') if row['sig_enc_priv'] else '',
+        'updated_at': row['updated_at'],
+    })
+
+
+@app.route('/api/keys/lookup', methods=['GET'])
+def api_keys_lookup():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    target = str(request.args.get('username', '')).strip()
+    if not validate_username(target):
+        return jsonify({'error': 'Invalid username.'}), 400
+    conn = get_db()
+    if rate_exceeded(conn, [ip_user_bucket('keylookup', user['username'])], 60, 3600):
+        conn.close()
+        return jsonify({'error': 'Too many lookups — slow down.'}), 429
+    rate_hit(conn, ip_user_bucket('keylookup', user['username']))
+    row = conn.execute('SELECT pubkey, algo, sig_pubkey FROM user_keys WHERE username = ?', (target,)).fetchone()
+    conn.commit()
+    conn.close()
+    if not row:
+        return jsonify({'error': 'That account has not set up sharing yet. Ask them to log in to Notive once, then try again.'}), 404
+    return jsonify({
+        'username': target,
+        'algo': row['algo'],
+        'pubkey': base64.b64encode(bytes(row['pubkey'])).decode('ascii'),
+        'sigPubkey': base64.b64encode(bytes(row['sig_pubkey'])).decode('ascii') if row['sig_pubkey'] else '',
+    })
+
+
+# --- E2EE collaborative notes (live, server-blind) ------------------------
+# Shared sections: a group has a random key wrapped to each member. Notes live
+# under a group and inherit its key; live Yjs updates are AES-GCM encrypted
+# with that key and relayed over a WebSocket. The server reads nothing.
+
+# note_id -> list of (username, queue.Queue) SSE subscribers. The username is
+# tracked so a removed member's live streams can be closed when access is revoked.
+collab_streams = {}
+_collab_lock = threading.Lock()
+
+
+def _is_group_member(conn, group_id, username, require_accepted=True):
+    sql = 'SELECT 1 FROM collab_members WHERE group_id = ? AND username = ?'
+    if require_accepted:
+        sql += ' AND accepted = 1'
+    return conn.execute(sql, (group_id, username)).fetchone() is not None
+
+
+def _note_group(conn, note_id):
+    return conn.execute('SELECT id, group_id, owner, updated_at, enc_state, key_version FROM collab_notes WHERE id = ?',
+                        (note_id,)).fetchone()
+
+
+def _decode_wrap(data):
+    wrapped_key = base64.b64decode(str(data.get('wrappedKey', '')).encode('ascii'), validate=True)
+    eph_pub = base64.b64decode(str(data.get('ephPub', '')).encode('ascii'), validate=True)
+    wrap_iv = base64.b64decode(str(data.get('wrapIv', '')).encode('ascii'), validate=True)
+    if len(eph_pub) != 65 or len(wrap_iv) != 12 or not (48 <= len(wrapped_key) <= 80):
+        raise ValueError('bad wrap')
+    sig = b''
+    raw_sig = str(data.get('sig', '')).strip()
+    if raw_sig:
+        sig = base64.b64decode(raw_sig.encode('ascii'), validate=True)
+        if not (60 <= len(sig) <= 80):  # ECDSA P-256 raw r||s is 64 bytes
+            raise ValueError('bad wrap sig')
+    return wrapped_key, eph_pub, wrap_iv, sig
+
+
+def _sse_closed_response():
+    """A valid event-stream carrying only 'closed' — lets clients back off
+    without pinning workers or queues (subscriber cap / overflow close)."""
+    def generate():
+        yield 'retry: 30000\n\n'
+        yield 'data: ' + json.dumps({'type': 'closed'}) + '\n\n'
+    return app.response_class(generate(), mimetype='text/event-stream',
+                              headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
+
+
+def _broadcast(note_id, message_dict):
+    payload = json.dumps(message_dict)
+    with _collab_lock:
+        subs = list(collab_streams.get(note_id, ()))
+    for _username, q in subs:
+        try:
+            q.put_nowait(payload)
+        except queue.Full:
+            # A stalled subscriber must not grow without bound: close it (the
+            # client reconnects and re-syncs from the persisted backlog).
+            try:
+                q.put_nowait(None)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+
+def _close_streams(note_id):
+    """End every subscriber's stream for a note (note/section deleted).
+
+    The None sentinel wakes the generator, which emits a final 'closed' message
+    and exits; the subscriber entry is then dropped."""
+    with _collab_lock:
+        subs = list(collab_streams.get(note_id, ()))
+        collab_streams.pop(note_id, None)
+    for _username, q in subs:
+        try:
+            q.put_nowait(None)
+        except Exception:
+            pass
+
+
+def _close_user_streams(username, note_ids=None):
+    """Close only the named user's open streams (used when access is revoked).
+
+    note_ids limits the scope to one section's notes; None means every note.
+    Other members' streams are left untouched."""
+    try:
+        name = str(username or '').strip()
+    except Exception:
+        return
+    if not name:
+        return
+    allow = None if note_ids is None else {int(n) for n in note_ids}
+    with _collab_lock:
+        for note_id, subs in list(collab_streams.items()):
+            if allow is not None and note_id not in allow:
+                continue
+            kept = []
+            for sub_user, q in subs:
+                if sub_user == name:
+                    try:
+                        q.put_nowait(None)
+                    except Exception:
+                        pass
+                else:
+                    kept.append((sub_user, q))
+            if kept:
+                collab_streams[note_id] = kept
+            else:
+                collab_streams.pop(note_id, None)
+
+
+def _broadcast_group(group_id, message_dict):
+    """Fan a control message (e.g. rekey) out to every note stream in a section."""
+    conn = get_db()
+    note_ids = [r['id'] for r in conn.execute('SELECT id FROM collab_notes WHERE group_id = ?', (group_id,))]
+    conn.close()
+    for note_id in note_ids:
+        _broadcast(note_id, message_dict)
+
+
+def _share_rate_limited(conn, username):
+    """True (and records nothing) when a user has spent their sharing-action
+    budget; otherwise records the hit and returns False."""
+    bucket = ip_user_bucket('share', username)
+    if rate_exceeded(conn, [bucket], SHARE_ADMIN_MAX, SHARE_ADMIN_WINDOW_SECONDS):
+        return True
+    rate_hit(conn, bucket)
+    return False
+
+
+@app.route('/api/collab/groups', methods=['POST'])
+def api_group_create():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    name = str(data.get('name', '')).strip()[:40] or 'Shared'
+    try:
+        wrapped_key, eph_pub, wrap_iv, wrap_sig = _decode_wrap(data)
+    except (ValueError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    conn = get_db()
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='group.create')
+        return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
+    now = int(time.time())
+    cur = conn.execute('INSERT INTO collab_groups (owner, name, created_at, updated_at, key_version) VALUES (%s, %s, %s, %s, 1) RETURNING id',
+                       (user['username'], name, now, now))
+    group_id = cur.lastrowid
+    conn.execute('INSERT INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, wrap_sig, wrap_signer, added_at, accepted, key_version)'
+                 ' VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, 1)'
+                 ' ON CONFLICT(group_id, username) DO UPDATE SET wrapped_key = EXCLUDED.wrapped_key,'
+                 ' eph_pub = EXCLUDED.eph_pub, wrap_iv = EXCLUDED.wrap_iv,'
+                 ' wrap_sig = EXCLUDED.wrap_sig, wrap_signer = EXCLUDED.wrap_signer,'
+                 ' key_version = EXCLUDED.key_version, accepted = 1',
+                 (group_id, user['username'], wrapped_key, eph_pub, wrap_iv, wrap_sig or None, user['username'], now))
+    conn.commit()
+    conn.close()
+    security_event('collab.group.create', severity='info', actor=user['username'], group=group_id)
+    return jsonify({'ok': True, 'id': group_id, 'name': name, 'keyVersion': 1})
+
+
+@app.route('/api/collab/groups', methods=['GET'])
+def api_group_list():
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    groups = conn.execute(
+        'SELECT g.id, g.owner, g.name, g.updated_at, g.enc_meta, g.key_version, g.rekey_needed,'
+        ' m.key_version AS my_key_version FROM collab_groups g'
+        ' JOIN collab_members m ON m.group_id = g.id'
+        ' WHERE m.username = ? AND m.accepted = 1 ORDER BY g.updated_at DESC LIMIT 200',
+        (user['username'],),
+    ).fetchall()
+    out = []
+    for g in groups:
+        members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? AND accepted = 1 ORDER BY added_at', (g['id'],))]
+        notes = [{'id': r['id'], 'updatedAt': r['updated_at'],
+                  'encMeta': base64.b64encode(bytes(r['enc_meta'])).decode('ascii') if r['enc_meta'] else ''}
+                 for r in conn.execute('SELECT id, updated_at, enc_meta FROM collab_notes WHERE group_id = ? ORDER BY id', (g['id'],))]
+        out.append({'id': g['id'], 'owner': g['owner'], 'name': g['name'], 'updatedAt': g['updated_at'],
+                    'keyVersion': g['key_version'] or 1,
+                    'myKeyVersion': g['my_key_version'] or 1,
+                    'rekeyNeeded': 1 if (g['rekey_needed'] or 0) else 0,
+                    'members': members, 'notes': notes,
+                    'encMeta': base64.b64encode(bytes(g['enc_meta'])).decode('ascii') if g['enc_meta'] else ''})
+    # Pending invitations: sections shared with me that I have not accepted yet.
+    invites = [{'id': r['id'], 'owner': r['owner'], 'name': r['name'], 'createdAt': r['created_at']}
+               for r in conn.execute(
+                   'SELECT g.id, g.owner, g.name, g.created_at FROM collab_groups g'
+                   ' JOIN collab_members m ON m.group_id = g.id'
+                   ' WHERE m.username = ? AND m.accepted = 0 ORDER BY g.created_at DESC LIMIT 200',
+                   (user['username'],))]
+    conn.close()
+    return jsonify({'groups': out, 'invites': invites})
+
+
+@app.route('/api/collab/groups/<int:group_id>/accept', methods=['POST'])
+def api_group_accept(group_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    row = conn.execute('SELECT accepted, key_version FROM collab_members WHERE group_id = ? AND username = ?',
+                       (group_id, user['username'])).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'error': 'No invitation for this account.'}), 404
+    # A section re-keyed while this invite was pending leaves our wrap on an old
+    # epoch. Flag the section so a member holding the current key rotates and
+    # re-wraps us — we must not rotate with the stale key ourselves.
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    stale = bool(grow) and (row['key_version'] or 1) < ((grow['key_version'] or 1))
+    conn.execute('UPDATE collab_members SET accepted = 1 WHERE group_id = ? AND username = ?',
+                 (group_id, user['username']))
+    if stale:
+        conn.execute('UPDATE collab_groups SET rekey_needed = 1 WHERE id = ?', (group_id,))
+    conn.commit()
+    conn.close()
+    security_event('collab.group.accept', severity='info', actor=user['username'],
+                   group=group_id, stale_key=bool(stale))
+    return jsonify({'ok': True, 'rekeyNeeded': bool(stale)})
+
+
+@app.route('/api/collab/groups/<int:group_id>', methods=['GET'])
+def api_group_get(group_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    if not _is_group_member(conn, group_id, user['username']):
+        conn.close()
+        return jsonify({'error': 'Not a member of this shared section.'}), 403
+    g = conn.execute('SELECT id, owner, name, key_version, rekey_needed, enc_meta FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv, key_version, wrap_sig, wrap_signer FROM collab_members WHERE group_id = ? AND username = ?',
+                        (group_id, user['username'])).fetchone()
+    members = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? AND accepted = 1 ORDER BY added_at', (group_id,))]
+    # Pending invite identities are owner-only business — filtered server-side.
+    is_owner = g['owner'] == user['username'] if g else False
+    pending = [r['username'] for r in conn.execute('SELECT username FROM collab_members WHERE group_id = ? AND accepted = 0 ORDER BY added_at', (group_id,))] if is_owner else []
+    conn.close()
+    if not g or not mine:
+        return jsonify({'error': 'Not found.'}), 404
+    return jsonify({
+        'id': g['id'], 'owner': g['owner'], 'name': g['name'], 'members': members, 'pending': pending,
+        'encMeta': base64.b64encode(bytes(g['enc_meta'])).decode('ascii') if g['enc_meta'] else '',
+        'keyVersion': g['key_version'] or 1,
+        'rekeyNeeded': 1 if (g['rekey_needed'] or 0) else 0,
+        'myKeyVersion': mine['key_version'] or 1,
+        'myKey': {
+            'wrappedKey': base64.b64encode(bytes(mine['wrapped_key'])).decode('ascii'),
+            'ephPub': base64.b64encode(bytes(mine['eph_pub'])).decode('ascii'),
+            'wrapIv': base64.b64encode(bytes(mine['wrap_iv'])).decode('ascii'),
+            'sig': base64.b64encode(bytes(mine['wrap_sig'])).decode('ascii') if mine['wrap_sig'] else '',
+            'signer': mine['wrap_signer'] or '',
+        },
+    })
+
+
+@app.route('/api/collab/groups/<int:group_id>/meta', methods=['POST'])
+def api_group_meta(group_id):
+    # Section folder list, encrypted with the group key.
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        enc_meta = base64.b64decode(str(data.get('encMeta', '')).encode('ascii'), validate=True)
+    except (ValueError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid meta.'}), 400
+    if not (1 <= len(enc_meta) <= 16384):
+        return jsonify({'error': 'Meta too large.'}), 413
+    conn = get_db()
+    if not _is_group_member(conn, group_id, user['username']):
+        conn.close()
+        return jsonify({'error': 'Not a member of this shared section.'}), 403
+    conn.execute('UPDATE collab_groups SET enc_meta = ? WHERE id = ?', (enc_meta, group_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/collab/groups/<int:group_id>/members', methods=['POST'])
+def api_group_add_member(group_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    target = str(data.get('username', '')).strip()
+    if not validate_username(target):
+        return jsonify({'error': 'Invalid username.'}), 400
+    try:
+        wrapped_key, eph_pub, wrap_iv, wrap_sig = _decode_wrap(data)
+    except (ValueError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid key payload.'}), 400
+    conn = get_db()
+    grow = conn.execute('SELECT owner, key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    if not grow:
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    # Only the section owner may invite people.
+    if grow['owner'] != user['username']:
+        conn.close()
+        return jsonify({'error': 'Only the owner can add members.'}), 403
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='member.add')
+        return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
+    if not conn.execute('SELECT 1 FROM users WHERE username = ?', (target,)).fetchone():
+        conn.close()
+        return jsonify({'error': 'No such account.'}), 404
+    already = conn.execute('SELECT 1 FROM collab_members WHERE group_id = ? AND username = ?',
+                           (group_id, target)).fetchone()
+    if not already:
+        count = conn.execute('SELECT COUNT(*) AS n FROM collab_members WHERE group_id = ?',
+                             (group_id,)).fetchone()['n']
+        if count >= SHARE_MAX_MEMBERS:
+            conn.close()
+            return jsonify({'error': f'This section is full (max {SHARE_MAX_MEMBERS} members).'}), 409
+    cur_ver = (grow['key_version'] if grow else 1) or 1
+    conn.execute('INSERT INTO collab_members (group_id, username, wrapped_key, eph_pub, wrap_iv, wrap_sig, wrap_signer, added_at, accepted, key_version)'
+                 ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)'
+                 ' ON CONFLICT(group_id, username) DO UPDATE SET wrapped_key = excluded.wrapped_key,'
+                 ' eph_pub = excluded.eph_pub, wrap_iv = excluded.wrap_iv,'
+                 ' wrap_sig = excluded.wrap_sig, wrap_signer = excluded.wrap_signer, key_version = excluded.key_version',
+                 (group_id, target, wrapped_key, eph_pub, wrap_iv, wrap_sig or None, user['username'], int(time.time()), cur_ver))
+    conn.commit()
+    conn.close()
+    security_event('collab.member.add', severity='info', actor=user['username'], group=group_id, target=target)
+    return jsonify({'ok': True, 'keyVersion': cur_ver})
+
+
+class _RotationError(Exception):
+    """Invalid section-key rotation; carries the HTTP status to return."""
+
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+def _apply_group_rotation(conn, group_id, current_version, new_version, keys, exclude=(), signer=None):
+    """Validate and apply a section key-epoch bump in the caller's transaction.
+
+    The owner supplies one ECDH wrap of the new key per remaining accepted
+    member; the server only ever stores them and never sees the key. Raises
+    _RotationError on invalid input. Does NOT commit — the caller does, so the
+    version bump and any accompanying membership change land atomically."""
+    if new_version != ((current_version or 1) + 1):
+        raise _RotationError('Stale key version.', 409)
+    if not isinstance(keys, list) or not keys:
+        raise _RotationError('Missing key wraps.')
+    accepted = {r['username'] for r in conn.execute(
+        'SELECT username FROM collab_members WHERE group_id = ? AND accepted = 1', (group_id,))}
+    accepted -= {str(x) for x in exclude}
+    parsed = {}
+    try:
+        for item in keys:
+            name = str((item or {}).get('username', '')).strip()
+            if not validate_username(name) or name in parsed:
+                raise ValueError('bad member')
+            parsed[name] = _decode_wrap(item or {})
+    except (ValueError, AttributeError, base64.binascii.Error):
+        raise _RotationError('Invalid key wraps.')
+    if set(parsed) != accepted:
+        raise _RotationError('Wraps must cover exactly the current members.')
+    for name, (wrapped_key, eph_pub, wrap_iv, sig) in parsed.items():
+        conn.execute('UPDATE collab_members SET wrapped_key = ?, eph_pub = ?, wrap_iv = ?, key_version = ?,'
+                     ' wrap_sig = ?, wrap_signer = ? WHERE group_id = ? AND username = ?',
+                     (wrapped_key, eph_pub, wrap_iv, new_version, sig or None, signer, group_id, name))
+    conn.execute('UPDATE collab_groups SET key_version = ?, updated_at = ?, rekey_needed = 0 WHERE id = ?',
+                 (new_version, int(time.time()), group_id))
+    return parsed
+
+
+@app.route('/api/collab/groups/<int:group_id>/rotate', methods=['POST'])
+def api_group_rotate(group_id):
+    """Publish a new section-key epoch.
+
+    Any current member may rotate (needed when the owner is offline or has left):
+    the caller has already re-encrypted the section's notes under the new key and
+    supplies one ECDH wrap per currently-accepted member. The server stores the
+    wraps, bumps key_version, clears the rekey flag and tells live collaborators
+    to rekey. It never sees the key. Content written under an older epoch is
+    rejected by the note endpoints, so a removed/left member (who kept the old
+    key and has no wrap for the new one) cannot read the section going forward."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        new_version = int(data.get('keyVersion'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid key version.'}), 400
+    conn = get_db()
+    g = conn.execute('SELECT owner, key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    if not g:
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    if not _is_group_member(conn, group_id, user['username']):
+        conn.close()
+        return jsonify({'error': 'Not a member of this shared section.'}), 403
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='group.rotate')
+        return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
+    try:
+        _apply_group_rotation(conn, group_id, g['key_version'], new_version, data.get('keys'),
+                              signer=user['username'])
+    except _RotationError as error:
+        conn.close()
+        return jsonify({'error': error.message}), error.status
+    conn.commit()
+    conn.close()
+    _broadcast_group(group_id, {'type': 'rekey', 'version': new_version})
+    security_event('collab.group.rotate', severity='info', actor=user['username'],
+                   group=group_id, key_version=new_version)
+    return jsonify({'ok': True, 'keyVersion': new_version})
+
+
+@app.route('/api/collab/groups/<int:group_id>/members/<username>', methods=['DELETE'])
+def api_group_remove_member(group_id, username):
+    """Remove a member.
+
+    The owner removing an accepted peer must rotate the section key in the same
+    transaction, so a removal can never leave the old key live for the person cut
+    off; the owner's client supplies the new-epoch wraps. A member leaving on
+    their own may also rotate (any member may), but if they don't the section is
+    flagged rekey_needed so a remaining member rotates on next open — the server
+    holds no key and cannot rotate by itself."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    conn = get_db()
+    g = conn.execute('SELECT owner, key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    if not g:
+        conn.close()
+        return jsonify({'ok': True})
+    username = str(username)
+    removing_self = username == user['username']
+    if g['owner'] != user['username'] and not removing_self:
+        conn.close()
+        return jsonify({'error': 'Only the owner can remove members.'}), 403
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='member.remove')
+        return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
+    target = conn.execute('SELECT accepted FROM collab_members WHERE group_id = ? AND username = ?',
+                          (group_id, username)).fetchone()
+    was_accepted = bool(target and (target['accepted'] or 0))
+    note_ids = [r['id'] for r in conn.execute('SELECT id FROM collab_notes WHERE group_id = ?', (group_id,))]
+    rotated = False
+    new_version = None
+    if was_accepted:
+        has_payload = data.get('keyVersion') is not None and data.get('keys') is not None
+        if has_payload:
+            try:
+                new_version = int(data.get('keyVersion'))
+            except (TypeError, ValueError):
+                conn.close()
+                return jsonify({'error': 'Invalid key version.'}), 400
+            try:
+                _apply_group_rotation(conn, group_id, g['key_version'], new_version, data.get('keys'),
+                                      exclude={username}, signer=user['username'])
+            except _RotationError as error:
+                conn.close()
+                return jsonify({'error': error.message}), error.status
+            rotated = True
+        elif g['owner'] == user['username'] and not removing_self:
+            conn.close()
+            return jsonify({'error': 'Key rotation is required to remove a member.'}), 400
+        else:
+            # A member left without rotating: flag the section so a remaining
+            # member rotates the epoch on next open.
+            conn.execute('UPDATE collab_groups SET rekey_needed = 1 WHERE id = ?', (group_id,))
+    conn.execute('DELETE FROM collab_members WHERE group_id = ? AND username = ?', (group_id, username))
+    conn.commit()
+    conn.close()
+    # Revocation is immediate: cut the removed user's open streams so they stop
+    # receiving ciphertext, then tell the remaining members to adopt the new
+    # epoch (the removed member has no wrap for it).
+    _close_user_streams(username, note_ids)
+    if rotated:
+        _broadcast_group(group_id, {'type': 'rekey', 'version': new_version})
+    security_event('collab.member.remove', severity='warning', actor=user['username'],
+                   group=group_id, target=username, self_leave=bool(removing_self), rotated=rotated)
+    return jsonify({'ok': True, 'keyVersion': new_version, 'rekeyNeeded': (not rotated and was_accepted)})
+
+
+@app.route('/api/collab/groups/<int:group_id>', methods=['DELETE'])
+def api_group_delete(group_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    g = conn.execute('SELECT owner FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    if not g:
+        conn.close()
+        return jsonify({'ok': True})
+    if g['owner'] != user['username']:
+        conn.close()
+        return jsonify({'error': 'Only the owner can delete this section.'}), 403
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='group.delete')
+        return jsonify({'error': 'Too many sharing actions — try again later.'}), 429
+    note_ids = [r['id'] for r in conn.execute('SELECT id FROM collab_notes WHERE group_id = ?', (group_id,))]
+    conn.execute('DELETE FROM collab_groups WHERE id = ?', (group_id,))
+    conn.execute('DELETE FROM collab_members WHERE group_id = ?', (group_id,))
+    conn.execute('DELETE FROM collab_notes WHERE group_id = ?', (group_id,))
+    for nid in note_ids:
+        conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (nid,))
+    conn.commit()
+    conn.close()
+    for nid in note_ids:
+        _close_streams(nid)
+    security_event('collab.group.delete', severity='warning', actor=user['username'], group=group_id)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/collab/groups/<int:group_id>/notes', methods=['POST'])
+def api_group_note_create(group_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    enc_meta = None
+    raw_meta = data.get('encMeta')
+    if isinstance(raw_meta, str) and raw_meta:
+        try:
+            enc_meta = base64.b64decode(raw_meta.encode('ascii'), validate=True)
+        except (ValueError, AttributeError, base64.binascii.Error):
+            return jsonify({'error': 'Invalid meta.'}), 400
+        if len(enc_meta) > 8192:
+            return jsonify({'error': 'Meta too large.'}), 413
+    conn = get_db()
+    if not _is_group_member(conn, group_id, user['username']):
+        conn.close()
+        return jsonify({'error': 'Not a member of this shared section.'}), 403
+    now = int(time.time())
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (group_id,)).fetchone()
+    cur_ver = (grow['key_version'] if grow else 1) or 1
+    cur = conn.execute('INSERT INTO collab_notes (group_id, owner, created_at, updated_at, enc_state, enc_meta, key_version) VALUES (%s, %s, %s, %s, NULL, %s, %s) RETURNING id',
+                       (group_id, user['username'], now, now, enc_meta, cur_ver))
+    note_id = cur.lastrowid
+    conn.execute('UPDATE collab_groups SET updated_at = ? WHERE id = ?', (now, group_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'id': note_id, 'keyVersion': cur_ver})
+
+
+@app.route('/api/collab/notes/<int:note_id>/meta', methods=['POST'])
+def api_note_meta(note_id):
+    # Title + folder for a shared note, encrypted with the group key.
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        enc_meta = base64.b64decode(str(data.get('encMeta', '')).encode('ascii'), validate=True)
+    except (ValueError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid meta.'}), 400
+    if not (1 <= len(enc_meta) <= 8192):
+        return jsonify({'error': 'Meta too large.'}), 413
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    conn.execute('UPDATE collab_notes SET enc_meta = ? WHERE id = ?', (enc_meta, note_id))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/collab/notes/<int:note_id>', methods=['GET'])
+def api_note_get(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    mine = conn.execute('SELECT wrapped_key, eph_pub, wrap_iv, key_version, wrap_sig, wrap_signer FROM collab_members WHERE group_id = ? AND username = ?',
+                        (note['group_id'], user['username'])).fetchone()
+    meta = conn.execute('SELECT enc_meta FROM collab_notes WHERE id = ?', (note_id,)).fetchone()
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (note['group_id'],)).fetchone()
+    conn.close()
+    return jsonify({
+        'id': note_id, 'groupId': note['group_id'], 'owner': note['owner'], 'updatedAt': note['updated_at'],
+        'keyVersion': (grow['key_version'] if grow else 1) or 1,
+        'myKeyVersion': mine['key_version'] or 1,
+        'encMeta': base64.b64encode(bytes(meta['enc_meta'])).decode('ascii') if meta and meta['enc_meta'] else '',
+        'myKey': {
+            'wrappedKey': base64.b64encode(bytes(mine['wrapped_key'])).decode('ascii'),
+            'ephPub': base64.b64encode(bytes(mine['eph_pub'])).decode('ascii'),
+            'wrapIv': base64.b64encode(bytes(mine['wrap_iv'])).decode('ascii'),
+            'sig': base64.b64encode(bytes(mine['wrap_sig'])).decode('ascii') if mine['wrap_sig'] else '',
+            'signer': mine['wrap_signer'] or '',
+        },
+    })
+
+
+@app.route('/api/collab/notes/<int:note_id>/state', methods=['GET'])
+def api_note_state(note_id):
+    """Full ciphertext of a note (snapshot + update log) so a member can decrypt,
+    re-encode and re-encrypt it under a new epoch during key rotation."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (note['group_id'],)).fetchone()
+    updates = [{'payload': base64.b64encode(bytes(r['payload'])).decode('ascii'), 'version': r['key_version'] or 1}
+               for r in conn.execute('SELECT payload, key_version FROM collab_updates WHERE note_id = ? ORDER BY id', (note_id,))]
+    conn.close()
+    return jsonify({
+        'id': note_id, 'groupId': note['group_id'],
+        # keyVersion is the epoch that encrypted encState (the snapshot);
+        # groupKeyVersion is the section's current epoch for new writes.
+        'keyVersion': note['key_version'] or 1,
+        'groupKeyVersion': (grow['key_version'] if grow else 1) or 1,
+        'encState': base64.b64encode(bytes(note['enc_state'])).decode('ascii') if note['enc_state'] else '',
+        'updates': updates,
+    })
+
+
+@app.route('/api/collab/notes/<int:note_id>', methods=['DELETE'])
+def api_note_delete(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note:
+        conn.close()
+        return jsonify({'ok': True})
+    if not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not allowed.'}), 403
+    grow = conn.execute('SELECT owner FROM collab_groups WHERE id = ?', (note['group_id'],)).fetchone()
+    if not grow or grow['owner'] != user['username']:
+        conn.close()
+        return jsonify({'error': 'Only the owner can delete a shared note.'}), 403
+    conn.execute('DELETE FROM collab_notes WHERE id = ?', (note_id,))
+    conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (note_id,))
+    conn.commit()
+    conn.close()
+    _close_streams(note_id)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/collab/notes/<int:note_id>/compact', methods=['POST'])
+def api_note_compact(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        payload = base64.b64decode(str(data.get('state', '')).encode('ascii'), validate=True)
+        key_version = int(data.get('keyVersion'))
+    except (ValueError, TypeError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid state.'}), 400
+    if not (1 <= len(payload) <= SHARE_MAX_BYTES):
+        return jsonify({'error': 'State too large.'}), 413
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (note['group_id'],)).fetchone()
+    if key_version != ((grow['key_version'] if grow else 1) or 1):
+        conn.close()
+        return jsonify({'error': 'Stale key version.'}), 409
+    now = int(time.time())
+    conn.execute('UPDATE collab_notes SET enc_state = ?, key_version = ?, updated_at = ? WHERE id = ?',
+                 (payload, key_version, now, note_id))
+    conn.execute('DELETE FROM collab_updates WHERE note_id = ?', (note_id,))
+    conn.execute('UPDATE collab_groups SET updated_at = ? WHERE id = ?', (now, note['group_id']))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'keyVersion': key_version})
+
+
+# Live sync transport: Server-Sent Events for receiving (works with the dev
+# server over TLS), and a plain POST for sending. Same encrypted payloads.
+@app.route('/api/collab/notes/<int:note_id>/stream', methods=['GET'])
+def api_note_stream(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not found.'}), 404
+    backlog = [(bytes(r['payload']), r['key_version'] or 1)
+               for r in conn.execute('SELECT payload, key_version FROM collab_updates WHERE note_id = ? ORDER BY id', (note_id,))]
+    state_blob = bytes(note['enc_state']) if note['enc_state'] else None
+    state_version = note['key_version'] or 1
+    conn.close()
+    # Bounded queue + per-user subscriber cap: an authenticated member cannot
+    # stack unbounded RAM/worker-bound streams.
+    q = queue.Queue(maxsize=SSE_QUEUE_MAX_EVENTS)
+    with _collab_lock:
+        user_streams = [entry for entry in collab_streams.get(note_id, []) if entry[0] == user['username']]
+        if len(user_streams) >= SSE_MAX_SUBSCRIBERS_PER_USER:
+            return _sse_closed_response()
+        collab_streams.setdefault(note_id, []).append((user['username'], q))
+
+    def generate():
+        try:
+            yield 'retry: 2000\n\n'
+            if state_blob:
+                yield 'data: ' + json.dumps({'type': 'state', 'version': state_version, 'payload': base64.b64encode(state_blob).decode('ascii')}) + '\n\n'
+            for u, version in backlog:
+                yield 'data: ' + json.dumps({'type': 'update', 'version': version, 'payload': base64.b64encode(u).decode('ascii')}) + '\n\n'
+            while True:
+                try:
+                    item = q.get(timeout=20)
+                except queue.Empty:
+                    yield ': ping\n\n'
+                    continue
+                if item is None:
+                    # Access revoked or note/section deleted: tell the client and
+                    # end the stream so no further ciphertext is delivered.
+                    yield 'data: ' + json.dumps({'type': 'closed'}) + '\n\n'
+                    break
+                yield 'data: ' + item + '\n\n'
+        finally:
+            with _collab_lock:
+                try:
+                    collab_streams.get(note_id, []).remove((user['username'], q))
+                except ValueError:
+                    pass
+    return app.response_class(generate(), mimetype='text/event-stream',
+                              headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no', 'Connection': 'keep-alive'})
+
+
+@app.route('/api/collab/notes/<int:note_id>/updates', methods=['POST'])
+def api_note_updates(note_id):
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        payload = base64.b64decode(str(data.get('payload', '')).encode('ascii'), validate=True)
+        key_version = int(data.get('keyVersion'))
+    except (ValueError, TypeError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid update.'}), 400
+    if not (1 <= len(payload) <= SHARE_MAX_BYTES):
+        return jsonify({'error': 'Update too large.'}), 413
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not allowed.'}), 403
+    if _share_rate_limited(conn, user['username']):
+        conn.close()
+        security_event('collab.rate_limited', severity='warning', actor=user['username'], action='note.update')
+        return jsonify({'error': 'Too many updates — slow down.'}), 429
+    grow = conn.execute('SELECT key_version FROM collab_groups WHERE id = ?', (note['group_id'],)).fetchone()
+    if key_version != ((grow['key_version'] if grow else 1) or 1):
+        conn.close()
+        return jsonify({'error': 'Stale key version.'}), 409
+    now = int(time.time())
+    conn.execute('INSERT INTO collab_updates (note_id, payload, created_at, key_version) VALUES (?, ?, ?, ?)',
+                 (note_id, payload, now, key_version))
+    conn.execute('UPDATE collab_notes SET updated_at = ? WHERE id = ?', (now, note_id))
+    conn.execute('DELETE FROM collab_updates WHERE note_id = ? AND id NOT IN '
+                 '(SELECT id FROM collab_updates WHERE note_id = ? ORDER BY id DESC LIMIT 5000)',
+                 (note_id, note_id))
+    conn.commit()
+    conn.close()
+    _broadcast(note_id, {'type': 'update', 'version': key_version, 'payload': data['payload']})
+    return jsonify({'ok': True, 'keyVersion': key_version})
+
+
+@app.route('/api/collab/notes/<int:note_id>/presence', methods=['POST'])
+def api_note_presence(note_id):
+    """Ephemeral presence relay (who is here, where their cursor is).
+
+    Presence is never stored: the encrypted blob is fanned out to the note's
+    live subscribers and forgotten. The server cannot read it (it is encrypted
+    under the section key)."""
+    user = current_session_user()
+    if not user:
+        return jsonify({'error': 'Not signed in.'}), 401
+    data = json_object()
+    try:
+        payload = base64.b64decode(str(data.get('payload', '')).encode('ascii'), validate=True)
+        key_version = int(data.get('keyVersion'))
+    except (ValueError, TypeError, AttributeError, base64.binascii.Error):
+        return jsonify({'error': 'Invalid presence.'}), 400
+    if not (1 <= len(payload) <= 2048):
+        return jsonify({'error': 'Presence too large.'}), 413
+    conn = get_db()
+    note = _note_group(conn, note_id)
+    if not note or not _is_group_member(conn, note['group_id'], user['username']):
+        conn.close()
+        return jsonify({'error': 'Not allowed.'}), 403
+    # Presence is a relay — throttle per user (~2 Hz, above the 5 s heartbeat).
+    pres_bucket = ip_user_bucket('presence', user['username'])
+    if rate_exceeded(conn, [pres_bucket], 600, 300):
+        conn.close()
+        return jsonify({'error': 'Presence too chatty — slow down.'}), 429
+    rate_hit(conn, pres_bucket)
+    conn.close()
+    _broadcast(note_id, {'type': 'presence', 'version': key_version, 'payload': data['payload']})
+    return jsonify({'ok': True})
 
 
 @app.route('/api/recovery/email/start', methods=['POST'])
@@ -2706,41 +4381,58 @@ def api_recovery_email_start():
 
 
 def trusted_app_origin():
-    """Hardened origin for links minted server-side (CWE-74 fix).
+    """Configured origin for links minted server-side (CWE-640 fix).
 
     The Host header is client-supplied, so deriving emailed links from it
-    invites password-reset poisoning. When NOTELY_PUBLIC_ORIGIN is set
-    (e.g. 'https://notes.example.com'), it always wins. Otherwise fall
-    back to request.host for local/dev use only."""
-    trusted = os.environ.get('NOTELY_PUBLIC_ORIGIN')
+    invites password-reset poisoning. NOTIVE_PUBLIC_ORIGIN must be set to the
+    app's real public origin (e.g. 'https://notes.example.com'); there is no
+    Host fallback. Returns None when unset so callers fail closed rather than
+    mail a link to an attacker-controlled host."""
+    trusted = os.environ.get('NOTIVE_PUBLIC_ORIGIN')
     if trusted:
-        return trusted.rstrip('/')
-    host = (request.host or '').split(':')[0]
-    scheme = request.scheme or 'http'
-    return f'{scheme}://{request.host}'
+        candidate = trusted.rstrip('/')
+        # Must be an absolute http(s) origin; reject anything malformed.
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(candidate)
+            if parsed.scheme in ('http', 'https') and parsed.hostname:
+                return candidate
+        except Exception:
+            pass
+        print('NOTIVE: NOTIVE_PUBLIC_ORIGIN is set but invalid; reset links disabled.', flush=True)
+        return None
+    print('NOTIVE: NOTIVE_PUBLIC_ORIGIN is not set; password-reset emails are disabled '
+          '(set it to the public https origin to enable them).', flush=True)
+    return None
 
 
 def send_recovery_email(to_email, username, token):
     """Send the reset link via SMTP env config. Dev fallback: log the link so
-    the flow stays testable without a mail server (never returned to clients)."""
+    the flow stays testable without a mail server (never returned to clients).
+
+    Fails closed when no trusted origin is configured: the link (and therefore
+    the token) is never minted from the client-supplied Host header."""
+    origin = trusted_app_origin()
+    if not origin:
+        return
     host = (request.host or '').split(':')[0]
-    link = trusted_app_origin() + f'/?emailToken={token}'
-    smtp_host = os.environ.get('NOTELY_SMTP_HOST')
+    link = origin + f'/?emailToken={token}'
+    smtp_host = os.environ.get('NOTIVE_SMTP_HOST')
     if not smtp_host:
-        print(f'NOTELY DEV: password-reset link for {username!r}: {link}', flush=True)
+        print(f'NOTIVE DEV: password-reset link for {username!r}: {link}', flush=True)
         return
     import smtplib
     from email.message import EmailMessage
     msg = EmailMessage()
-    msg['Subject'] = 'Notely password reset'
-    msg['From'] = os.environ.get('NOTELY_SMTP_FROM', f'notely@{host}')
+    msg['Subject'] = 'Notive password reset'
+    msg['From'] = os.environ.get('NOTIVE_SMTP_FROM', f'notive@{host}')
     msg['To'] = to_email
     msg.set_content(
-        f'Hi {username},\n\nReset your Notely password (expires in 15 minutes):\n{link}\n\n'
+        f'Hi {username},\n\nReset your Notive password (expires in 15 minutes):\n{link}\n\n'
         'If you did not request this, ignore this email.\n')
-    port = int(os.environ.get('NOTELY_SMTP_PORT', '587'))
-    user = os.environ.get('NOTELY_SMTP_USER')
-    password = os.environ.get('NOTELY_SMTP_PASS')
+    port = int(os.environ.get('NOTIVE_SMTP_PORT', '587'))
+    user = os.environ.get('NOTIVE_SMTP_USER')
+    password = os.environ.get('NOTIVE_SMTP_PASS')
     with smtplib.SMTP(smtp_host, port, timeout=10) as smtp:
         smtp.starttls()
         if user:
@@ -2780,7 +4472,7 @@ def api_recovery_email_complete():
     except (ValueError, AttributeError):
         conn.close()
         return jsonify({'error': 'Invalid request.'}), 400
-    if is_weak_verifier(new_auth, new_salt_auth):
+    if is_weak_verifier(new_auth, new_salt_auth, identity_password_candidates(username)):
         conn.close()
         return jsonify({'error': 'New password too weak.'}), 400
     user = conn.execute('SELECT username FROM users WHERE username = ?', (username,)).fetchone()
@@ -2792,7 +4484,7 @@ def api_recovery_email_complete():
     except Exception:
         new_hash2 = None
     conn.execute('UPDATE users SET salt_auth = ?, auth_hash = ?, auth_hash2 = ? WHERE username = ?',
-                 (new_salt_auth, new_auth, new_hash2, username))
+                 (new_salt_auth, (None if new_hash2 else new_auth), new_hash2, username))
     conn.execute('UPDATE email_recovery SET used_at = ? WHERE token_hash = ?', (int(time.time()), thash))
     conn.execute('DELETE FROM sessions WHERE username = ?', (username,))
     # Fresh start after a lost-password reset: MFA would otherwise lock the
@@ -2969,7 +4661,7 @@ def api_recovery_account_reset():
     if new_kdf != 'argon2id' or not valid_argon2_params(new_params):
         conn.close()
         return jsonify({'error': 'Invalid request.'}), 400
-    if is_weak_verifier(new_auth, new_salt_auth):
+    if is_weak_verifier(new_auth, new_salt_auth, identity_password_candidates(username)):
         conn.close()
         return jsonify({'error': 'New password too weak.'}), 400
     user = conn.execute('SELECT username FROM users WHERE username = ?', (username,)).fetchone()
@@ -2982,7 +4674,7 @@ def api_recovery_account_reset():
         new_hash2 = None
     conn.execute('UPDATE users SET salt_auth = ?, salt_enc = ?, auth_hash = ?, enc_master_key = ?,'
                  " kdf = 'argon2id', kdf_params = ?, auth_hash2 = ? WHERE username = ?",
-                 (new_salt_auth, new_salt_enc, new_auth, new_iv + new_ct,
+                 (new_salt_auth, new_salt_enc, (None if new_hash2 else new_auth), new_iv + new_ct,
                   json.dumps(ARGON2_DESCRIPTOR), new_hash2, username))
     conn.execute('UPDATE account_recovery SET used_at = ? WHERE code_hash = ?', (int(time.time()), code_hash))
     conn.execute('DELETE FROM sessions WHERE username = ?', (username,))
@@ -3024,157 +4716,66 @@ def api_logout():
     return response
 
 
-def _update_log(msg):
-    line = '%s AUTO-UPDATE: %s' % (time.strftime('%F %T'), msg)
-    print(line, flush=True)
+def build_tls_context(cert_path, key_path):
+    """Hardened TLS server context (M-1).
+
+    Werkzeug's default ssl_context still negotiated TLS 1.0/1.1 and anonymous
+    (unauthenticated) cipher suites. This pins TLS >= 1.2, permits only AEAD
+    suites with forward secrecy (AES-GCM / ChaCha20-Poly1305), and disables
+    compression and anonymous/NULL/export/RC4/3DES/MD5. TLS 1.3 suites are not
+    affected by set_ciphers and are secure by default."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     try:
-        with open(AUTO_UPDATE_LOG, 'a') as f:
-            f.write(line + '\n')
+        context.options |= ssl.OP_NO_COMPRESSION
+        context.options |= ssl.OP_CIPHER_SERVER_PREFERENCE
     except Exception:
         pass
-
-
-def _git(*args):
-    return subprocess.run(
-        ['git'] + list(args), capture_output=True, text=True,
-        timeout=AUTO_UPDATE_FETCH_TIMEOUT, cwd=BASE_DIR)
-
-
-# Set by __main__ once the listening socket exists; the updater thread calls
-# srv.shutdown() to unblock serve_forever, then __main__ closes the socket and
-# execv's this process with the freshly merged code. Never exec'ing from the
-# updater thread directly avoids both the interpreter-shutdown race and the
-# old socket surviving exec (which makes the new process die with EADDRINUSE).
-_UPDATE_SERVER = None
-_RESTART_HEAD = None
-
-
-def _restart_for_update(new_head):
-    global _RESTART_HEAD
-    _RESTART_HEAD = new_head
-    _update_log('merged %s/%s @ %s; shutting down socket and restarting in place'
-                % (AUTO_UPDATE_REMOTE, AUTO_UPDATE_BRANCH, new_head[:12]))
-    srv = _UPDATE_SERVER
-    if srv is None:
-        _update_log('WARN: server handle unavailable; execv directly')
-        try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-        except Exception as exc:
-            _update_log('execv failed: %r' % exc)
-        return
     try:
-        srv.shutdown()
-    except Exception as exc:
-        _update_log('shutdown failed: %r' % exc)
-
-
-def _auto_update_once():
-    if not os.path.isdir(os.path.join(BASE_DIR, '.git')):
-        _update_log('not a git checkout; update loop disabled')
-        return
-    fetch = _git('fetch', AUTO_UPDATE_REMOTE)
-    if fetch.returncode != 0:
-        _update_log('fetch %s failed: %s' % (AUTO_UPDATE_REMOTE,
-                                             fetch.stderr.strip() or ('rc=%d' % fetch.returncode)))
-        return
-    ref = '%s/%s' % (AUTO_UPDATE_REMOTE, AUTO_UPDATE_BRANCH)
-    count = _git('rev-list', '--left-right', '--count', 'HEAD...%s' % ref)
-    if count.returncode != 0:
-        _update_log('cannot read %s: %s' % (ref, count.stderr.strip() or ('rc=%d' % count.returncode)))
-        return
-    left, right = count.stdout.split()
-    ahead, behind = int(left), int(right)
-    if behind == 0:
-        return
-    if ahead != 0:
-        _update_log('local is %d ahead and %d behind %s; skipping (pull-only: '
-                    'unpublished local work would be lost)' % (ahead, behind, ref))
-        return
-    dirty = _git('status', '--porcelain')
-    if dirty.returncode == 0 and dirty.stdout.strip():
-        _update_log('working tree is dirty; skipping update')
-        return
-    try:
-        py_compile.compile(os.path.join(BASE_DIR, 'server.py'), doraise=True)
-    except py_compile.PyCompileError as exc:
-        _update_log('new server.py fails to compile (%s); skipping update' % exc)
-        return
-    new_head = _git('rev-parse', ref)
-    if new_head.returncode != 0:
-        _update_log('cannot resolve %s; skipping update' % ref)
-        return
-    merge = _git('merge', '--ff-only', ref)
-    if merge.returncode != 0:
-        _update_log('ff-only merge failed: %s' % (merge.stderr.strip() or ('rc=%d' % merge.returncode)))
-        return
-    _restart_for_update(new_head.stdout.strip())
-
-
-def _auto_update_tick():
-    lock_fd = os.open(AUTO_UPDATE_LOCK, os.O_CREAT | os.O_WRONLY, 0o600)
-    try:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return
-        try:
-            _auto_update_once()
-        finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-    finally:
-        os.close(lock_fd)
-
-
-def _auto_update_loop():
-    time.sleep(AUTO_UPDATE_FIRST_DELAY)
-    while True:
-        try:
-            _auto_update_tick()
-        except Exception as exc:
-            _update_log('unexpected error: %r' % exc)
-        time.sleep(AUTO_UPDATE_INTERVAL)
-
-
-def _auto_update_start():
-    _update_log('enabled (interval %ds, first check %ds, tracking %s/%s, log %s)'
-                % (AUTO_UPDATE_INTERVAL, AUTO_UPDATE_FIRST_DELAY,
-                   AUTO_UPDATE_REMOTE, AUTO_UPDATE_BRANCH, AUTO_UPDATE_LOG))
-    threading.Thread(target=_auto_update_loop, name='notely-auto-update', daemon=True).start()
+        context.set_ciphers(
+            'ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:'
+            '!aNULL:!eNULL:!EXPORT:!DES:!RC4:!3DES:!MD5:!PSK:!SRP'
+        )
+    except ssl.SSLError:
+        pass
+    context.load_cert_chain(cert_path, key_path)
+    return context
 
 
 if __name__ == '__main__':
     init_db()
+    start_backup_thread()
     # Hide Werkzeug version banner (info-disclosure fix). Must run before app.run.
     try:
         import werkzeug.serving
-        werkzeug.serving.WSGIRequestHandler.server_version = 'Notely'
+        werkzeug.serving.WSGIRequestHandler.server_version = 'Notive'
         werkzeug.serving.WSGIRequestHandler.sys_version = ''
+
+        # Suppress noisy BrokenPipe/SSLError logs from client disconnects.
+        _orig_log_error = werkzeug.serving.WSGIRequestHandler.log_error
+        def _quiet_log_error(self, fmt, *args):
+            msg = fmt % args if args else fmt
+            if isinstance(msg, str) and ('BrokenPipeError' in msg or 'UNEXPECTED_EOF_WHILE_READING' in msg):
+                return
+            _orig_log_error(self, fmt, *args)
+        werkzeug.serving.WSGIRequestHandler.log_error = _quiet_log_error
     except Exception:
         pass
-    if AUTO_UPDATE_ENABLED:
-        _auto_update_start()
-    port = int(os.environ.get('PORT', '5000'))
-    print('NOTELY: production use requires HTTPS reverse proxy + NOTELY_COOKIE_SECURE=1 '
+    port = int(os.environ.get('PORT', '5001'))
+    # HTTPS is mandatory: the app relies on Web Crypto and __Host- session
+    # cookies, both of which need a secure context. There is no plain-HTTP
+    # mode — bind all interfaces by default so the LAN can reach it, and
+    # require a cert/key (env override, else certs/notive.{crt,key}).
+    bind_host = os.environ.get('NOTIVE_BIND_HOST', '0.0.0.0')
+    tls_cert = os.environ.get('NOTIVE_TLS_CERT') or os.path.join(BASE_DIR, 'certs', 'notive.crt')
+    tls_key = os.environ.get('NOTIVE_TLS_KEY') or os.path.join(BASE_DIR, 'certs', 'notive.key')
+    if not os.path.exists(tls_cert) or not os.path.exists(tls_key):
+        sys.exit(
+            'NOTIVE: HTTPS is required. Provide NOTIVE_TLS_CERT and NOTIVE_TLS_KEY, '
+            f'or place a cert/key at {tls_cert} and {tls_key}.'
+        )
+    print(f'NOTIVE: HTTPS enabled ({tls_cert}).', flush=True)
+    print('NOTIVE: production use requires HTTPS reverse proxy + NOTIVE_COOKIE_SECURE=1 '
           '(default Secure ON) + gunicorn (Werkzeug dev server is single-process).', flush=True)
-    # make_server instead of app.run so the auto-update thread can shut the
-    # listeners down cleanly before this process execv's itself with new code.
-    from werkzeug.serving import make_server
-    server = make_server('127.0.0.1', port, app, threaded=True)
-    _UPDATE_SERVER = server
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    except Exception:
-        pass
-    try:
-        server.server_close()
-    except Exception:
-        pass
-    if _RESTART_HEAD:
-        _update_log('socket closed; re-executing with merged code')
-        try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-        except Exception as exc:
-            _update_log('execv failed: %r' % exc)
-            os._exit(1)
+    app.run(host=bind_host, port=port, threaded=True,
+            ssl_context=build_tls_context(tls_cert, tls_key))

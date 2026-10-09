@@ -2,24 +2,33 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#f4f0e9" />
-    <meta name="notely-build" content="dev21" />
+    <meta name="notive-build" content="dev89" />
     <meta name="referrer" content="no-referrer" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' https: data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
-    <title>Notely - private notes</title>
-    <link rel="stylesheet" href="styles.css?v=dev21" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' https: data:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests" />
+    <title>Notive - private notes</title>
+    <link rel="stylesheet" href="styles.css?v=dev177" />
   </head>
   <body>
+    <div class="boot-shimmer" id="boot-shimmer" aria-hidden="true">
+      <div class="boot-shimmer-card">
+        <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
+            </span>
+            <span class="brand-name">Notive</span>
+        <div class="shimmer-lines" aria-hidden="true"><span class="shimmer-line" style="width:70%"></span><span class="shimmer-line" style="width:85%"></span><span class="shimmer-line" style="width:60%"></span></div>
+      </div>
+    </div>
     <div class="app-shell">
     <!-- Sidebar: brand, profile card (rendered from session), nav views, sections folders -->
       <aside class="sidebar" id="sidebar">
         <div class="brand-row">
-          <a class="brand" href="#" aria-label="Notely home">
+          <a class="brand" href="#" aria-label="Notive home">
             <span class="brand-mark" aria-hidden="true">
               <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
             </span>
-            <span class="brand-name">Notely</span>
+            <span class="brand-name">Notive</span>
           </a>
           <button class="icon-button sidebar-toggle" id="toggle-sidebar" aria-label="Collapse sidebar" title="Collapse sidebar" data-icon="sidebar"></button>
           <button class="icon-button sidebar-close" id="close-sidebar" aria-label="Close menu" data-icon="x"></button>
@@ -36,8 +45,13 @@
 
         <!-- Scrollable middle: folders scroll; brand/profile, nav and footer stay pinned -->
         <nav class="primary-nav" aria-label="Main navigation">
+          <div class="nav-separator" aria-hidden="true"></div>
+          <div class="nav-section-label" aria-hidden="true">Main Section</div>
           <a href="#" class="nav-item active" data-view="notes" title="All Notes">
             <span class="nav-icon" data-icon="inbox"></span><span class="nav-label">All Notes</span><span class="nav-count" id="nav-all-count">12</span>
+          </a>
+          <a href="#" class="nav-item" data-view="shared" title="Shared notes">
+            <span class="nav-icon" data-icon="share"></span><span class="nav-label">Shared</span><span class="nav-count" id="nav-shared-count">0</span>
           </a>
           <a href="#" class="nav-item" data-view="favorites" title="Favorites">
             <span class="nav-icon" data-icon="star"></span><span class="nav-label">Favorites</span>
@@ -45,16 +59,18 @@
           <a href="#" class="nav-item" data-view="archive" title="Archive">
             <span class="nav-icon" data-icon="archive"></span><span class="nav-label">Archive</span><span class="nav-count" id="nav-archive-count">0</span>
           </a>
-          <a href="#" class="nav-item" data-view="bin" title="Bin">
-            <span class="nav-icon" data-icon="trash"></span><span class="nav-label">Bin</span><span class="nav-count" id="nav-bin-count">0</span>
-          </a>
           <a href="#" class="nav-item" data-view="vault" title="Vault">
             <span class="nav-icon" data-icon="lock"></span><span class="nav-label">Vault</span>
           </a>
+          <a href="#" class="nav-item" data-view="bin" title="Bin">
+            <span class="nav-icon" data-icon="trash"></span><span class="nav-label">Bin</span><span class="nav-count" id="nav-bin-count">0</span>
+          </a>
+          <div class="nav-separator" aria-hidden="true"></div>
         </nav>
 
         <div class="sidebar-scroll">
         <!-- Custom sections, rendered by renderCustomSections -->
+        <div class="nav-section-label" aria-hidden="true">Main Sub Sections</div>
         <div id="custom-sections"></div>
         <div class="sidebar-section add-section-wrap">
           <button class="add-section-button" id="new-section" title="Add section"><span>+</span> Add section</button>
@@ -73,7 +89,7 @@
         <div class="notes-header">
           <div class="mobile-header-row">
             <button class="icon-button menu-toggle" id="open-sidebar" aria-label="Open menu" data-icon="menu"></button>
-            <span class="mobile-brand">Notely</span>
+            <span class="mobile-brand">Notive</span>
             <button class="icon-button" aria-label="More options" data-icon="dots"></button>
           </div>
           <div class="notes-title-row">
@@ -85,6 +101,7 @@
               <button class="icon-button workspace-toggle" id="toggle-workspace" aria-label="Collapse workspace" title="Collapse workspace" data-icon="sidebar"></button>
               <button class="icon-button strip-back" id="workspace-strip-back" aria-label="Back to parent folder" title="Back to parent folder" data-icon="chevron-right" hidden></button>
               <span class="workspace-view-icon" id="workspace-view-icon" title="All Notes" aria-hidden="true">All Notes</span>
+              <div class="strip-separator" id="strip-separator" aria-hidden="true"></div>
               <div class="workspace-strip-items" id="workspace-strip-items" aria-label="Folder contents"></div>
               <button class="new-note-button" id="new-note"><span>+</span> New note</button>
               <button class="new-note-button danger" id="empty-bin" hidden>Empty Bin</button>
@@ -95,13 +112,18 @@
           <input type="file" id="import-input" accept=".md,.markdown,.txt,.text,.json,.yaml,.yml" multiple hidden />
           <label class="search-box">
             <span data-icon="search"></span>
-            <input id="search-input" type="search" placeholder="Search notes" autocomplete="off" maxlength="200" />
+            <input id="search-input" type="search" placeholder="Search notes and folders" autocomplete="off" maxlength="200" title="Search note titles, contents and folders. Use tag: name to search tags" />
             <kbd>/</kbd>
           </label>
           <div class="filter-row" aria-label="Note filters">
             <button class="filter-chip active" data-filter="all">All <span id="all-count">12</span></button>
+            <button class="filter-chip" data-filter="important">Important <span id="important-count"></span></button>
             <button class="filter-chip" data-filter="recent">Recent <span id="recent-count"></span></button>
-            <button class="filter-chip" data-filter="favorites">Starred <span id="starred-count"></span></button>
+            <span class="filter-actions">
+              <button class="icon-button list-back" id="list-back" aria-label="Back" title="Back" data-icon="chevron-right" hidden></button>
+              <button class="icon-button fold-toggle" id="toggle-folders" aria-label="Collapse all folders" title="Collapse all folders" data-icon="chevron-down"></button>
+            </span>
+            <button class="icon-button view-refresh" id="refresh-view" aria-label="Refresh" title="Refresh" data-icon="refresh"></button>
           </div>
         </div>
         <div class="note-list" id="note-list" aria-label="Notes"></div>
@@ -113,16 +135,26 @@
         <div class="notes-panel-footer"><span id="total-count">12 notes</span><span>Local &amp; private</span></div>
       </section>
 
+      <!-- Drag handle: resize the expanded notes panel (strip stays fixed) -->
+      <div class="panel-resizer" id="panel-resizer" title="Drag to resize" aria-hidden="true"></div>
+
     <!-- Editor: title, meta/tags, Markdown toolbar, write/preview panes -->
       <main class="editor-panel">
         <header class="editor-topbar">
           <div class="breadcrumbs" id="breadcrumbs" hidden><span id="breadcrumb-trail"></span><span class="crumb-separator">/</span><strong id="breadcrumb-title">Designing a calmer inbox</strong></div>
           <div class="tab-bar" id="tab-bar" aria-label="Open notes"></div>
+          <!-- Shared note members + actions, shown in the tab row while a shared note is open -->
+          <div class="collab-top" id="collab-top" hidden>
+            <div class="collab-presence" id="collab-presence" aria-live="polite"></div>
+            <div class="collab-panel-actions">
+              <button class="icon-button" id="collab-pending" aria-label="Members" title="Members" data-icon="hash"></button>
+              <button class="icon-button" id="collab-invite" aria-label="Invite member" title="Invite member" data-icon="share"></button>
+              <button class="icon-button" id="collab-delete" aria-label="Delete shared note" title="Delete shared note" data-icon="trash" hidden></button>
+            </div>
+          </div>
           <div class="editor-actions">
             <span class="save-state" hidden><span class="save-dot"></span><span id="save-label">Saved</span></span>
             <button class="icon-button" id="favorite-button" aria-label="Favorite note" data-icon="star"></button>
-            <button class="icon-button" id="share-button" aria-label="Share note" data-icon="share"></button>
-            <button class="icon-button" id="more-button" aria-label="More note actions" data-icon="dots"></button>
           </div>
         </header>
 
@@ -144,11 +176,12 @@
             <input type="file" id="cover-input" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,image/bmp,.png,.jpg,.jpeg,.jfif,.webp,.gif,.avif,.bmp" hidden />
             <input class="title-input" id="title-input" value="Designing a calmer inbox" aria-label="Note title" maxlength="200" autocomplete="off" />
             <div class="note-meta">
-              <span><span class="meta-icon" data-icon="clock"></span>Edited today</span>
+              <span class="collab-status-inline" id="collab-status" hidden><span class="live-dot"></span><span id="collab-status-text">Live · connected</span></span>
+              <span class="meta-separator" id="collab-status-sep" hidden></span>
+              <span class="meta-edited"><span class="meta-icon" data-icon="clock"></span><span id="edited-label">Edited today</span></span>
+              <span class="meta-separator" hidden></span>
+              <span id="word-count" hidden>146 words</span>
               <span class="meta-separator"></span>
-              <span id="word-count">146 words</span>
-              <span class="meta-separator"></span>
-              <button class="type-badge" id="type-badge" title="File type — click to switch between Markdown and plain text">MD</button>
               <span class="tag-list" id="tag-list"><span class="tag">product</span><span class="tag">systems</span></span>
             </div>
           </div>
@@ -164,38 +197,76 @@
             <textarea class="recipe-hero-desc" id="recipe-desc" rows="3" maxlength="2000" placeholder="Write the description here..." aria-label="Meal description"></textarea>
           </div>
 
-          <div class="editor-toolbar" id="editor-toolbar" role="toolbar" aria-label="Markdown formatting">
+          <!-- Structured recipe body (recipe-template notes only): editable
+               Ingredients / Method table. Replaces the Markdown body, which is
+               never shown for recipes. -->
+          <div class="recipe-body-fixed" id="recipe-body" hidden>
+            <div class="recipe-block">
+              <div class="recipe-side">
+                <div class="recipe-side-head">Ingredients</div>
+                <div class="recipe-rows" id="recipe-ingredients"></div>
+                <button type="button" class="recipe-add" id="recipe-add-ingredient">+ Add ingredient</button>
+              </div>
+              <div class="recipe-side recipe-side-method">
+                <div class="recipe-side-head">Method</div>
+                <div class="recipe-rows" id="recipe-steps"></div>
+                <button type="button" class="recipe-add" id="recipe-add-step">+ Add step</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="editor-toolbar" id="editor-toolbar" role="toolbar" aria-label="Markdown formatting" hidden>
             <div class="toolbar-group">
-              <button class="toolbar-button" data-action="heading" aria-label="Heading" title="Heading"><span class="toolbar-heading">H</span></button>
-              <button class="toolbar-button" data-action="bold" aria-label="Bold" title="Bold (Ctrl+B)"><strong>B</strong></button>
-              <button class="toolbar-button italic" data-action="italic" aria-label="Italic" title="Italic (Ctrl+I)">I</button>
-              <button class="toolbar-button code" data-action="code" aria-label="Inline code" title="Inline code">&lt;/&gt;</button>
+              <button class="toolbar-button" data-action="heading" aria-label="Heading"><span class="toolbar-heading">H</span></button>
+              <button class="toolbar-button" data-action="bold" aria-label="Bold"><strong>B</strong></button>
+              <button class="toolbar-button italic" data-action="italic" aria-label="Italic">I</button>
+              <button class="toolbar-button code" data-action="code" aria-label="Inline code">&lt;/&gt;</button>
               <span class="toolbar-divider"></span>
-              <button class="toolbar-button" data-action="bullet" aria-label="Bullet list" title="Bullet list"><span data-icon="list"></span></button>
-              <button class="toolbar-button" data-action="check" aria-label="Checklist" title="Checklist"><span data-icon="check-square"></span></button>
-              <button class="toolbar-button" data-action="quote" aria-label="Quote" title="Quote"><span class="quote-mark">&quot;</span></button>
-              <button class="toolbar-button" data-action="link" aria-label="Link" title="Link"><span data-icon="link"></span></button>
+              <button class="toolbar-button" data-action="bullet" aria-label="Bullet list"><span data-icon="list"></span></button>
+              <button class="toolbar-button" data-action="check" aria-label="Checklist"><span data-icon="check-square"></span></button>
+              <button class="toolbar-button" data-action="quote" aria-label="Quote"><span class="quote-mark">&quot;</span></button>
+              <button class="toolbar-button" data-action="link" aria-label="Link"><span data-icon="link"></span></button>
             </div>
             <div class="toolbar-right">
               <span class="markdown-label"><span class="markdown-dot">M</span> Markdown</span>
               <span class="toolbar-divider"></span>
-              <button class="toolbar-button" id="focus-editor" aria-label="Focus mode" title="Focus mode"><span data-icon="focus"></span></button>
+              <button class="toolbar-button" id="focus-editor" aria-label="Focus mode"><span data-icon="focus"></span></button>
             </div>
           </div>
 
           <div class="writing-area" id="writing-area">
             <div class="write-head">
-              <div class="write-head-label"><span id="mode-label">Write</span><span class="shortcut-hint" id="idle-hint">Markdown source · live preview after 10s idle</span></div>
+              <div class="write-head-label"><span id="mode-label">Write</span></div>
               <div class="write-head-right">
-                <span class="preview-live"><span class="live-dot"></span>Live</span>
                 <button class="mode-toggle" id="mode-toggle" title="Switch between writing and preview">Preview</button>
               </div>
             </div>
-            <textarea class="markdown-input" id="markdown-input" rows="18" spellcheck="true" aria-label="Markdown editor"></textarea>
+            <div class="todo-toolbox" id="todo-toolbox" hidden>
+              <div class="toolbox-group">
+                <button type="button" class="toolbox-btn" data-todo="h1" title="Heading 1"><strong>H1</strong></button>
+                <button type="button" class="toolbox-btn" data-todo="h2" title="Heading 2"><strong>H2</strong></button>
+                <button type="button" class="toolbox-btn" data-todo="h3" title="Heading 3"><strong>H3</strong></button>
+                <button type="button" class="toolbox-btn" data-todo="h4" title="Heading 4"><strong>H4</strong></button>
+              </div>
+              <span class="toolbox-divider"></span>
+              <div class="toolbox-group">
+                <button type="button" class="toolbox-btn" data-todo="checkbox" title="Add checkbox"><span data-icon="check-square"></span></button>
+                <button type="button" class="toolbox-btn" data-todo="bold" title="Bold"><strong>B</strong></button>
+                <button type="button" class="toolbox-btn toolbox-btn-italic" data-todo="italic" title="Italic">I</button>
+              </div>
+            </div>
+            <div class="code-wrap" id="code-wrap">
+              <pre class="syntax-layer" id="syntax-layer" aria-hidden="true" hidden></pre>
+              <textarea class="markdown-input" id="markdown-input" rows="18" spellcheck="true" aria-label="Markdown editor"></textarea>
+              <div class="checkbox-overlay" id="checkbox-overlay" aria-hidden="true"></div>
+              <div class="todo-rendered" id="todo-rendered" hidden></div>
+              <div class="collab-caret-layer" id="collab-caret-layer" aria-hidden="true"></div>
+            </div>
             <article class="markdown-preview unified-preview" id="markdown-preview" tabindex="0" aria-label="Rendered preview — click or focus to keep writing" hidden></article>
           </div>
-          <div class="editor-bottom"><span>Markdown · auto-preview after 10s idle</span><span><kbd>Ctrl</kbd><span> + </span><kbd>Enter</kbd> to save</span></div>
+          <div class="editor-bottom"><span>Markdown</span><span><kbd>Ctrl</kbd><span> + </span><kbd>Enter</kbd> to save</span></div>
         </div>
+        <div class="editor-bottom-fixed"><span>Markdown</span><button class="beautify-btn" id="beautify-btn" hidden>Beautify</button><button class="type-badge" id="type-badge" title="File type — click to switch between Markdown and plain text">MD</button></div>
       </main>
     </div>
     <!-- Login gate: login + register tabs. Shown until the server session unlocks the E2EE vault -->
@@ -203,26 +274,26 @@
       <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="login-title">
         <div class="login-brand">
           <span class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
-          </span>
-          <span class="brand-name">Notely</span>
+              <svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#F5F2EC" stroke-width="1.7" stroke-linecap="round"/></svg>
+            </span>
+            <span class="brand-name">Notive</span>
         </div>
         <p class="eyebrow">Welcome back</p>
         <h2 id="login-title">Log in</h2>
         <p class="modal-desc">Sign in to open your private notes.</p>
         <form id="login-form" autocomplete="on">
           <label class="login-field"><span>Username</span><input id="login-username" name="username" type="text" autocomplete="username" placeholder="your-name" maxlength="32" required /></label>
-          <label class="login-field"><span>Password</span><input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="•••••" maxlength="256" required /></label>
+          <label class="login-field"><span>Password</span><span class="password-wrap"><input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="•••••" maxlength="256" required /><button type="button" class="password-eye" data-eye="login-password" aria-label="Show password" aria-pressed="false" data-icon="eye"></button></span></label>
           <p class="login-error" id="login-error" hidden>Incorrect username or password.</p>
           <button class="btn btn-primary login-submit" type="submit">Log in</button>
         </form>
         <div id="login-helpers">
         <button class="btn btn-secondary login-submit" id="passkey-login-btn" type="button">Sign in with passkey</button>
-        <p class="modal-desc" style="text-align:center" id="recover-link-wrap"><button class="link-button" id="recover-link" type="button">Forgot password?</button></p>
+        <p class="modal-desc desc-center" id="recover-link-wrap"><button class="link-button" id="recover-link" type="button">Forgot password?</button></p>
         <div id="recover-block" hidden>
           <p><button class="link-button" id="recover-back" type="button">← Back to log in</button></p>
           <p class="modal-desc">Choose how to recover your password.</p>
-          <div class="template-options" id="recover-options" style="margin-bottom:12px">
+          <div class="template-options stack-b12" id="recover-options">
             <button class="template-option" id="recover-opt-email" type="button"><span class="theme-option-text"><strong>Email</strong><span>Reset link to your account email</span></span></button>
             <button class="template-option" id="recover-opt-code" type="button"><span class="theme-option-text"><strong>Recovery Code</strong><span>Offline code generated in Settings</span></span></button>
           </div>
@@ -236,11 +307,8 @@
           <label class="login-field"><span>Password</span><input id="register-password" name="new-password" type="password" autocomplete="new-password" maxlength="256" required aria-describedby="password-policy" /></label>
           <label class="login-field"><span>Confirm password</span><input id="register-confirm" type="password" autocomplete="new-password" maxlength="256" required /></label>
           <ul class="password-policy" id="password-policy">
-            <li>At least 12 characters</li>
-            <li>At least 1 capital letter (A-Z)</li>
-            <li>At least 1 small letter (a-z)</li>
-            <li>At least 1 number (0-9)</li>
-            <li>At least 1 special character (e.g. !@#$%)</li>
+            <li>At least 15 characters (long passphrases welcome)</li>
+            <li>No forced mix of character types</li>
           </ul>
           <p class="login-error" id="register-error" hidden></p>
           <button class="btn btn-primary login-submit" type="submit">Create account</button>
@@ -248,7 +316,7 @@
         <div class="auth-tabs" role="tablist" aria-label="Sign in or create account">
           <button type="button" class="auth-tab" id="tab-register" role="tab" aria-selected="false">Create account</button>
         </div>
-        <p class="login-hint" id="build-tag">dev build dev21</p>
+        <p class="login-hint" id="build-tag">dev build dev89</p>
       </div>
       <div class="login-theme-float">
         <div class="login-theme-menu" id="login-theme-menu" role="listbox" aria-label="Choose a theme" hidden>
@@ -288,6 +356,22 @@
         </button>
       </div>
     </div>
+    <!-- Account created popup -->
+    <div class="modal-overlay" id="account-created-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="account-created-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Success</p>
+            <h2 id="account-created-title">Registered Successfully</h2>
+          </div>
+          <button class="icon-button" id="close-account-created" aria-label="Close" data-icon="x"></button>
+        </div>
+        <p class="modal-desc">Your account has been created successfully. Please log in with your new credentials.</p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" id="account-created-ok" type="button">OK</button>
+        </div>
+      </div>
+    </div>
     <!-- Settings modal: left nav (Appearance / Change Password / Side Menu), options on the right -->
     <div class="modal-overlay" id="settings-overlay" hidden>
       <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title">
@@ -306,10 +390,11 @@
             <div class="settings-nav-header">Customization</div>
             <button type="button" class="settings-nav-item active" data-settings-tab="appearance">Appearance</button>
             <button type="button" class="settings-nav-item" data-settings-tab="behaviour">Behaviour</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="tags">Tags</button>
           </nav>
           <div class="settings-pane" data-settings-pane="appearance">
             <h3 class="settings-pane-title" id="settings-title">Appearance</h3>
-            <p class="modal-desc">Pick a theme for Notely. Your choice is saved on this device.</p>
+            <p class="modal-desc">Pick a theme for Notive. Your choice is saved on this device.</p>
             <label class="login-field"><span>Theme</span>
               <select id="theme-select">
                 <option value="light">Light — warm paper, easy on the eyes</option>
@@ -322,10 +407,10 @@
             </label>
             <hr />
             <h3 class="settings-pane-title">Font</h3>
-            <p class="modal-desc">Pick a reading font for Notely. Saved on this device only.</p>
+            <p class="modal-desc">Pick a reading font for Notive. Saved on this device only.</p>
             <label class="login-field"><span>Font</span>
               <select id="font-select" autocomplete="off">
-                <option value="default">Default — Notely's built-in look</option>
+                <option value="default">Default — Notive's built-in look</option>
                 <option value="serif">Serif — bookish Georgia letterforms</option>
                 <option value="palatino">Palatino — elegant old-style serif</option>
                 <option value="sans">Sans — clean system grotesque</option>
@@ -336,11 +421,16 @@
           </div>
           <div class="settings-pane" data-settings-pane="profile" hidden>
             <h3 class="settings-pane-title">Profile</h3>
-            <p class="modal-desc">Your Notely account details.</p>
+            <p class="modal-desc">Your Notive account details.</p>
             <label class="login-field"><span>Username</span><input id="account-username" type="text" readonly autocomplete="username" /></label>
+            <label class="login-field"><span>First name</span><input id="account-first" type="text" autocomplete="given-name" maxlength="60" placeholder="First name" /></label>
+            <label class="login-field"><span>Last name</span><input id="account-last" type="text" autocomplete="family-name" maxlength="60" placeholder="Last name" /></label>
+            <button class="btn btn-secondary settings-btn-right" id="account-save-name-btn" type="button">Save name</button>
+            <hr />
+            <h3 class="settings-pane-title">Recovery email</h3>
             <label class="login-field"><span>Email</span><input id="account-email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com" /></label>
             <p class="login-error" id="account-error" hidden></p>
-            <button class="btn btn-secondary" id="account-save-btn" type="button">Save email</button>
+            <button class="btn btn-secondary settings-btn-right" id="account-save-btn" type="button">Save email</button>
             <hr />
             <h3 class="settings-pane-title">Delete account</h3>
             <p class="modal-desc">Permanently deletes your account, notes, vault, keys and sessions. This cannot be undone.</p>
@@ -348,7 +438,7 @@
           </div>
           <div class="settings-pane" data-settings-pane="security" hidden>
             <h3 class="settings-pane-title">Change password</h3>
-            <p class="modal-desc">Min 12 chars with 1 capital, 1 small, 1 number, 1 special character.</p>
+            <p class="modal-desc">Min 15 characters. Long passphrases are welcome; no character-type rules are imposed.</p>
             <label class="login-field"><span>Current password</span><input id="change-current" type="password" autocomplete="current-password" maxlength="256" /></label>
             <label class="login-field"><span>New password</span><input id="change-new" type="password" autocomplete="new-password" maxlength="256" /></label>
             <p class="login-error" id="change-error" hidden></p>
@@ -377,17 +467,63 @@
           </div>
           <div class="settings-pane" data-settings-pane="behaviour" hidden>
             <h3 class="settings-pane-title">Behaviour</h3>
-            <p class="modal-desc">Choose how the sidebar looks when Notely opens.</p>
+            <p class="modal-desc">Choose how the sidebar looks when Notive opens.</p>
             <label class="setting-row"><input type="checkbox" id="start-collapsed" /><span class="setting-row-text"><strong>Start collapsed</strong><span>Open with the icon-only sidebar. Uncheck to start expanded.</span></span></label>
             <hr />
             <h3 class="settings-pane-title">Notes on this device</h3>
             <p class="modal-desc">Keep a copy of your notes on this desktop, or take them off the cloud entirely.</p>
-            <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Notely server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
-            <button class="btn btn-secondary" id="export-all-btn" type="button">Export all notes to this device</button>
+            <label class="setting-row"><input type="checkbox" id="device-only-mode" /><span class="setting-row-text"><strong>This device only</strong><span>Notes are saved encrypted on this device and never sent to the Notive server. Turning sync back on lets you upload the local copy or keep the server's.</span></span></label>
+            <hr />
+            <h3 class="settings-pane-title">Import/Export</h3>
+            <p class="modal-desc">Back up or restore notes as a single file. Export uses the format below; import detects it from the file. Folders travel with the notes, and imports land in their own section for sorting.</p>
+            <div class="storage-picker-row">
+              <span class="setting-row-text"><strong>Format</strong></span>
+              <select id="exchange-format" title="Export format">
+                <option value="json" selected>JSON</option>
+                <option value="yaml">YAML</option>
+                <option value="md">Markdown</option>
+                <option value="txt">TXT</option>
+              </select>
+            </div>
+            <button class="btn btn-secondary" id="exchange-export-btn" type="button">Export notes</button>
+            <button class="btn btn-secondary" id="exchange-import-btn" type="button">Import notes</button>
+            <input type="file" id="exchange-import-input" accept=".md,.markdown,.txt,.text,.json,.yaml,.yml" multiple hidden />
+          </div>
+          <div class="settings-pane" data-settings-pane="tags" hidden>
+            <div class="settings-pane-head">
+              <h3 class="settings-pane-title">Tags</h3>
+              <button class="btn btn-secondary" id="settings-new-tag" type="button">+ New Tag</button>
+            </div>
+            <p class="modal-desc">Create tags here, then apply them to notes (right-click a note → “Tags…”) or find them with “tag: <name>”.</p>
+            <div class="settings-tag-list" id="settings-tag-list"></div>
           </div>
         </div>
       </div>
     </div>
+    <!-- Profile popup: opened from the sidebar profile card (collapsed or expanded) -->
+    <div class="modal-overlay" id="profile-overlay" hidden>
+      <div class="modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-modal-name">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Account</p>
+            <h2 id="profile-modal-title">Profile</h2>
+          </div>
+          <button class="icon-button" id="close-profile" aria-label="Close profile" data-icon="x"></button>
+        </div>
+        <div class="profile-view">
+          <div class="profile-avatar-large" id="profile-avatar-large">?</div>
+          <h3 class="profile-view-name" id="profile-modal-name">Name</h3>
+          <p class="profile-view-line" id="profile-view-username">@username</p>
+          <p class="profile-view-line" id="profile-view-email">you@example.com</p>
+          <div class="profile-view-actions">
+            <button class="btn btn-primary" id="profile-edit-btn" type="button">Edit profile</button>
+            <button class="btn btn-secondary" id="profile-photo-btn" type="button">Change photo</button>
+            <button class="btn btn-secondary" id="profile-photo-remove" type="button" hidden>Remove photo</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,image/bmp,.png,.jpg,.jpeg,.jfif,.webp,.gif,.avif,.bmp" hidden />
     <!-- New-note template chooser: Standard / Recipe / To-Do -->
     <div class="modal-overlay" id="template-overlay" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="template-title">
@@ -399,23 +535,7 @@
           <button class="icon-button" id="close-templates" aria-label="Close templates" data-icon="x"></button>
         </div>
         <p class="modal-desc">Start from a structure. You can edit everything afterwards.</p>
-        <div class="template-options">
-          <button class="template-option" data-template="standard">
-            <span class="template-icon" data-icon="file-text" aria-hidden="true"></span>
-            <span class="theme-option-text"><strong>Standard Note</strong><span>Blank note with a title and body</span></span>
-            <span class="theme-check" data-icon="check"></span>
-          </button>
-          <button class="template-option" data-template="recipe">
-            <span class="template-icon" data-icon="cooking" aria-hidden="true"></span>
-            <span class="theme-option-text"><strong>Recipe</strong><span>Ingredients, steps, time and servings</span></span>
-            <span class="theme-check" data-icon="check"></span>
-          </button>
-          <button class="template-option" data-template="todo">
-            <span class="template-icon" data-icon="check-square" aria-hidden="true"></span>
-            <span class="theme-option-text"><strong>To-Do</strong><span>Checklist with priorities</span></span>
-            <span class="theme-check" data-icon="check"></span>
-          </button>
-        </div>
+        <div class="template-options template-square-grid" id="template-options"></div>
       </div>
     </div>
     <!-- New-note folder chooser: shown when creating from a bare section view -->
@@ -430,6 +550,113 @@
         </div>
         <p class="modal-desc" id="folder-pick-desc">Where should this note land?</p>
         <div class="template-options" id="folder-pick-options"></div>
+      </div>
+    </div>
+    <!-- Section icon picker: choose the icon shown beside a sidebar section -->
+    <div class="modal-overlay" id="section-icon-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="section-icon-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Section</p>
+            <h2 id="section-icon-title">Choose an icon</h2>
+          </div>
+          <button class="icon-button" id="close-section-icon" aria-label="Close icon picker" data-icon="x"></button>
+        </div>
+        <p class="modal-desc" id="section-icon-desc">Pick the icon shown beside this section.</p>
+        <div class="section-icon-grid" id="section-icon-grid"></div>
+      </div>
+    </div>
+    <!-- Note tag editor: add/remove tags for one note (opened from the note menu) -->
+    <div class="modal-overlay" id="tag-editor-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tag-editor-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Note</p>
+            <h2 id="tag-editor-title">Tags</h2>
+          </div>
+          <button class="icon-button" id="close-tag-editor" aria-label="Close tags" data-icon="x"></button>
+        </div>
+        <p class="modal-desc" id="tag-editor-desc">Add or remove tags for this note.</p>
+        <div class="tag-editor-current" id="tag-editor-current"></div>
+        <div class="tag-editor-add">
+          <input id="tag-editor-input" type="text" maxlength="40" placeholder="Add a tag…" autocomplete="off" />
+          <button class="btn btn-secondary" id="tag-editor-add-btn" type="button">Add</button>
+        </div>
+        <div class="tag-editor-suggest" id="tag-editor-suggest"></div>
+        <div class="modal-actions"><button class="btn btn-primary" id="tag-editor-done" type="button">Done</button></div>
+      </div>
+    </div>
+    <!-- New shared note: choose who to share it with -->
+    <div class="modal-overlay" id="collab-new-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="collab-new-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Shared note</p>
+            <p class="eyebrow">Connection</p>
+            <h2 id="collab-new-title">Who do you want to connect with?</h2>
+          </div>
+          <button class="icon-button" id="close-collab-new" aria-label="Close" data-icon="x"></button>
+        </div>
+        <p class="modal-desc">Enter a username (or several). They will get a request saying you want to connect. Once they accept, you get a shared section you can both add folders and notes to.</p>
+        <label class="login-field"><span>Usernames</span><input id="collab-new-members" type="text" placeholder="alex, sam, jordan" autocomplete="off" /></label>
+        <p class="login-error" id="collab-new-status" hidden></p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="collab-new-cancel" type="button">Cancel</button>
+          <button class="btn btn-primary" id="collab-new-create" type="button">Send request</button>
+        </div>
+      </div>
+    </div>
+    <!-- Shared note: members who were invited but have not accepted yet -->
+    <div class="modal-overlay" id="collab-pending-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="collab-pending-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Shared note</p>
+            <h2 id="collab-pending-title">Members</h2>
+          </div>
+          <button class="icon-button" id="close-collab-pending" aria-label="Close" data-icon="x"></button>
+        </div>
+        <p class="modal-desc">Everyone in this section, plus people who were invited but have not accepted yet.</p>
+        <div class="collab-pending-list" id="collab-pending-list"></div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="collab-pending-done" type="button">Done</button>
+        </div>
+      </div>
+    </div>
+    <!-- Shared section settings (owner only): section-level tag list -->
+    <div class="modal-overlay" id="section-settings-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="section-settings-title">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow">Shared section</p>
+            <h2 id="section-settings-title">Section settings</h2>
+          </div>
+          <button class="icon-button" id="close-section-settings" aria-label="Close" data-icon="x"></button>
+        </div>
+        <div id="section-members-block">
+          <p class="collab-members-section">Members — whole section access</p>
+          <p class="modal-desc desc-tight">Invite someone to see the entire shared section (all folders and notes). Only the owner can add members.</p>
+          <div id="section-members-list"></div>
+          <div class="section-tags-add section-invite-row">
+            <input id="section-invite-input" class="section-invite-input" type="text" placeholder="username" autocomplete="off" maxlength="32" />
+            <label class="setting-row section-invite-whole"><input type="checkbox" id="section-invite-whole" checked /><span class="setting-row-text"><strong>Whole section</strong></span></label>
+            <button class="btn btn-primary" id="section-invite-btn" type="button">Invite</button>
+          </div>
+          <p class="modal-desc desc-tight section-invite-hint">Checked = new member sees every folder and note in this section.</p>
+          <p class="login-error" id="section-invite-error" hidden></p>
+          <p class="login-error" id="section-invite-status" hidden></p>
+        </div>
+        <hr />
+        <p class="collab-members-section">Tags</p>
+        <p class="modal-desc desc-tight">A shared set of tags for this section, offered as suggestions when tagging its notes.</p>
+        <div class="tag-editor-current" id="section-tags-current"></div>
+        <div class="section-tags-add">
+          <input id="section-tags-input" type="text" placeholder="Add a tag" autocomplete="off" />
+          <button class="btn btn-secondary" id="section-tags-add-btn" type="button">Add</button>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" id="section-settings-done" type="button">Done</button>
+        </div>
       </div>
     </div>
     <!-- Shared delete-confirm popup (note / folder / Bin variants, filled by setDeleteDialog) -->
@@ -459,7 +686,7 @@
           </div>
           <button class="icon-button" id="resync-close" aria-label="Close resync dialog" data-icon="x"></button>
         </div>
-        <p class="modal-desc">This device has notes saved in local storage. Upload, and they replace the notes on the Notely server — or keep the server copy and clear the local one.</p>
+        <p class="modal-desc">This device has notes saved in local storage. Upload, and they replace the notes on the Notive server — or keep the server copy and clear the local one.</p>
         <div class="modal-actions">
           <button class="btn btn-secondary" id="resync-cancel">Cancel</button>
           <button class="btn btn-danger" id="resync-keep">Keep server notes</button>
@@ -510,7 +737,7 @@
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
         <div class="modal-head">
           <div>
-            <p class="eyebrow" id="prompt-eyebrow">Notely</p>
+            <p class="eyebrow" id="prompt-eyebrow">Notive</p>
             <h2 id="prompt-title">Input needed</h2>
           </div>
           <button class="icon-button" id="prompt-cancel-x" aria-label="Cancel" data-icon="x"></button>
@@ -535,9 +762,9 @@
         </div>
         <p class="modal-desc">Scan into your authenticator app, or enter the secret manually:</p>
         <div id="mfa-setup-block">
-          <div id="mfa-qr" style="display:flex;justify-content:center;padding:8px"></div>
-          <p class="modal-desc" style="text-align:center">Secret: <code id="mfa-secret" style="user-select:all"></code></p>
-          <p class="modal-desc" style="overflow-wrap:anywhere"><small id="mfa-otpauth"></small></p>
+          <div id="mfa-qr" class="center-flex-pad"></div>
+          <p class="modal-desc desc-center">Secret: <code id="mfa-secret" class="select-all"></code></p>
+          <p class="modal-desc wrap-anywhere"><small id="mfa-otpauth"></small></p>
           <label class="login-field"><span>6-digit code</span><input id="mfa-confirm-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" /></label>
           <p class="login-error" id="mfa-error" hidden></p>
           <button class="btn btn-secondary login-submit" id="mfa-confirm-btn" type="button">Verify &amp; enable</button>
@@ -556,7 +783,7 @@
         <p class="modal-desc">Store them somewhere safe (password manager, printed paper). Each code works once.</p>
         <ol id="acct-rec-codes" class="recovery-code-list"></ol>
         <p class="login-error" id="acct-rec-modal-error" hidden></p>
-        <div class="modal-actions" style="justify-content:flex-start">
+        <div class="modal-actions actions-start">
           <button class="btn btn-secondary" id="acct-rec-download-btn" type="button">Download codes (.txt)</button>
           <button class="btn btn-primary" id="acct-rec-done-btn" type="button">I have saved the codes</button>
         </div>
@@ -576,7 +803,7 @@
         <div id="vault-setup-block" hidden>
           <label class="login-field"><span>Vault password</span><input id="vault-new-password" type="password" autocomplete="new-password" maxlength="256" /></label>
           <label class="login-field"><span>Confirm vault password</span><input id="vault-confirm-password" type="password" autocomplete="new-password" maxlength="256" /></label>
-          <p class="login-hint">Min 12 characters with 1 capital, 1 small, 1 number and 1 special character. This password is separate from your login — lose it and the vault cannot be recovered.</p>
+          <p class="login-hint">Min 15 characters. This password is separate from your login — lose it and the vault cannot be recovered.</p>
         </div>
         <div id="vault-unlock-block" hidden>
           <label class="login-field"><span>Vault password</span><input id="vault-password" type="password" autocomplete="current-password" maxlength="256" /></label>
@@ -597,6 +824,7 @@
       <button type="button" class="context-item" data-menu-action="open" role="menuitem"><span data-icon="file-text"></span><span>Open</span></button>
       <button type="button" class="context-item" data-menu-action="favorite" role="menuitem"><span data-icon="star"></span><span id="context-favorite-label">Favorite</span></button>
       <button type="button" class="context-item" data-menu-action="important" role="menuitem"><span data-icon="flag"></span><span id="context-important-label">Mark as important</span></button>
+      <button type="button" class="context-item" data-menu-action="tags" role="menuitem"><span data-icon="tag"></span><span>Tags…</span></button>
       <button type="button" class="context-item" data-menu-action="archive" role="menuitem"><span data-icon="archive"></span><span id="context-archive-label">Archive</span></button>
       <button type="button" class="context-item" data-menu-action="unarchive" role="menuitem"><span data-icon="restore"></span><span>Unarchive</span></button>
       <button type="button" class="context-item" data-menu-action="duplicate" role="menuitem"><span data-icon="copy"></span><span>Duplicate</span></button>
@@ -608,9 +836,16 @@
     <!-- Right-click section menu: New folder / Rename / Delete -->
     <div class="context-menu" id="section-context-menu" role="menu" aria-label="Section actions" hidden>
       <button type="button" class="context-item" data-section-action="add" role="menuitem"><span data-icon="folder-plus"></span><span>New folder</span></button>
+      <button type="button" class="context-item" data-section-action="icon" role="menuitem"><span data-icon="palette"></span><span>Change icon</span></button>
       <button type="button" class="context-item" data-section-action="rename" role="menuitem"><span data-icon="pencil"></span><span>Rename section</span></button>
       <div class="context-separator" aria-hidden="true"></div>
       <button type="button" class="context-item danger" data-section-action="delete" role="menuitem"><span data-icon="trash"></span><span>Delete section</span></button>
+    </div>
+    <!-- Right-click menu for vaults: Rename / Delete -->
+    <div class="context-menu" id="vault-context-menu" role="menu" aria-label="Vault actions" hidden>
+      <button type="button" class="context-item" data-vault-action="rename" role="menuitem"><span data-icon="pencil"></span><span>Rename vault</span></button>
+      <div class="context-separator" aria-hidden="true"></div>
+      <button type="button" class="context-item danger" data-vault-action="delete" role="menuitem"><span data-icon="trash"></span><span>Delete vault</span></button>
     </div>
     <!-- Right-click folder menu: Open / Rename / New subfolder / Delete (Bin folders get Restore instead) -->
     <div class="context-menu" id="folder-context-menu" role="menu" aria-label="Folder actions" hidden>
@@ -622,9 +857,13 @@
       <div class="context-separator" aria-hidden="true"></div>
       <button type="button" class="context-item danger" data-folder-action="delete" role="menuitem"><span data-icon="trash"></span><span id="folder-delete-label">Delete</span></button>
     </div>
-    <!-- All behavior lives in app.js (single IIFE); backend API in server.py -->
-    <!-- Vendored QR (MIT, qrcodejs) for MFA setup. Local only: secret never leaves device. -->
-    <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous" defer></script>
-    <script src="app.js?v=dev21"></script>
+    <!-- Right-click menu for shared notes / shared folders (items filled by JS) -->
+    <div class="context-menu" id="shared-context-menu" role="menu" aria-label="Shared actions" hidden></div>
+    <!-- All behavior lives in js/ modules (single page); backend API in server.py -->
+    <!-- Vendored QR (MIT, qrcode-generator 1.5.0; adapter keeps the QRCode(...) API) for MFA setup. Local only: secret never leaves device. -->
+    <script src="js/boot.js"></script>
+    <script src="vendor/qrcode/qrcode.min.js" integrity="sha384-fNse+GzXblndDsHPTGnb91FmFdpQmGqYCGhwecMIsHKDmKkjiuy5DZmjYggpKP6e" crossorigin="anonymous" defer></script>
+    <script src="vendor/mermaid/mermaid.min.js" integrity="sha384-EOXBFmc3gx5mb+vn0vPvvGqACToJD24hhacX5Yx+8NUUQrHIle/Qi5Bg9o3zKwW2" crossorigin="anonymous" defer></script>
+    <script type="module" src="js/app.js?v=dev172"></script>
   </body>
 </html>

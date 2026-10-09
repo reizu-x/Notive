@@ -1,9 +1,19 @@
 # Secrets, databases and logs stay out everywhere (any folder depth).
-notely.db
-notely.db.*
-notely.key
+notive.db
+notive.db.*
+notive.key
 *.bak
 *.bak-*
-notely.db.bak*
+notive.db.bak*
 server-*.log
+audit.log
+audit-*.log
 __pycache__/
+
+# TLS material (private CA + server keys) and DB snapshots — never commit.
+certs/
+dbbackup/
+
+# Local safety snapshots (revert points).
+.revert/
+.env

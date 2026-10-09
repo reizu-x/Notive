@@ -1,0 +1,15 @@
+# Build context excludes: secrets, local state, history, marketing site
+# (not served by Flask), and anything regenerable.
+.git/
+__pycache__/
+*.pyc
+dbbackup/
+certs/
+notive.key
+.env
+*.log
+audit.log
+server-*.log
+.opencode/
+.revert/
+Site/

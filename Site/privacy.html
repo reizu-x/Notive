@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy — Notive</title>
+<meta name="description" content="How Notive keeps your notes private: end-to-end encryption, vaults, 2FA, passkeys and self-serve recovery." />
+<link rel="stylesheet" href="styles.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23242c3c'/%3E%3Cpath d='M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z' fill='%23c8e8dc'/%3E%3C/svg%3E" />
+</head>
+<body>
+<header class="site-header">
+  <div class="container header-inner">
+    <a class="brand" href="index.html"><span class="brand-mark"><svg viewBox="0 0 32 32" fill="none" width="22" height="22"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#242C3C" stroke-width="1.7" stroke-linecap="round"/></svg></span> Notive</a>
+    <nav class="nav-desktop"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="privacy.html" class="active">Privacy</a><a href="self-host.html">Self-host</a><a href="index.html#faq">FAQ</a></nav>
+    <div class="header-cta"><a class="btn btn-ghost btn-sm" href="self-host.html">Run it yourself</a><a class="btn btn-primary btn-sm" href="self-host.html#get-started">Get Notive</a><button class="menu-btn" id="menu-btn" aria-expanded="false">☰</button></div>
+  </div>
+  <nav class="mobile-nav" id="mobile-nav"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="privacy.html">Privacy</a><a href="self-host.html">Self-host</a></nav>
+</header>
+
+<main class="container">
+<div class="page-hero">
+  <div class="breadcrumb"><a href="index.html">Home</a> / Privacy</div>
+  <p class="eyebrow">Privacy by design</p>
+  <h1>The server never sees your words.</h1>
+  <p class="lead">Notive is built around end-to-end encryption. In plain terms: your notes are encrypted on your device before they ever leave it. Your password never leaves your device; it unlocks your notes locally.</p>
+</div>
+
+<section class="section" style="padding-top:18px" id="what-we-cant-see">
+  <div class="grid-2">
+    <div class="card"><div class="icon mint">✓</div><h3>What stays private</h3><ul><li>Note titles, bodies, folders &amp; sections</li><li>Tags, recipe ingredients &amp; steps</li><li>To-do contents &amp; progress</li><li>Vault notes (separate password)</li><li>Shared sections (only members decrypt)</li></ul></div>
+    <div class="card"><div class="icon coral">∅</div><h3>What the server stores</h3><p>Only ciphertext + the minimum needed to operate accounts:</p><ul><li>Encrypted blobs (meaningless without your key)</li><li>Username + login verifiers (not your password)</li><li>Optional email for recovery, if you add one</li></ul><div class="callout">Seize the server and you get noise. That's the point.</div></div>
+  </div>
+</section>
+
+<section class="section alt">
+  <div class="container">
+    <h2>Layers, not promises</h2>
+    <div class="grid-3">
+      <div class="card reveal"><h3>🔒 Vaults</h3><p class="muted">Password-protected vaults for sensitive notes, separate from your login. Lock with one click.</p></div>
+      <div class="card reveal"><h3>👥 Encrypted sharing</h3><p class="muted">Shared sections invite members by username. End-to-end encrypted — new members only see what they're invited to.</p></div>
+      <div class="card reveal"><h3>📱 2FA + passkeys</h3><p class="muted">Authenticator-app codes (TOTP) and device passkeys. Your password is still needed once per device to unlock notes.</p></div>
+      <div class="card reveal"><h3>🗑️ Forgiving Bin</h3><p class="muted">Deleted notes rest in the Bin before permanent removal. Mistakes are recoverable.</p></div>
+      <div class="card reveal"><h3>💾 Encrypted backups</h3><p class="muted">Automatic backups of the encrypted store. Export anytime as JSON, YAML, Markdown or TXT.</p></div>
+      <div class="card reveal"><h3>🚫 No tracking</h3><p class="muted">No ads, no analytics beacons, no third-party fonts. This marketing site makes zero external requests.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="recovery">
+  <div class="container" style="max-width:820px">
+    <p class="eyebrow">Recovery</p>
+    <h2>Only you can regain access</h2>
+    <p class="lead">Even account recovery is designed so that only you can regain access to your data.</p>
+    <div class="steps">
+      <div class="step"><div class="step-n">1</div><div><b>Generate codes while logged in</b><p class="muted small">Settings → Authentication → Recovery codes. Each code unwraps your notes key and works once.</p></div></div>
+      <div class="step"><div class="step-n">2</div><div><b>Store them offline</b><p class="muted small">Print them, write them down, keep them with important papers — not in your notes app.</p></div></div>
+      <div class="step"><div class="step-n">3</div><div><b>Recover anytime</b><p class="muted small">Forgot password? Enter username + code, set a new password. Your notes stay under the same key.</p></div></div>
+    </div>
+    <div class="callout warn"><b>Important:</b> if you lose both your password <em>and</em> your recovery codes/email access, nobody — not even us — can decrypt your notes. That's zero-knowledge working as intended.</div>
+    <p><a class="btn btn-primary" href="self-host.html#get-started">Try Notive safely →</a> <a class="btn btn-ghost" href="index.html#faq">Back to FAQ</a></p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="container footer-grid">
+    <div><a class="brand" href="index.html"><span class="brand-mark"><svg viewBox="0 0 32 32" fill="none" width="22" height="22"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/></svg></span> Notive</a><p class="muted small">Your notes. Truly yours.</p></div>
+    <div><b>Product</b><a href="index.html#features">Features</a><a href="self-host.html">Self-host</a></div>
+    <div><b>Trust</b><a href="privacy.html">Privacy model</a><a href="#recovery">Recovery</a></div>
+    <div><b>Get started</b><a href="self-host.html#get-started">Quick start</a></div>
+  </div>
+  <div class="container footer-bottom"><span>© 2026 Notive</span><span>Encrypted always.</span></div>
+</footer>
+<script src="script.js"></script>
+</body>
+</html>
