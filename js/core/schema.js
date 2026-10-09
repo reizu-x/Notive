@@ -56,6 +56,13 @@ export function parseRecipeBody(body) {
 
 export function migrateNote(note) {
   const migrated = (note && typeof note === 'object' && !Array.isArray(note)) ? { ...note } : {};
+  // Hidden system tags (leading underscore — retired `_todo`/`_recipe`
+  // markers) and any tag outside the allowed alphabet (capitals, small
+  // letters, dash) are stripped from every note on load.
+  if (Array.isArray(migrated.tags)) {
+    migrated.tags = migrated.tags.filter((tag) =>
+      /^[A-Za-z-]+$/.test(String(tag || '')) && !String(tag).startsWith('_'));
+  }
   if (!isValidNoteId(migrated.id)) migrated.id = newNoteId();
   if (!NOTE_EXTS.includes(migrated.ext)) {
     const extMatch = typeof migrated.title === 'string' ? migrated.title.match(/\.((md|markdown|txt|text|json|yaml|yml))$/i) : null;

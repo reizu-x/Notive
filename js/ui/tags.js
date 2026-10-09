@@ -153,7 +153,7 @@ export function addNoteTag(note, name) {
   if (!note || !tag) return false;
   // The retired 'important' tag can no longer be added: use Mark as important.
   if (tag.toLowerCase() === IMPORTANT_TAG) { showToast('Use Mark as important instead'); return false; }
-  if (!isValidTagName(tag)) { showToast('Tags allow letters only (A–Z)'); return false; }
+  if (!isValidTagName(tag)) { showToast('Tags allow capitals, small letters and - only'); return false; }
   if (!Array.isArray(note.tags)) note.tags = [];
   if (noteTagIndex(note, tag) !== -1) return false;
   if (note.tags.length >= 20) { showToast('Tag limit reached (20 per note)'); return false; }
@@ -170,10 +170,10 @@ export function normalizeTagName(name) {
   return String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, 40);
 }
 
-// Tags allow letters only (A–Z, either case) — no numbers, spaces, or
-// special characters.
+// Tags allow capitals, small letters and dashes only (no numbers, spaces
+// or special characters).
 export function isValidTagName(name) {
-  return /^[A-Za-z]+$/.test(String(name == null ? '' : name));
+  return /^[A-Za-z-]+$/.test(String(name == null ? '' : name));
 }
 
 // User-created tags that may not be attached to any note yet (Settings → Tags).
@@ -218,7 +218,7 @@ export function tagEditorAdd(raw) {
   if (!tag) return;
   if (state.tagEditorShared) {
     if (!state.collab.noteId || !state.collab.tags) return;
-    if (!isValidTagName(tag)) { showToast('Tags allow letters only (A–Z)'); return; }
+    if (!isValidTagName(tag)) { showToast('Tags allow capitals, small letters and - only'); return; }
     const list = sharedTagList();
     if (list.some((t) => String(t).toLowerCase() === tag.toLowerCase())) return;
     if (list.length >= 20) { showToast('Tag limit reached (20 per note)'); return; }
@@ -239,7 +239,7 @@ export function tagEditorAdd(raw) {
 export function addKnownTag(raw) {
   const tag = normalizeTagName(raw);
   if (!tag) { showToast('Enter a tag name'); return false; }
-  if (!isValidTagName(tag)) { showToast('Tags allow letters only (A–Z)'); return false; }
+  if (!isValidTagName(tag)) { showToast('Tags allow capitals, small letters and - only'); return false; }
   if (state.knownTags.some((entry) => entry.toLowerCase() === tag.toLowerCase())) { showToast(`Tag “${tag}” already exists`); return false; }
   if (state.knownTags.length >= 500) { showToast('Tag limit reached (500)'); return false; }
   state.knownTags.push(tag);
@@ -274,7 +274,7 @@ export function renameTagEverywhere(oldName, rawNew) {
   const from = normalizeTagName(oldName).toLowerCase();
   const to = normalizeTagName(rawNew);
   if (!from || !to || from === to.toLowerCase()) return false;
-  if (!isValidTagName(to)) { showToast('Tags allow letters only (A–Z)'); return false; }
+  if (!isValidTagName(to)) { showToast('Tags allow capitals, small letters and - only'); return false; }
   let changed = 0;
   state.notes.forEach((note) => {
     if (!Array.isArray(note.tags)) return;
