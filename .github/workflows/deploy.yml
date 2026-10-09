@@ -1,0 +1,61 @@
+name: Deploy to VPS
+
+# Deploys main to the Notive VPS over SSH, rebuilds the app image and restarts
+# the app container. Requires repository secrets:
+#   NOTIVE_SSH_KEY  — private key of the actions deploy key (authorized on the VPS)
+# Server state NOT managed here (must never be overwritten by deploys):
+#   /opt/notive/.env        (DB password + NOTIVE_PG_DSN)
+#   /opt/notive/certs/      (TLS material)
+#   /opt/notive/notive.key  (E2E encryption key, if present)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          install -m 600 /dev/null ~/.ssh/notive
+          printf '%s\n' "${{ secrets.NOTIVE_SSH_KEY }}" > ~/.ssh/notive
+          ssh-keyscan -H 87.232.225.109 >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<'EOF'
+          Host notive-vps
+            HostName 87.232.225.109
+            User notive
+            IdentityFile ~/.ssh/notive
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Rsync code to VPS
+        run: |
+          rsync -az --delete \
+            --exclude .git/ --exclude .github/ \
+            --exclude .env --exclude certs/ --exclude notive.key \
+            --exclude '__pycache__/' --exclude '*.pyc' \
+            ./ notive-vps:/opt/notive/
+
+      - name: Build image and restart app
+        run: |
+          ssh notive-vps 'set -e
+            cd /opt/notive
+            podman build -t notive_app:latest . 2>&1 | tail -2
+            export XDG_RUNTIME_DIR=/run/user/$(id -u)
+            systemctl --user restart notive-app.service
+            sleep 8
+            STATUS=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 https://127.0.0.1:5001/)
+            echo "healthcheck: $STATUS"
+            [ "$STATUS" = "200" ] || { echo "--- app logs on failure ---"; podman logs --tail 50 notive-app 2>&1 || true; exit 1; }
+          '
