@@ -1,4 +1,4 @@
-// js/domain/state.js — single owner of Notive's shared mutable app state.
+// js/domain/state.js — single owner of DrafNote's shared mutable app state.
 // Every changing global lives here as a property (imports are read-only
 // bindings, so state is mutated via this object, never reassigned as a bare
 // variable). app.js initializes the fields in place; this module owns the
@@ -46,7 +46,7 @@ export const state = {
   knownTags: [],
   uiVaultTimer: null,
   activeCustom: null, // { section: id, folder: path | null } | null — section/folder filter,
-  lastMarkedSectionId: (() => { try { return localStorage.getItem('notive-last-section') || null; } catch (error) { return null; } })(), // last section the user marked — survives view switches and reloads so the strip keeps reflecting it,
+  lastMarkedSectionId: (() => { try { return localStorage.getItem('drafnote-last-section') || null; } catch (error) { return null; } })(), // last section the user marked — survives view switches and reloads so the strip keeps reflecting it,
   sharedFolder: null, // { groupId, folder } | null — folder filter inside the Shared view (folder '' = section root),
   sharedPerson: null, // username — person filter inside the Shared view (sidebar person rows),
   vaultFolder: null, // folder path — folder filter inside the Vault view (sidebar vault rows),

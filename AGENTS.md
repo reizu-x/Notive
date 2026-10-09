@@ -1,4 +1,4 @@
-# Notive Dev — agent notes
+# DrafNote Dev — agent notes
 
 ## Working agreements
 
@@ -11,7 +11,7 @@
 ## Running / restarting the dev server
 
 The dev server is **HTTPS-only**. It binds `0.0.0.0:5001` and loads
-`certs/notive.crt` + `certs/notive.key` by default — no env vars required:
+`certs/drafnote.crt` + `certs/drafnote.key` by default — no env vars required:
 
 ```bash
 nohup python3 server.py > /home/r3izu/Documents/audit/server-dev.log 2>&1 &
@@ -33,22 +33,39 @@ runs, so schema init + the backup loop start in `post_fork` instead.
 
 Optional overrides:
 - `PORT` (default `5001`)
-- `NOTIVE_BIND_HOST` (default `0.0.0.0`)
-- `NOTIVE_TLS_CERT` / `NOTIVE_TLS_KEY` (default `certs/notive.crt` / `certs/notive.key`)
+- `DRAFNOTE_BIND_HOST` (default `0.0.0.0`)
+- `DRAFNOTE_TLS_CERT` / `DRAFNOTE_TLS_KEY` (default `certs/drafnote.crt` / `certs/drafnote.key`)
 
 The server **refuses to start** without a cert/key (there is no plain-HTTP mode).
 
 - Reachable from other PCs at: **https://192.168.22.241:5001**
 - Local: https://127.0.0.1:5001
-- TLS is a **local CA** setup: `certs/notive-ca.crt` (root CA) signs
-  `certs/notive.crt` (server). Trust `certs/notive-ca.crt` once on each client
+- TLS is a **local CA** setup: `certs/drafnote-ca.crt` (root CA) signs
+  `certs/drafnote.crt` (server). Trust `certs/drafnote-ca.crt` once on each client
   and the browser stops showing "Not Secure".
 - If the LAN IP changes, regenerate with the new IP:
   `./certs/generate-certs.sh 192.168.22.241` (extra IPs become SANs), then
-  re-copy `certs/notive-ca.crt` to clients and restart the server.
+  re-copy `certs/drafnote-ca.crt` to clients and restart the server.
 
 Verify after restart:
 ```bash
 curl -sk -o /dev/null -w "%{http_code}\n" https://192.168.22.241:5001/   # expect 200
 ss -tlnp | grep 5001                                                      # expect 0.0.0.0:5001
 ```
+
+## Restart ritual (DB-safety, learned 2026-09-24)
+
+A stale `DRAFNOTE_PG_DSN` once pointed a live server at a dropped database
+(all requests 500'd) while the boot log looked normal. Every restart must:
+
+1. Strip DSN overrides unless intentionally migrating:
+   `env -u DRAFNOTE_PG_DSN` prefix, or `unset` first in persistent shells.
+2. Kill the old process by explicit PID from `ss -tlnp` (never `pkill -f`
+   with a pattern that matches your own shell).
+3. After boot, confirm the banner says `[compiled default]` (or the intended
+   `[DRAFNOTE_PG_DSN override]`) and verify the live process env:
+```bash
+tr '\0' '\n' < /proc/$(ss -tlnp | grep -oP ':5001.*pid=\K\d+' | head -1)/environ | grep _PG_DSN || echo "clean"
+```
+4. Never DROP a database/role without first confirming no live process
+   points at it (check the banner + process env above).

@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DrafNote — Your notes. Truly yours.</title>
+<meta name="description" content="DrafNote is a private, self-hosted notes app with end-to-end encryption. Write, organise and find everything — only you can read it." />
+<link rel="stylesheet" href="styles.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23242c3c'/%3E%3Cpath d='M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z' fill='%23c8e8dc'/%3E%3C/svg%3E" />
+</head>
+<body>
+<header class="site-header">
+  <div class="container header-inner">
+    <a class="brand" href="index.html" aria-label="DrafNote home">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#242C3C" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+      DrafNote
+    </a>
+    <nav class="nav-desktop" aria-label="Primary">
+      <a href="index.html" class="active">Home</a>
+      <a href="index.html#features">Features</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="self-host.html">Self-host</a>
+      <a href="index.html#faq">FAQ</a>
+    </nav>
+    <div class="header-cta">
+      <a class="btn btn-ghost btn-sm" href="self-host.html">Run it yourself</a>
+      <a class="btn btn-primary btn-sm" href="self-host.html#get-started">Get DrafNote</a>
+      <button class="menu-btn" id="menu-btn" aria-label="Open menu" aria-expanded="false">☰</button>
+    </div>
+  </div>
+  <nav class="mobile-nav" id="mobile-nav" aria-label="Mobile">
+    <a href="index.html">Home</a>
+    <a href="index.html#features">Features</a>
+    <a href="privacy.html">Privacy</a>
+    <a href="self-host.html">Self-host</a>
+    <a href="index.html#faq">FAQ</a>
+  </nav>
+</header>
+
+<main>
+<section class="hero">
+  <div class="container hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow">● Private · Self-hosted · Open source</p>
+      <h1>Your notes.<br/>Truly yours.</h1>
+      <p class="lead">DrafNote is a calm, focused notes app built on a simple promise: your notes are encrypted on your device before they ever leave it. The server can only ever see ciphertext — never your words.</p>
+      <ul class="hero-bullets">
+        <li>End-to-end encrypted</li>
+        <li>Recipes, to-dos &amp; Markdown</li>
+        <li>Vaults + 2FA + passkeys</li>
+        <li>Import / export your data</li>
+      </ul>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="self-host.html#get-started">Self-host in 5 minutes →</a>
+        <a class="btn btn-ghost" href="privacy.html">How encryption works</a>
+      </div>
+      <p class="hero-note">No tracking · No ads · Works offline · Cloud option coming soon at <code>cost price</code></p>
+    </div>
+    <div class="mock" role="img" aria-label="Preview of the DrafNote app interface">
+      <div class="mock-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="small muted" style="margin-left:8px">DrafNote — All Notes</span></div>
+      <div class="mock-body">
+        <div class="mock-side">
+          <strong>Workspace</strong>
+          <div class="mock-nav on"><span class="mock-pill"></span> All Notes</div>
+          <div class="mock-nav"><span class="mock-pill"></span> Shared</div>
+          <div class="mock-nav"><span class="mock-pill"></span> Favorites</div>
+          <div class="mock-nav"><span class="mock-pill"></span> Vault</div>
+          <strong>Sections</strong>
+          <div class="mock-nav"><span class="mock-pill"></span> Recipes</div>
+          <div class="mock-nav"><span class="mock-pill"></span> Research</div>
+        </div>
+        <div class="mock-list">
+          <div class="mock-search">Search notes and folders ⌕</div>
+          <div class="mock-card on"><b>Designing a calmer inbox</b><span>Edited today · 146 words</span><br/><span class="mock-tag">product</span><span class="mock-tag">systems</span></div>
+          <div class="mock-card"><b>Grandma's sourdough</b><span>Recipe · 12 ingredients</span></div>
+          <div class="mock-card"><b>Q4 research reading list</b><span>To-do · 8/12 done</span></div>
+        </div>
+        <div class="mock-editor">
+          <div class="mock-title">Designing a calmer inbox</div>
+          <div class="mock-meta">Edited today · product · systems</div>
+          <div class="mock-lines"><span class="mid"></span><span></span><span class="short"></span></div>
+          <div class="mock-check"><span class="box"></span> Ship calm defaults, not noisy ones</div>
+          <div class="mock-check"><span class="box" style="background:#fff"></span> Draft launch checklist</div>
+        </div>
+      </div>
+      <div class="mock-foot"><span>Local &amp; private</span><span>🔒 Encrypted before sync</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="trust">
+  <div class="container trust-row">
+    <div class="trust-card reveal"><div class="trust-ic">E2E</div><div><b>Zero-knowledge</b><span>Password never leaves your device.</span></div></div>
+    <div class="trust-card reveal"><div class="trust-ic">⌂</div><div><b>Self-hosted</b><span>Run it on your own hardware.</span></div></div>
+    <div class="trust-card reveal"><div class="trust-ic">&lt;/&gt;</div><div><b>Open source</b><span>Review every line of code.</span></div></div>
+    <div class="trust-card reveal"><div class="trust-ic">◍</div><div><b>Own your data</b><span>JSON, YAML, Markdown, TXT.</span></div></div>
+  </div>
+</section>
+
+<section class="section" id="features">
+  <div class="container">
+    <p class="eyebrow">Features</p>
+    <h2>Everything you need to think clearly</h2>
+    <p class="lead">Recipes, to-dos, journals, research — one calm place to write, organise and find what matters.</p>
+    <div class="grid-features">
+      <div class="card reveal"><div class="icon">M</div><h3>Write your way</h3><p>Clean Write / Preview Markdown editor with toolbar, word counts and covers.</p><ul><li>Recipe template with ingredients + steps</li><li>To-do template with progress tracking</li><li>Flowcharts &amp; diagrams from plain text</li></ul></div>
+      <div class="card reveal"><div class="icon mint">≡</div><h3>Organise freely</h3><p>Colourful sections with nesting folders, arranged by drag and drop.</p><ul><li>All, Important &amp; Recent views</li><li>Star favourites, archive done work</li><li>Bin with grace-period restore</li></ul></div>
+      <div class="card reveal"><div class="icon coral">◈</div><h3>Lock it down</h3><p>Extra protection exactly where you need it.</p><ul><li>Password-protected vaults</li><li>End-to-end encrypted shared sections</li><li>2FA, passkeys &amp; self-serve recovery</li></ul></div>
+      <div class="card reveal"><div class="icon mint">⌕</div><h3>Find anything</h3><p>Full-text search across titles, contents, folders and recipe fields.</p><ul><li>Quoted tag &amp; phrase queries</li><li>Per-section &amp; per-folder filtering</li><li>Tag manager + tag search</li></ul></div>
+      <div class="card reveal"><div class="icon">⇄</div><h3>Own your data</h3><p>No lock-in. Your notes travel with you.</p><ul><li>Import / export JSON, YAML, MD, TXT</li><li>Automatic encrypted backups</li><li>Folders travel with notes</li></ul></div>
+      <div class="card reveal"><div class="icon mint">✎</div><h3>Calm by design</h3><p>Six themes and reading fonts, synced per device. No feeds, no pings.</p><ul><li>Light, Dark, Dracula, Nord + more</li><li>Serif, Sans, Mono reading fonts</li><li>Focus mode for writing</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt" id="templates">
+  <div class="container">
+    <p class="eyebrow">Templates</p>
+    <h2>Start from structure, not a blank page</h2>
+    <div class="tpl-tabs" role="tablist">
+      <button class="tpl-tab on" data-tpl="standard">Standard note</button>
+      <button class="tpl-tab" data-tpl="recipe">Recipe</button>
+      <button class="tpl-tab" data-tpl="todo">To-do</button>
+    </div>
+    <div class="tpl-panel on" data-panel="standard">
+      <div><h3>Standard notes</h3><p class="muted">Markdown with live preview, formatting toolbar, tags, covers and word counts. Perfect for journals, meeting notes and essays.</p><p><span class="mock-tag">Markdown</span><span class="mock-tag">Preview</span><span class="mock-tag">Tags</span></p></div>
+      <div class="recipe-box"><h4 style="color:#2f7b66">Preview</h4><p><strong>Morning pages</strong><br/><span class="muted">Three things I want today: calm, focus, one finished draft. <em>Progress over noise.</em></span></p><div class="progress"><i style="width:38%"></i></div><p class="small muted">52 words · Edited today</p></div>
+    </div>
+    <div class="tpl-panel" data-panel="recipe">
+      <div><h3>Recipe template</h3><p class="muted">Structured ingredients and method steps — not a wall of text. Meal photo + editable description up top.</p><ul><li>Ingredients list with quantities</li><li>Numbered method steps</li><li>Searchable by ingredient</li></ul></div>
+      <div class="recipe-box"><h4>Grandma's sourdough</h4><ul><li>500g strong bread flour</li><li>375g water · 100g starter · 10g salt</li><li>Fold 4×, cold-proof overnight</li></ul></div>
+    </div>
+    <div class="tpl-panel" data-panel="todo">
+      <div><h3>To-do template</h3><p class="muted">Checkboxes that track progress automatically. Ideal for projects, packing lists and reading lists.</p><div class="progress"><i></i></div><p class="small muted">8 of 12 done</p></div>
+      <div class="todo-demo"><label><input type="checkbox" checked /> Draft launch post</label><label><input type="checkbox" checked /> Export backup</label><label><input type="checkbox" /> Invite beta readers</label></div>
+    </div>
+  </div>
+</section>
+
+<section class="section navy" id="privacy-teaser">
+  <div class="container">
+    <p class="eyebrow dark">Privacy by design</p>
+    <h2>Encrypted before it ever leaves you</h2>
+    <p class="lead">Not password-protected-after-upload. Encrypted-first, always. If someone seized the server, they'd get noise.</p>
+    <div class="flow">
+      <div class="flow-card"><b>1 · You write</b><p>Notes are encrypted on your device with <code>your password</code> as the key. Plaintext never travels.</p></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-card"><b>2 · Server stores noise</b><p>The server sees only <code>ciphertext</code>. No words, no tags, no titles to mine or subpoena.</p></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-card"><b>3 · Only you unlock</b><p>Login unlocks locally. Recovery codes unwrap your key — <code>only you</code> can regain access.</p></div>
+    </div>
+    <div class="codebox"><span class="dim"># What the server actually stores</span><br/>{ "title": "9f3a…c1", "body": "U2FsdGVkX1+4…qZ==", "tags": ["a91f…"] }  <span class="dim">← meaningless without your key</span></div>
+    <p style="margin-top:18px"><a class="btn btn-mint" href="privacy.html">Read the full privacy model →</a></p>
+  </div>
+</section>
+
+<section class="section" id="themes">
+  <div class="container grid-2">
+    <div>
+      <p class="eyebrow">Comfort</p>
+      <h2>Six themes, six reading fonts</h2>
+      <p class="lead">Late-night Dracula, paper-like Light, arctic Nord — pick what your eyes like. Saved per device, so phone and desktop can differ.</p>
+      <ul class="muted"><li>Light · Dark · Dracula · Nord · Tokyo Night · Gruvbox</li><li>Serif, Palatino, Sans, Verdana, Mono</li></ul>
+    </div>
+    <div class="themes">
+      <div class="theme"><div class="theme-top" style="background:#fbfaf7"><i style="background:#242c3c"></i><i style="background:#c8e8dc"></i><i style="background:#e8a18e"></i></div><div class="theme-body"><b>Light</b>Warm paper</div></div>
+      <div class="theme"><div class="theme-top" style="background:#151a26"><i style="background:#e8ecf3"></i><i style="background:#5b6b84"></i><i style="background:#c8e8dc"></i></div><div class="theme-body"><b>Dark</b>Late sessions</div></div>
+      <div class="theme"><div class="theme-top" style="background:#282a36"><i style="background:#ff79c6"></i><i style="background:#bd93f9"></i><i style="background:#8be9fd"></i></div><div class="theme-body"><b>Dracula</b>Fan favourite</div></div>
+      <div class="theme"><div class="theme-top" style="background:#2e3440"><i style="background:#88c0d0"></i><i style="background:#eceff4"></i><i style="background:#5e81ac"></i></div><div class="theme-body"><b>Nord</b>Arctic calm</div></div>
+      <div class="theme"><div class="theme-top" style="background:#1a1b26"><i style="background:#7aa2f7"></i><i style="background:#bb9af0"></i><i style="background:#7dcfff"></i></div><div class="theme-body"><b>Tokyo Night</b>Neon night</div></div>
+      <div class="theme"><div class="theme-top" style="background:#282828"><i style="background:#ebdbb2"></i><i style="background:#fe8019"></i><i style="background:#8ec07c"></i></div><div class="theme-body"><b>Gruvbox</b>Warm retro</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section alt" id="pricing">
+  <div class="container">
+    <p class="eyebrow">Pricing</p>
+    <h2>Free forever if you self-host. Fair if you don't.</h2>
+    <p class="lead">DrafNote is open source. Run it on your own hardware for free — or let us host it at cost when cloud launches.</p>
+    <div class="price-grid">
+      <div class="price hot reveal"><span class="badge">Available now</span><h3>Self-hosted</h3><div class="amount">Free</div><p class="muted">Open source · your hardware · your rules</p><ul><li>Unlimited notes, vaults &amp; shared sections</li><li>HTTPS-only server + automatic backups</li><li>Import / export everything, anytime</li><li>Community support + docs</li></ul><p><a class="btn btn-primary" href="self-host.html">Start self-hosting →</a></p></div>
+      <div class="price reveal"><span class="badge" style="background:#ede8df">Coming soon</span><h3>DrafNote Cloud</h3><div class="amount">At cost</div><p class="muted">Same encryption. Zero server setup.</p><ul><li>We cover servers only — no profit margin</li><li>Same zero-knowledge architecture</li><li>One-click migration from self-host</li><li>Join the waitlist, no spam</li></ul><p><a class="btn btn-ghost" href="self-host.html#cloud">Join cloud waitlist</a></p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="faq">
+  <div class="container" style="max-width:800px">
+    <p class="eyebrow">FAQ</p>
+    <h2>Questions, answered plainly</h2>
+    <div class="faq">
+      <div class="faq-item"><button class="faq-q">Can DrafNote read my notes? <span>+</span></button><div class="faq-a">No. Notes are encrypted on your device before sync. The server only stores ciphertext. Your password never leaves your device.</div></div>
+      <div class="faq-item"><button class="faq-q">What if I forget my password? <span>+</span></button><div class="faq-a">Use recovery codes you generate while logged in (store them offline — each works once), or an emailed reset link. Only you can unwrap your notes key.</div></div>
+      <div class="faq-item"><button class="faq-q">Is it really open source? <span>+</span></button><div class="faq-a">Yes. Run it yourself, audit the code, and keep everything on your own hardware. No phone-home, no analytics.</div></div>
+      <div class="faq-item"><button class="faq-q">Can I leave with my data? <span>+</span></button><div class="faq-a">Anytime. Export as JSON, YAML, Markdown or TXT — folders included. Imports land in their own section so you can sort them.</div></div>
+      <div class="faq-item"><button class="faq-q">Do you offer sharing? <span>+</span></button><div class="faq-a">Yes — end-to-end encrypted shared sections with invited members. Only accepted members can decrypt that section's notes.</div></div>
+    </div>
+    <div class="cta" style="margin-top:28px">
+      <div><h2 style="margin-bottom:8px">Start your private workspace today</h2><p>Five minutes to self-host. A lifetime of notes that stay yours.</p></div>
+      <div class="cta-actions"><a class="btn btn-mint" href="self-host.html#get-started">Get DrafNote →</a><a class="btn btn-ghost" href="privacy.html">Privacy first</a></div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="container footer-grid">
+    <div><a class="brand" href="index.html"><span class="brand-mark"><svg viewBox="0 0 32 32" fill="none" width="22" height="22"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/></svg></span> DrafNote</a><p class="muted small">Your notes. Truly yours.<br/>Private, self-hosted, open source.</p></div>
+    <div><b>Product</b><a href="index.html#features">Features</a><a href="index.html#templates">Templates</a><a href="index.html#pricing">Pricing</a><a href="self-host.html">Self-host</a></div>
+    <div><b>Trust</b><a href="privacy.html">Privacy model</a><a href="privacy.html#recovery">Recovery</a><a href="privacy.html#what-we-cant-see">What we can't see</a></div>
+    <div><b>Get started</b><a href="self-host.html#get-started">Quick start</a><a href="self-host.html#requirements">Requirements</a><a href="self-host.html#cloud">Cloud waitlist</a></div>
+  </div>
+  <div class="container footer-bottom"><span>© 2026 DrafNote · Open source · No tracking on this site</span><span>Made calmly. Encrypted always.</span></div>
+</footer>
+<script src="script.js"></script>
+</body>
+</html>

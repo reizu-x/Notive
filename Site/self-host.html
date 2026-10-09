@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Self-host DrafNote — Free & Open Source</title>
+<meta name="description" content="Run DrafNote on your own hardware in 5 minutes. HTTPS-only, automatic encrypted backups, open source." />
+<link rel="stylesheet" href="styles.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23242c3c'/%3E%3Cpath d='M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z' fill='%23c8e8dc'/%3E%3C/svg%3E" />
+</head>
+<body>
+<header class="site-header">
+  <div class="container header-inner">
+    <a class="brand" href="index.html"><span class="brand-mark"><svg viewBox="0 0 32 32" fill="none" width="22" height="22"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/><path d="M8.5 24.2c3.6-3.5 7-6.4 11.4-10" stroke="#242C3C" stroke-width="1.7" stroke-linecap="round"/></svg></span> DrafNote</a>
+    <nav class="nav-desktop"><a href="index.html">Home</a><a href="index.html#features">Features</a><a href="privacy.html">Privacy</a><a href="self-host.html" class="active">Self-host</a><a href="index.html#faq">FAQ</a></nav>
+    <div class="header-cta"><a class="btn btn-primary btn-sm" href="#get-started">Get DrafNote</a><button class="menu-btn" id="menu-btn" aria-expanded="false">☰</button></div>
+  </div>
+  <nav class="mobile-nav" id="mobile-nav"><a href="index.html">Home</a><a href="privacy.html">Privacy</a><a href="self-host.html">Self-host</a></nav>
+</header>
+
+<main class="container">
+<div class="page-hero" id="get-started">
+  <div class="breadcrumb"><a href="index.html">Home</a> / Self-host</div>
+  <p class="eyebrow">Open source · Your hardware · Your rules</p>
+  <h1>Run DrafNote yourself in 5 minutes.</h1>
+  <p class="lead">Free forever. HTTPS-only server, automatic encrypted backups, and a production-ready Gunicorn config. No Docker required, no phone-home.</p>
+  <p><a class="btn btn-primary" href="#quickstart">Quick start ↓</a> <a class="btn btn-ghost" href="#requirements">Requirements</a></p>
+</div>
+
+<section class="grid-2" id="requirements" style="margin-top:10px">
+  <div class="card"><h3>Requirements</h3><ul><li>Python 3.10+ (standard library + <code>gunicorn</code> for prod)</li><li>A machine that's on when you need notes (Pi, NAS, VPS, old laptop)</li><li>Port <code>5001</code> reachable on your LAN</li><li>Local CA certs included — trust once per client</li></ul><div class="callout">The server <b>refuses to start</b> without TLS. There is no plain-HTTP mode — by design.</div></div>
+  <div class="card"><h3>What you get</h3><ul><li>Unlimited notes, sections, vaults &amp; shared workspaces</li><li>Six themes + reading fonts, synced per device</li><li>Full-text search, tags, import/export</li><li>2FA, passkeys, recovery codes</li><li>Automatic backups of the encrypted store</li></ul></div>
+</section>
+
+<section id="quickstart" style="margin-top:26px">
+  <h2>Quick start</h2>
+  <div class="steps">
+    <div class="step"><div class="step-n">1</div><div><b>Get the code</b><pre class="code" style="margin-top:10px">git clone &lt;your-drafnote-repo&gt; drafnote
+cd drafnote</pre></div></div>
+    <div class="step"><div class="step-n">2</div><div><b>Trust HTTPS (one-time per client)</b><p class="muted small">Server ships with a local CA. Copy <code>certs/drafnote-ca.crt</code> to each device and trust it once — browsers stop showing “Not Secure”.</p><pre class="code"><span class="c"># regenerate if your LAN IP changes:</span>
+./certs/generate-certs.sh 192.168.1.10</pre></div></div>
+    <div class="step"><div class="step-n">3</div><div><b>Run dev</b><pre class="code">python3 server.py
+<span class="c"># → https://127.0.0.1:5001 locally</span>
+<span class="c"># → https://192.168.1.10:5001 on LAN</span></pre></div></div>
+    <div class="step"><div class="step-n">4</div><div><b>Run production (Gunicorn)</b><p class="muted small">Single worker + 8 threads — single worker is load-bearing for live sync streams.</p><pre class="code">python3 -m gunicorn -c gunicorn.conf.py server:app</pre></div></div>
+    <div class="step"><div class="step-n">5</div><div><b>Verify</b><pre class="code">curl -sk -o /dev/null -w "%{http_code}\n" https://192.168.1.10:5001/ <span class="c"># expect 200</span></pre><p class="muted small">Create your account → save recovery codes → write your first note.</p></div></div>
+  </div>
+</section>
+
+<section class="section alt" id="cloud" style="border-radius:18px; margin-top:28px">
+  <div class="container">
+    <p class="eyebrow">DrafNote Cloud — coming soon</p>
+    <h2>Don't want to self-host? We'll host at cost.</h2>
+    <p class="lead">Same zero-knowledge architecture. Low monthly price that simply covers servers. One-click migration from self-host.</p>
+    <div class="grid-2">
+      <form class="form" id="waitlist-form"><label class="field"><span>Email</span><input type="email" id="waitlist-email" required placeholder="you@example.com" /></label><label class="field"><span>Currently…</span><select id="waitlist-mode"><option>Self-hosting and curious</option><option>Waiting for cloud</option><option>Just looking</option></select></label><button class="btn btn-primary" type="submit">Join waitlist</button><p class="form-note" id="waitlist-msg">No spam. One email when cloud launches.</p></form>
+      <div><div class="callout"><b>Our pledge:</b> cloud pricing = server costs, published openly. No tiers that hold your notes hostage — export stays free and instant.</div><ul class="muted"><li>Bring your own domain (optional)</li><li>Keep your recovery codes — we still can't read notes</li><li>Leave anytime to self-host with one export file</li></ul></div>
+    </div>
+  </div>
+</section>
+
+<section style="margin:28px 0 10px">
+  <div class="cta"><div><h2>Own your words.</h2><p>Download, run, audit. Your notes never touch anyone else's cloud unless you say so.</p></div><div class="cta-actions"><a class="btn btn-mint" href="#get-started">Start now ↑</a><a class="btn btn-ghost" href="privacy.html">Privacy model</a></div></div>
+</section>
+</main>
+
+<footer>
+  <div class="container footer-grid">
+    <div><a class="brand" href="index.html"><span class="brand-mark"><svg viewBox="0 0 32 32" fill="none" width="22" height="22"><path d="M8.2 23.5c.6-7.6 4.5-12.6 13.4-15.1.4 6.9-2.4 12.1-8.6 14.8-1.8.7-3.3.8-4.8.3Z" fill="currentColor"/></svg></span> DrafNote</a><p class="muted small">Your notes. Truly yours.</p></div>
+    <div><b>Product</b><a href="index.html#features">Features</a><a href="index.html#pricing">Pricing</a></div>
+    <div><b>Trust</b><a href="privacy.html">Privacy</a></div>
+    <div><b>Get started</b><a href="#get-started">Quick start</a><a href="#cloud">Cloud waitlist</a></div>
+  </div>
+  <div class="container footer-bottom"><span>© 2026 DrafNote</span><span>Open source.</span></div>
+</footer>
+<script src="script.js"></script>
+</body>
+</html>

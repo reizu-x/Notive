@@ -1,10 +1,10 @@
 # Secrets, databases and logs stay out everywhere (any folder depth).
-notive.db
-notive.db.*
-notive.key
+drafnote.db
+drafnote.db.*
+drafnote.key
 *.bak
 *.bak-*
-notive.db.bak*
+drafnote.db.bak*
 server-*.log
 audit.log
 audit-*.log

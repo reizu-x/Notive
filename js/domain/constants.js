@@ -78,11 +78,11 @@ export const SECTION_ICONS = ['layers', 'folder', 'book', 'briefcase', 'tag', 'b
 // envelope (`ui` field, v2) so every account keeps its own sidebar across
 // relogs and devices. A per-account encrypted localStorage copy is only a
 // fast offline cache — never plaintext, never shared between accounts.
-export const UI_VAULT_KEY = 'notive-ui-vault';
+export const UI_VAULT_KEY = 'drafnote-ui-vault';
 
-export const SECTION_DATA_KEY = 'notive-section-data';
+export const SECTION_DATA_KEY = 'drafnote-section-data';
 
-export const COLLAPSED_FOLDERS_KEY = 'notive-tree-collapsed';
+export const COLLAPSED_FOLDERS_KEY = 'drafnote-tree-collapsed';
 
 export const FOLDER_COLORS = ['coral', 'yellow', 'blue', 'mint', 'violet', 'rose'];
 
