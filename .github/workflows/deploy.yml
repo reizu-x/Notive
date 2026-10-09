@@ -26,10 +26,17 @@ jobs:
 
       - name: Set up SSH
         run: |
+          set -e
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           install -m 600 /dev/null ~/.ssh/notive
           printf '%s\n' "${{ secrets.NOTIVE_SSH_KEY }}" > ~/.ssh/notive
-          ssh-keyscan -H 87.232.225.109 >> ~/.ssh/known_hosts 2>/dev/null
+          CHARS=$(wc -c < ~/.ssh/notive)
+          echo "secret length: $CHARS bytes"
+          [ "$CHARS" -lt 200 ] && { echo "ERROR: NOTIVE_SSH_KEY looks missing/empty — add it at Settings -> Secrets -> Actions (raw key with no quotes)"; exit 1; } || true
+          chmod 600 ~/.ssh/notive
+          ssh-keygen -y -f ~/.ssh/notive > /tmp/pub_from_secret && echo "key parses OK, fingerprint:" && ssh-keygen -lf /tmp/pub_from_secret
+          ssh-keyscan -H 87.232.225.109 2>/dev/null | tee ~/.ssh/known_hosts
+          test -s ~/.ssh/known_hosts || { echo "ERROR: ssh-keyscan got nothing — VPS unreachable from runner"; exit 1; }
           cat >> ~/.ssh/config <<'EOF'
           Host notive-vps
             HostName 87.232.225.109
@@ -41,6 +48,7 @@ jobs:
 
       - name: Rsync code to VPS
         run: |
+          ssh -v notive-vps 'echo connected from runner' 2>&1 | grep -E "connected from runner|Offering|denied|error" | tail -4
           rsync -az --delete \
             --exclude .git/ --exclude .github/ \
             --exclude .env --exclude certs/ --exclude notive.key \
