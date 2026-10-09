@@ -5,24 +5,60 @@ export function renderMarkdown(markdown) {
   const source = typeof markdown === 'string' ? markdown : String(markdown == null ? '' : markdown);
   const lines = source.replace(/\r/g, '').split('\n');
   let html = '';
-  let inList = false;
-  let listType = '';
   let inCode = false;
   let codeLang = '';
   let code = [];
 
-  const closeList = () => {
-    if (inList) {
-      html += `</${listType}>`;
-      inList = false;
-      listType = '';
+  // Nested list engine: one stack entry per open list level, in depth order.
+  // Each level: { indent, type: 'ul'|'ol', openItem } — openItem marks an
+  // unclosed <li> that a deeper list (or the level itself) still lives inside.
+  const listStack = [];
+
+  function closeListLevel() {
+    const top = listStack.pop();
+    if (top.openItem) html += '</li>';
+    html += `</${top.type}>`;
+  }
+
+  // Full teardown: called by every non-list block (headings, tables, blanks…)
+  // and at stream end, so lists can nest before any interlude.
+  function closeAllLists() {
+    while (listStack.length) closeListLevel();
+    flushParagraph();
+  }
+
+  // Open/close levels for one list line at a given indent/type; `startNum`
+  // seeds an ordered list's first marker number (GFM `start` attribute).
+  let paraOpen = false;
+  let paraBreak = false;
+  function flushParagraph() {
+    if (paraOpen) html += '</p>';
+    paraOpen = false;
+    paraBreak = false;
+  }
+  function enterListLevel(indent, type, startNum) {
+    while (listStack.length && listStack[listStack.length - 1].indent > indent) closeListLevel();
+    const top = listStack[listStack.length - 1];
+    if (top && top.indent === indent && top.type !== type) closeListLevel();
+    if (!listStack.length || listStack[listStack.length - 1].indent < indent) {
+      listStack.push({ indent, type, openItem: false });
+      html += type === 'ol' && startNum && startNum !== 1 ? `<ol start="${startNum}">` : `<${type}>`;
+    } else if (listStack[listStack.length - 1].openItem) {
+      listStack[listStack.length - 1].openItem = false;
+      html += '</li>';
     }
-  };
+  }
+
+  function emitListItem(content) {
+    const top = listStack[listStack.length - 1];
+    html += content;
+    top.openItem = true;
+  }
 
   for (let li = 0; li < lines.length; li += 1) {
     const line = lines[li];
     if (line.trim().startsWith('```')) {
-      closeList();
+      closeAllLists();
       if (inCode) {
         if (codeLang === 'mermaid') {
           html += `<div class="mermaid">${escapeHtml(code.join('\n'))}</div>`;
@@ -44,7 +80,7 @@ export function renderMarkdown(markdown) {
     // Two-column recipe block: `::: recipe` ... `:::`. The first `---` rule
     // splits the left (Ingredients) and right (Method) columns.
     if (/^:::\s*(recipe|columns)\s*$/i.test(line)) {
-      closeList();
+      closeAllLists();
       const block = [];
       let r = li + 1;
       while (r < lines.length && !/^:::\s*$/.test(lines[r])) { block.push(lines[r]); r += 1; }
@@ -59,7 +95,7 @@ export function renderMarkdown(markdown) {
       const aligns = tableAligns(lines[li + 1]);
       const header = aligns ? splitTableRow(line) : null;
       if (aligns && header && header.length === aligns.length) {
-        closeList();
+        closeAllLists();
         const rows = [];
         let r = li + 2;
         while (r < lines.length && lines[r].trim() !== '' && lines[r].includes('|')) {
@@ -71,35 +107,65 @@ export function renderMarkdown(markdown) {
         continue;
       }
     }
-    if (/^###\s+/.test(line)) { closeList(); html += `<h3>${inlineMarkdown(line.replace(/^###\s+/, ''))}</h3>`; continue; }
-    if (/^##\s+/.test(line)) { closeList(); html += `<h2>${inlineMarkdown(line.replace(/^##\s+/, ''))}</h2>`; continue; }
-    if (/^#\s+/.test(line)) { closeList(); html += `<h1>${inlineMarkdown(line.replace(/^#\s+/, ''))}</h1>`; continue; }
-    if (/^[-*_]{3,}\s*$/.test(line)) { closeList(); html += '<hr>'; continue; }
-    const taskMatch = line.match(/^[-*]\s+\[([ xX])\]\s+(.*)$/);
-    if (taskMatch) {
-      if (!inList || listType !== 'ul') { closeList(); html += '<ul>'; inList = true; listType = 'ul'; }
-      const checked = taskMatch[1].toLowerCase() === 'x';
-      html += `<li class="task"><span class="task-box${checked ? ' checked' : ''}" aria-hidden="true"></span>${inlineMarkdown(taskMatch[2])}</li>`;
+    // Task first: `- [x]` (and `* [x]`) with any indent level is a Checklist task.
+    const listMatch = line.match(/^(\s*)([-*]\s+\[[ xX]\]|[-*]|\d+\.)(\s+)(.*)$/);
+    if (listMatch) {
+      flushParagraph();
+      const spaces = (listMatch[1].match(/ /g) || []).length
+        + 4 * (listMatch[1].match(/\t/g) || []).length;
+      const task = /^([-*])\s+\[[ xX]\]/.test(listMatch[2]);
+      const startNum = /^\d+\./.test(listMatch[2]) ? parseInt(listMatch[2], 10) : 1;
+      const type = /^\d+\./.test(listMatch[2]) ? 'ol' : 'ul';
+      const content = listMatch[4];
+      enterListLevel(spaces, type, startNum);
+      if (task) {
+        const checked = /\[([ xX])\]/.exec(listMatch[2])[1].toLowerCase() === 'x';
+        emitListItem(`<li class="task"><span class="task-box${checked ? ' checked' : ''}" aria-hidden="true"></span>${inlineMarkdown(content)}`);
+      } else {
+        emitListItem(`<li>${inlineMarkdown(content)}`);
+      }
       continue;
     }
-    const unorderedMatch = line.match(/^[-*]\s+(.*)$/);
-    if (unorderedMatch) {
-      if (!inList || listType !== 'ul') { closeList(); html += '<ul>'; inList = true; listType = 'ul'; }
-      html += `<li>${inlineMarkdown(unorderedMatch[1])}</li>`;
+    if (/^#{4,6}\s+/.test(line)) {
+      const level = (line.match(/^#+/) || ['#'])[0].length;
+      closeAllLists();
+      html += `<h${level}>${inlineMarkdown(line.replace(/^#+\s+/, ''))}</h${level}>`;
       continue;
     }
-    const orderedMatch = line.match(/^\d+\.\s+(.*)$/);
-    if (orderedMatch) {
-      if (!inList || listType !== 'ol') { closeList(); html += '<ol>'; inList = true; listType = 'ol'; }
-      html += `<li>${inlineMarkdown(orderedMatch[1])}</li>`;
+    if (/^###\s+/.test(line)) { closeAllLists(); html += `<h3>${inlineMarkdown(line.replace(/^###\s+/, ''))}</h3>`; continue; }
+    if (/^##\s+/.test(line)) { closeAllLists(); html += `<h2>${inlineMarkdown(line.replace(/^##\s+/, ''))}</h2>`; continue; }
+    if (/^#\s+/.test(line)) { closeAllLists(); html += `<h1>${inlineMarkdown(line.replace(/^#\s+/, ''))}</h1>`; continue; }
+    if (/^[-*_]{3,}\s*$/.test(line)) { closeAllLists(); html += '<hr>'; continue; }
+    // Blockquote: consecutive `>` lines form ONE quote block; nesting comes
+    // from recursive rendering (inner `> >` lines keep their extra level).
+    if (/^>/.test(line)) {
+      flushParagraph();
+      closeAllLists();
+      const inner = [];
+      let r = li;
+      while (r < lines.length && /^>/.test(lines[r])) {
+        inner.push(lines[r].replace(/^>\s?>\s?/, '').replace(/^>\s?/, ''));
+        r += 1;
+      }
+      li = r - 1;
+      const quoted = inner.join('\n').trim() ? renderMarkdown(inner.join('\n')) : '';
+      html += `<blockquote>${quoted}</blockquote>`;
       continue;
     }
-    if (/^>\s?/.test(line)) { closeList(); html += `<blockquote>${inlineMarkdown(line.replace(/^>\s?/, ''))}</blockquote>`; continue; }
-    if (!line.trim()) { closeList(); continue; }
-    closeList();
-    html += `<p>${inlineMarkdown(line)}</p>`;
+    if (!line.trim()) { flushParagraph(); closeAllLists(); continue; }
+
+    // Paragraph + GFM hard break: a line ending with two+ trailing spaces
+    // breaks (<br>) instead of starting a new <p>. A plain continuation line
+    // stays in the same paragraph with a single-space join (GFM soft break).
+    const softBreak = /\s{2,}$/.test(line);
+    if (!paraOpen) { html += '<p>'; paraOpen = true; }
+    else if (paraBreak) html += '<br>';
+    else html += ' ';
+    paraBreak = softBreak;
+    html += inlineMarkdown(line.replace(/\s{2,}$/, ''));
   }
-  closeList();
+  flushParagraph();
+  closeAllLists();
   if (inCode) {
     if (codeLang === 'mermaid') {
       html += `<div class="mermaid">${escapeHtml(code.join('\n'))}</div>`;
@@ -111,8 +177,16 @@ export function renderMarkdown(markdown) {
 }
 
 export function inlineMarkdown(value) {
-  // Extract code spans FIRST so backtick content can never be reinterpreted
-  // inside a link/image URL emitted below (sanitizer-ordering hardening).
+  // Backslash escapes run FIRST: `\\<char>` placeholders travel through the
+  // whole pipeline so escaped markers never form syntax; revealed (HTML-)
+  // escaped at the very end, outside any stash.
+  const escaped = [];
+  const escPrefixed = String(value == null ? '' : value).replace(
+    /\\([\\`*_{}\[\]()#+\-.!>|~<>])/g, (match, ch) => {
+      escaped.push(ch);
+      return `\u0000ESC${escaped.length - 1}\u0000`;
+    });
+
   const codeSpans = [];
   const genTags = [];
   const stashTag = (tag) => {
@@ -123,32 +197,57 @@ export function inlineMarkdown(value) {
   // later emphasis passes cannot reach inside generated href/src attributes
   // (URLs legitimately contain * and _ characters).
   const applyEmphasis = (text) => text
+    .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/___([^_]+)___/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/__([^_]+)__/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
     .replace(/_([^_]+)_/g, '<em>$1</em>');
-  const safe = escapeHtml(value)
+  const safe = escapeHtml(escPrefixed)
     .replace(/`([^`]+)`/g, (match, code) => {
       codeSpans.push(`<code>${code}</code>`);
       return `\u0000CODESPAN${codeSpans.length - 1}\u0000`;
     })
-    .replace(/!\[([^\]]*)\]\(([^\s)]+)\)/g, (match, alt, src) => {
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*"|\s+&quot;[^&]*&quot;)?\)/g, (match, alt, src) => {
       const clean = sanitizeUrl(src, { allowMailto: false });
       if (!clean) return alt;
       return stashTag(`<img alt="${applyEmphasis(alt)}" src="${clean}" loading="lazy" referrerpolicy="no-referrer">`);
     })
-    .replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, (match, label, href) => {
+    .replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]*)"|\s+&quot;([^&]*)&quot;)?\)/g, (match, label, href, title, title2) => {
+      const t = title || title2;
       const clean = sanitizeUrl(href, { allowMailto: true });
       if (!clean) return label;
-      return stashTag(`<a href="${clean}" target="_blank" rel="noopener noreferrer nofollow">${applyEmphasis(label)}</a>`);
+      return stashTag(`<a href="${clean}"${t ? ` title="${t}"` : ''} target="_blank" rel="noopener noreferrer nofollow">${applyEmphasis(label)}</a>`);
     })
+    // Angle autolinks: <https://…> and <user@host.tld> (emails → mailto).
+    .replace(/&lt;(https?:\/\/[^&\s]+)&gt;/g, (match, href) => {
+      const clean = sanitizeUrl(href, { allowMailto: false });
+      return clean ? stashTag(`<a href="${clean}" target="_blank" rel="noopener noreferrer nofollow">${clean}</a>`) : match;
+    })
+    .replace(/&lt;([^\s@&]+@[^\s@&]+\.[^\s@&]+)&gt;/g, (match, addr) =>
+      stashTag(`<a href="mailto:${addr}">${addr}</a>`))
+    .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/___([^_]+)___/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/__([^_]+)__/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
     .replace(/_([^_]+)_/g, '<em>$1</em>')
-    .replace(/\u0000GENTAG(\d+)\u0000/g, (match, index) => genTags[Number(index)] ?? '')
-    .replace(/\u0000CODESPAN(\d+)\u0000/g, (match, index) => codeSpans[Number(index)] ?? '');
-  return safe;
+    // GFM strikethrough (after code spans, before placeholder restore).
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+
+  // Placeholder restore, looped: a stashed tag can itself contain a stash
+  // (image inside a link), so all three token families must be resolved one
+  // depth-layer per pass until the string is clean. Bounded (no runs-away).
+  let html = safe;
+  for (let pass = 0; pass < 8; pass += 1) {
+    const next = html
+      .replace(/\u0000GENTAG(\d+)\u0000/g, (m, idx) => genTags[Number(idx)] ?? '')
+      .replace(/\u0000CODESPAN(\d+)\u0000/g, (m, idx) => codeSpans[Number(idx)] ?? '')
+      .replace(/\u0000ESC(\d+)\u0000/g, (m, idx) => escapeHtml(escaped[Number(idx)] ?? ''));
+    if (next === html) break;
+    html = next;
+  }
+  return html;
 }
 
 export function splitTableRow(line) {
