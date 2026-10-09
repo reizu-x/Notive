@@ -93,6 +93,15 @@ curl -sk -o /dev/null -w "%{http_code}\n" https://192.168.22.241:5001/   # expec
 ss -tlnp | grep 5001                                                      # expect 0.0.0.0:5001
 ```
 
+## Syntax-checking the JS (node --check lies for ESM)
+
+`node --check file.js` parses ESM files as **CommonJS** and silently "passes"
+broken files (even syntax failures). Always check via:
+
+    node --input-type=module --check - < file.js
+
+(exit 0 = clean; check every touched file before committing.)
+
 ## Restart ritual (DB-safety, learned 2026-09-24)
 
 A stale `NOTIVE_PG_DSN` once pointed a live server at a dropped database

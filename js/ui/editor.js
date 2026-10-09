@@ -623,10 +623,6 @@ function focusEditor() {
   catch (error) { markdownInput.focus(); }
 }
 
-  try { markdownInput.focus({ preventScroll: true }); }
-  catch (error) { markdownInput.focus(); }
-}
-
 // Run a text edit while pinning the scroll container in place: caret updates
 // (setRangeText / setSelectionRange) make the browser scroll the caret into
 // view, which jumps the pane back to the caret — undo that in the same tick.
@@ -673,7 +669,8 @@ export function cycleHeading() {  withScrollLocked(() => {
 }
 // Indent / outdent the current line or selection (shared with the Tab key
 // path; exported so the toolbar can drive the same behavior).
-export function indentSelection  withScrollLocked(() => {
+export function indentSelection(outdent) {
+  withScrollLocked(() => {
     if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
     if (isPlainTextNote()) { showToast('Formatting needs a Markdown note'); return; }
     const value = markdownInput.value;
@@ -702,7 +699,8 @@ export function indentSelection  withScrollLocked(() => {
   });
 }
 // Fence the selection (or an empty block) as a Markdown code block.
-export function codeBlockSelection  withScrollLocked(() => {
+export function codeBlockSelection(lang = '') {
+  withScrollLocked(() => {
     if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
     const start = markdownInput.selectionStart;
     const end = markdownInput.selectionEnd;
@@ -724,7 +722,8 @@ function fenceSelection(lang, selected) {
 
 // Hard line break for the Markdown Guide "line break" syntax (two trailing
 // spaces) — inserts the marker + newline at the caret.
-export function insertLineBreak  withScrollLocked(() => {
+export function insertLineBreak() {
+  withScrollLocked(() => {
     if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
     markdownInput.setRangeText('  \n', markdownInput.selectionStart, markdownInput.selectionEnd, 'end');
     focusEditor();
@@ -747,7 +746,8 @@ export function insertTable(rows = 2, cols = 2) {  withScrollLocked(() => {
   });
 }
 // Insert a horizontal rule on its own line.
-export function insertHr  withScrollLocked(() => {
+export function insertHr() {
+  withScrollLocked(() => {
     if (!state.cachedProfile || !e2ee.masterKey) { showToast('Log in to edit notes'); return; }
     const start = markdownInput.selectionStart;
     const before = markdownInput.value.slice(0, start);
