@@ -1,4 +1,4 @@
-// DrafNote marketing site — no dependencies, no external requests
+// Notive marketing site — no dependencies, no external requests
 (function(){
   var menuBtn = document.getElementById('menu-btn');
   var mobileNav = document.getElementById('mobile-nav');
@@ -67,7 +67,7 @@
         return;
       }
       try{
-        var key = 'drafnote-waitlist';
+        var key = 'notive-waitlist';
         var list = JSON.parse(localStorage.getItem(key) || '[]');
         list.push({email: email.value, mode: mode ? mode.value : '', at: new Date().toISOString()});
         localStorage.setItem(key, JSON.stringify(list));

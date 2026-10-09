@@ -1,10 +1,10 @@
 # Secrets, databases and logs stay out everywhere (any folder depth).
-drafnote.db
-drafnote.db.*
-drafnote.key
+notive.db
+notive.db.*
+notive.key
 *.bak
 *.bak-*
-drafnote.db.bak*
+notive.db.bak*
 server-*.log
 audit.log
 audit-*.log
@@ -16,3 +16,4 @@ dbbackup/
 
 # Local safety snapshots (revert points).
 .revert/
+.env

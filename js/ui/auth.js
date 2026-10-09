@@ -258,7 +258,7 @@ export function renderAcctRecCodes() {
 export function acctRecCacheKey() {
   try {
     const name = state.cachedProfile && state.cachedProfile.username ? String(state.cachedProfile.username).toLowerCase() : '';
-    if (name) return `drafnote-recovery-codes:${name}`;
+    if (name) return `notive-recovery-codes:${name}`;
   } catch (error) {}
   return null;
 }
@@ -546,10 +546,10 @@ export async function logout() {
   wipeLegacyLocalNotes();
   try {
     // Drop only legacy plaintext keys (CWE-312). Per-account encrypted caches
-    // (`drafnote-ui-vault:<user>`) stay so the next login boots fast offline —
+    // (`notive-ui-vault:<user>`) stay so the next login boots fast offline —
     // the server envelope remains the source of truth.
-    localStorage.removeItem('drafnote-collections');
-    localStorage.removeItem('drafnote-deleted-collections');
+    localStorage.removeItem('notive-collections');
+    localStorage.removeItem('notive-deleted-collections');
     localStorage.removeItem(COLLAPSED_FOLDERS_KEY);
     localStorage.removeItem(SECTION_DATA_KEY);
   } catch (error) {}

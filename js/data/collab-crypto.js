@@ -45,17 +45,17 @@ export function sharingPinsLoad() {
   if (state.sharingPinsLoaded) return;
   state.sharingPinsLoaded = true;
   try {
-    const obj = JSON.parse(localStorage.getItem('drafnote-keypins') || '{}');
+    const obj = JSON.parse(localStorage.getItem('notive-keypins') || '{}');
     Object.keys(obj).forEach((k) => state.sharingPins.set(k, String(obj[k])));
   } catch (error) {}
 }
 
 export function sharingPinsSave() {
-  try { localStorage.setItem('drafnote-keypins', JSON.stringify(Object.fromEntries(state.sharingPins))); } catch (error) {}
+  try { localStorage.setItem('notive-keypins', JSON.stringify(Object.fromEntries(state.sharingPins))); } catch (error) {}
 }
 
 export function wrapSigMessage(groupId, recipient, keyVersion, w) {
-  return `drafnote-wrap-v1|${groupId || ''}|${recipient}|${Number(keyVersion) || 1}|${w.wrappedKey}|${w.ephPub}|${w.wrapIv}`;
+  return `notive-wrap-v1|${groupId || ''}|${recipient}|${Number(keyVersion) || 1}|${w.wrappedKey}|${w.ephPub}|${w.wrapIv}`;
 }
 
 export async function signWrap(groupId, recipient, keyVersion, w) {
@@ -400,7 +400,7 @@ export async function collabInvite() {
   if (!state.collab.groupId || !state.collab.key) return;
   const me = state.cachedProfile && state.cachedProfile.username;
   if (state.collab.owner !== me) { showToast('Only the owner can add members'); return; }
-  const value = await askInput({ eyebrow: 'Invite', title: 'Add a member', desc: 'They need a DrafNote account and must have logged in once.', label: 'Username', password: false, placeholder: 'their-username', okText: 'Invite' });
+  const value = await askInput({ eyebrow: 'Invite', title: 'Add a member', desc: 'They need a Notive account and must have logged in once.', label: 'Username', password: false, placeholder: 'their-username', okText: 'Invite' });
   if (value == null) return;
   const target = String(value).trim();
   if (!/^[A-Za-z0-9_-]{3,32}$/.test(target)) { showToast('Invalid username'); return; }

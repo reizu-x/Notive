@@ -1,0 +1,62 @@
+# podman-compose.yml — Notive: app and Postgres in SEPARATE containers.
+#
+#   podman-compose up -d --build   # first run (also creates volumes)
+#   podman-compose logs -f app     # watch boot (expect NOTIVE DB + BACKUP lines)
+#   podman-compose down            # stop (volumes persist: data survives)
+#
+# Secrets live in .env (gitignored, never committed). Volumes:
+#   pgdata  — Postgres data dir (the database itself)
+#   appdata — /data: notive.key (seeded pre-boot, see README section below)
+#             + dbbackup/ (hourly pg_dump thread writes here)
+#
+# First-boot key seeding (REQUIRED when migrating existing data — the app
+# auto-creates a fresh key otherwise, which cannot read migrated ciphertext):
+#   podman-compose up -d db
+#   <restore dump into db, then:>
+#   podman cp notive.key $(podman-compose ps -q app):/data/notive.key
+#   podman-compose up -d app
+name: notive
+
+services:
+  db:
+    # :17 to match the stock Debian client in the app image (pg_dump refuses
+    # cross-major restores/backups; PGDG repo avoided on purpose).
+    image: docker.io/library/postgres:17-alpine
+    environment:
+      POSTGRES_DB: notivedb
+      POSTGRES_USER: notive
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # PG18+ refuses to init directly on the mount point (needs a subdir
+      # for pg_upgrade --link); data lands in <volume>/pgdata.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pgdata:/var/lib/postgresql/data:Z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notive -d notivedb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Containerfile
+    depends_on:
+      - db
+    ports:
+      - "5001:5001"
+    environment:
+      NOTIVE_PG_DSN: "dbname=notivedb user=notive password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env} host=db"
+      NOTIVE_KEY_PATH: /data/notive.key
+      NOTIVE_BACKUP_DIR: /data/dbbackup
+      NOTIVE_TLS_CERT: /srv/notive/certs/notive.crt
+      NOTIVE_TLS_KEY: /srv/notive/certs/notive.key
+    volumes:
+      - appdata:/data:Z
+      - ./certs:/srv/notive/certs:ro,Z
+    restart: unless-stopped
+
+volumes:
+  pgdata: {}
+  appdata: {}

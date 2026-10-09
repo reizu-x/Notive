@@ -1,4 +1,4 @@
-# gunicorn.conf.py — production entry for DrafNote.
+# gunicorn.conf.py — production entry for Notive.
 #
 # Run from this directory:
 #   nohup gunicorn -c gunicorn.conf.py server:app > /home/r3izu/Documents/audit/server-dev.log 2>&1 &
@@ -24,18 +24,18 @@ wsgi_app = 'server:app'
 
 workers = 1
 worker_class = 'gthread'
-threads = int(os.environ.get('DRAFNOTE_THREADS', '8'))
+threads = int(os.environ.get('NOTIVE_THREADS', '8'))
 
-bind_host = os.environ.get('DRAFNOTE_BIND_HOST', '0.0.0.0')
+bind_host = os.environ.get('NOTIVE_BIND_HOST', '0.0.0.0')
 bind_port = os.environ.get('PORT', '5001')
 bind = [f'{bind_host}:{bind_port}']
 
 # Same cert resolution as server.py (env override, else local CA-signed pair).
-tls_cert = os.environ.get('DRAFNOTE_TLS_CERT') or os.path.join(BASE_DIR, 'certs', 'drafnote.crt')
-tls_key = os.environ.get('DRAFNOTE_TLS_KEY') or os.path.join(BASE_DIR, 'certs', 'drafnote.key')
+tls_cert = os.environ.get('NOTIVE_TLS_CERT') or os.path.join(BASE_DIR, 'certs', 'notive.crt')
+tls_key = os.environ.get('NOTIVE_TLS_KEY') or os.path.join(BASE_DIR, 'certs', 'notive.key')
 if not os.path.exists(tls_cert) or not os.path.exists(tls_key):
     sys.exit(
-        'DRAFNOTE: HTTPS is required. Provide DRAFNOTE_TLS_CERT and DRAFNOTE_TLS_KEY, '
+        'NOTIVE: HTTPS is required. Provide NOTIVE_TLS_CERT and NOTIVE_TLS_KEY, '
         f'or place a cert/key at {tls_cert} and {tls_key}.'
     )
 # Required for is_ssl: without these gunicorn serves plain HTTP even with a

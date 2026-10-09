@@ -817,21 +817,9 @@ html[data-theme="dark"] mark, html[data-theme="dracula"] mark, html[data-theme="
   transition: flex-basis .25s ease, padding .25s ease;
 }
 .brand-row { display: flex; align-items: center; justify-content: space-between; padding: 0 9px; }
-/* Brand lockup sits centered in the row; toggles stay pinned right. */
-.brand-row .brand { margin: 0 auto; }
 .brand { display: inline-flex; align-items: center; gap: 9px; color: var(--side-pure); font-family: Fraunces, serif; font-size: 21px; letter-spacing: -0.04em; }
 .brand-mark { display: grid; width: 25px; height: 25px; place-items: center; color: var(--brand-mark); }
 .brand-mark svg { width: 100%; height: 100%; }
-/* Full brand lockup (Signature-N + set "otive" type, one SVG): height-driven
-   proportional sizing; color comes from context via currentColor. In the
-   collapsed sidebar the box crops to the N zone (xMin slice) and the text
-   group hides, so the mark stands alone. */
-.brand-lockup { height: 26px; width: auto; display: block; color: var(--brand-mark); }
-.brand-row .brand-lockup { height: 32px; }
-.boot-shimmer-card .brand-lockup { height: 30px; color: var(--side-bright, #ece8e1); }
-.login-brand .brand-lockup { height: 28px; color: var(--mint-dark); }
-.sidebar.collapsed .brand-lockup { width: 26px; height: 26px; }
-.sidebar.collapsed .brand-lockup .lockup-text { display: none; }
 .icon-button { display: inline-grid; width: 34px; height: 34px; padding: 0; place-items: center; border: 0; border-radius: 8px; color: currentColor; background: transparent; transition: background .18s ease, color .18s ease, transform .18s ease; }
 .icon-button:hover { background: var(--icon-hover-bg); }
 .sidebar .icon-button:hover { color: var(--side-pure); background: rgba(255, 255, 255, .1); }
