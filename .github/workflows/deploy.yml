@@ -55,7 +55,7 @@ jobs:
             --exclude wheels/ --exclude base64.err \
             --exclude '__pycache__/' --exclude '*.pyc' \
             ./ notive-vps:/opt/notive/
-          ls notive-vps:/opt/notive/wheels >/dev/null && echo "wheelhouse present on VPS"
+          ssh notive-vps 'test -d /opt/notive/wheels && ls /opt/notive/wheels | grep -q .whl' && echo "wheelhouse present on VPS"
 
       - name: Build image and restart app
         run: |
