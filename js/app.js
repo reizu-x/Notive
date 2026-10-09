@@ -20,6 +20,7 @@
 // closes over these imports.
 import { escapeHtml, sanitizeUrl } from './core/strings.js';
 import { apiFetch } from './data/api.js';
+import { initUpdateCheck } from './data/updates.js';
 import { E2EE_KDF_ARGON2ID, e2ee, e2eeBytesToB64, e2eeB64ToBytes, e2eeRandomBytes, e2eePasswordBase, e2eeDeriveBits, e2eeKekFromPassword, argon2id32, assertArgon2Params, loadArgon2, e2eeWrapMasterKeyArgon2id, e2eeTrialUnwrapArgon2id, e2eeUnwrapMasterKey, e2eeEncryptNotes, e2eeDecryptPayload } from './data/crypto.js';
 import { icon, iconPaths } from './core/icons.js';
 import { renderMarkdown, inlineMarkdown, splitTableRow, tableAligns, renderTable, splitRecipeColumns, stripMarkdown } from './core/markdown.js';
@@ -1771,6 +1772,7 @@ if (BUILD_NOTE_OK) {
   initMarkdownTabbing();
   initToolbarMenu();
   initCheckboxOverlay();
+  initUpdateCheck();
   document.getElementById('recipe-desc').addEventListener('input', saveCurrentNote);
   document.getElementById('recipe-photo-btn').addEventListener('click', () => { if (state.collab.noteId) requestCollabCoverUpload(); else requestCoverUpload(); });
   // Structured recipe body: toggle, edit, add and remove Ingredients / Method.

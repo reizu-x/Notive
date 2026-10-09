@@ -1476,6 +1476,15 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .editor-bottom kbd { padding: 2px 4px; border: 1px solid var(--bottom-kbd-border); border-radius: 3px; color: var(--bottom-kbd-ink); background: var(--bottom-kbd-bg); font-size: 8px; }
 .toast { position: fixed; right: 25px; bottom: 24px; z-index: 300; padding: 10px 13px; border: 1px solid var(--toast-border); border-radius: 7px; color: var(--toast-ink); background: var(--toast-bg); box-shadow: var(--shadow); font-size: 11px; opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity .2s ease, transform .2s ease; }
 .toast.show { opacity: 1; transform: translateY(0); }
+
+/* Update-available popup: bottom-right card above toasts (z 300 < 320). */
+.update-popup { position: fixed; right: 25px; bottom: 24px; z-index: 320; display: flex; align-items: flex-start; gap: 10px; max-width: 330px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: var(--paper); box-shadow: var(--shadow); }
+.update-popup-icon svg { width: 17px; height: 17px; color: var(--ink-muted); margin-top: 2px; }
+.update-popup-body { min-width: 0; }
+.update-popup-body strong { display: block; margin-bottom: 3px; font-size: 12px; font-weight: 600; }
+.update-popup-body p { margin: 0; color: var(--ink-muted); font-size: 10.5px; line-height: 1.55; }
+.update-popup-actions { display: flex; align-items: center; gap: 6px; margin-top: 9px; }
+.update-popup-actions .btn { padding: 4px 10px; font-size: 10.5px; }
 .context-menu { position: fixed; z-index: 150; min-width: 190px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; color: var(--ink); background: var(--paper); box-shadow: var(--shadow); }
 .context-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 7px; color: var(--ink); background: transparent; font-size: 12px; font-weight: 500; text-align: left; transition: background .15s ease; }
 .context-item:hover { background: var(--tree-hover-bg); }

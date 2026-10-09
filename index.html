@@ -268,6 +268,19 @@
         <div class="editor-bottom-fixed"><span>Markdown</span><button class="beautify-btn" id="beautify-btn" hidden>Beautify</button><button class="type-badge" id="type-badge" title="File type — click to switch between Markdown and plain text">MD</button></div>
       </main>
     </div>
+    <!-- Update-available popup: bottom-right card; shown only when a newer
+         published build exists (see js/data/updates.js). -->
+    <div class="update-popup" id="update-popup" data-build="" hidden>
+      <span class="update-popup-icon" aria-hidden="true" data-icon="refresh"></span>
+      <div class="update-popup-body">
+        <strong>Update available</strong>
+        <p>This device is running an older version of Notive. Reload to get the newest fixes and features — your notes stay where they are. If the popup keeps coming back after an update, your Notive server itself is behind and needs updating.</p>
+      </div>
+      <div class="update-popup-actions">
+        <button class="btn btn-primary" type="button" id="update-popup-button">Update</button>
+        <button class="btn" type="button" id="update-popup-later">Not now</button>
+      </div>
+    </div>
     <!-- Login gate: login + register tabs. Shown until the server session unlocks the E2EE vault -->
     <div class="login-overlay" id="login-overlay" hidden>
       <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="login-title">
