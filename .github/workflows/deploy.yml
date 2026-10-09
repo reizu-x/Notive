@@ -31,6 +31,7 @@ jobs:
           # NOTIVE_SSH_KEY = the private key, base64-encoded (single line, no quotes)
           # → immune to paste/multiline mangling in the GitHub secret editor
           printf '%s' "${{ secrets.NOTIVE_SSH_KEY }}" | base64 -d > ~/.ssh/notive 2>base64.err || { cat base64.err; echo "ERROR: NOTIVE_SSH_KEY is not valid base64 — run: base64 -w0 /tmp/opencode/notive-actions-deploy and paste the single line"; exit 1; }
+          chmod 600 ~/.ssh/notive
           CHARS=$(wc -c < ~/.ssh/notive)
           echo "decoded key size: $CHARS bytes"
           if [ "$CHARS" -lt 200 ]; then echo "ERROR: decoded key too small; re-encode with: base64 -w0 /tmp/opencode/notive-actions-deploy"; exit 1; fi
