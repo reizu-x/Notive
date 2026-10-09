@@ -1357,7 +1357,10 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
    and both share identical font/padding so glyphs line up exactly. */
 .code-wrap { position: relative; }
 .checkbox-overlay { position: absolute; inset: 0; margin: 0; padding: 6px 0 24px; overflow: hidden; pointer-events: none; font-family: 'DM Mono', monospace; font-size: 12px; line-height: 1.85; }
-.checkbox-overlay .cb-item { position: absolute; pointer-events: auto; cursor: pointer; display: inline-flex; align-items: center; gap: 0; background: transparent; padding-right: 2px; }
+/* The row must paint over the literal `- [ ] ` glyphs in the textarea so
+   only the drawn checkbox shows: opaque with the editor's own paper color
+   (never a hardcoded white — themes keep their tone). */
+.checkbox-overlay .cb-item { position: absolute; pointer-events: auto; cursor: pointer; display: inline-flex; align-items: center; gap: 0; background: var(--paper); padding-right: 2px; }
 .checkbox-overlay .cb-box { display: inline-grid; width: 14px; height: 14px; place-items: center; border: 1.5px solid var(--task-border); border-radius: 3px; background: transparent; flex-shrink: 0; transition: border-color .15s, background .15s; }
 .checkbox-overlay .cb-box:hover { border-color: var(--task-checked-border); }
 .checkbox-overlay .cb-box.checked { border-color: var(--task-checked-border); background: var(--task-checked-bg); }
