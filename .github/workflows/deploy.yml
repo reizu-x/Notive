@@ -48,7 +48,7 @@ jobs:
 
       - name: Rsync code to VPS
         run: |
-          ssh -v notive-vps 'echo connected from runner' 2>&1 | grep -E "connected from runner|Offering|denied|error" | tail -4
+          ssh -vv notive-vps 'echo connected_raw_ok' 2>&1 | tail -30; echo "ssh rc: $?"
           rsync -az --delete \
             --exclude .git/ --exclude .github/ \
             --exclude .env --exclude certs/ --exclude notive.key \
