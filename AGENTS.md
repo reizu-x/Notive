@@ -1,4 +1,24 @@
-# Notive Dev — agent notes
+# Notive — agent notes
+
+## Topology (declared 2026-10-09)
+
+- **This PC is a development machine only.** Every Notive-local folder
+  (repo at `~/Documents/Notive`, old DrafNote/Notely copies, backups,
+  `~/.local/lib/notely`, Desktop notes) is treated as **development or
+  artifact** — never production.
+- **Production = the VPS** (`ssh notive-vps`, 87.232.225.109, `/opt/notive`,
+  user `notive`, rootless podman + systemd user units, socat 443→5001).
+- Deploys: push to `main` → GitHub Actions `Deploy to VPS` (rsync → build →
+  restart → healthcheck 200 or fail). `.env`, `certs/`, `notive.key` on the
+  VPS are server-only state — never overwritten by deploys.
+- SSH access is key-only: local `~/.ssh/id_notive_vps` (alias `notive-vps`),
+  GitHub Actions deploy key. The `notive` password is locked (2026-10-09);
+  root path = sudoers stub `/etc/sudoers.d/notive-deploy-tmp` while install
+  work continues. Recovery fallback: provider cloud console.
+- Known VPS quirk (2026-10-09): **all outbound TCP is RST-ed upstream**
+  (provider-side). Inbound is fine. Image pulls / apt / Let's Encrypt blocked
+  until unblocked; deploys that need new base layers will fail. Firewall
+  (ufw) currently disabled for debugging.
 
 ## Working agreements
 
