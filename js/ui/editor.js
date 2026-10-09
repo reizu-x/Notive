@@ -378,7 +378,11 @@ export function renderCover(note) {
   const img = document.getElementById('cover-img');
   const addBtn = document.getElementById('cover-add');
   if (!wrap || !img) return;
-  const usable = note && state.activeView !== 'vault' ? cleanCoverSrc(note.cover) : null;
+  // Cover pictures are retired for per-account standard notes — the Add
+  // cover button and the banner never show. Shared (collab) notes keep
+  // their cover flows; recipe notes show the photo in the fixed hero.
+  const collabOpen = Boolean(state.collab.noteId);
+  const usable = collabOpen && note && state.activeView !== 'vault' ? cleanCoverSrc(note.cover) : null;
   // Recipe notes show the photo in the fixed hero below the meta row instead
   // of the banner above the title.
   const bannerUsable = usable && !(note && note.template === 'recipe');
@@ -393,10 +397,13 @@ export function renderCover(note) {
     wrap.hidden = true;
     img.removeAttribute('src');
     if (addBtn) {
-      const editable = Boolean(note) && state.activeView !== 'vault' && isUnlocked()
-        && !note.deleted && !note.archived;
-      // Recipe notes add their photo from the fixed hero, never the banner row.
-      setCoverAddHidden(!editable || (note && note.template === 'recipe'));
+      if (!collabOpen) { setCoverAddHidden(true); }
+      else {
+        const editable = Boolean(note) && state.activeView !== 'vault' && isUnlocked()
+          && !note.deleted && !note.archived;
+        // Recipe notes add their photo from the fixed hero, never the banner row.
+        setCoverAddHidden(!editable || (note && note.template === 'recipe'));
+      }
     }
   }
   renderRecipeHero(note);

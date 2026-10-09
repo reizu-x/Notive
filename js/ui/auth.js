@@ -464,7 +464,7 @@ export function refreshEditorLock() {
   if (newNoteBtn) newNoteBtn.hidden = locked || state.activeView === 'bin' || state.activeView === 'vault' || state.activeView === 'shared';
   if (importBtn) importBtn.hidden = locked || state.activeView === 'bin' || state.activeView === 'vault' || state.activeView === 'shared';
   const coverAddBtn = document.getElementById('cover-add');
-  if (coverAddBtn) setCoverAddHidden(readOnly || state.activeView === 'vault' || !note || Boolean(note.cover) || note.template === 'recipe');
+  if (coverAddBtn) setCoverAddHidden(true); // covers retired for standard notes
   const coverChangeBtn = document.getElementById('cover-change');
   if (coverChangeBtn) coverChangeBtn.disabled = readOnly;
   const coverRemoveBtn = document.getElementById('cover-remove');
