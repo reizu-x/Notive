@@ -1308,19 +1308,22 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .tag-add { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 4px; border: 1px dashed var(--line-strong); border-radius: 4px; color: var(--meta-ink); background: transparent; font-family: inherit; font-size: 11px; line-height: 1; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease; }
 .tag-add:hover { color: var(--ink); border-color: var(--btn-hover-border); background: var(--tree-hover-bg); }
 .tag-add:focus-visible { outline: 2px solid var(--search-focus-border); outline-offset: 1px; }
-.editor-toolbar { display: flex; align-items: center; justify-content: space-between; max-width: none; height: 48px; margin: 40px 0 0; padding: 0 4px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.toolbar-group, .toolbar-right { display: flex; align-items: center; gap: 2px; }
-.toolbar-button { display: grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 0; border-radius: 6px; color: var(--toolbar-ink); background: transparent; transition: color .18s ease, background .18s ease; }
+.editor-toolbar { display: flex; align-items: center; justify-content: space-between; max-width: none; height: 34px; margin: 12px 0 0; padding: 0 2px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.toolbar-group, .toolbar-right { display: flex; align-items: center; gap: 1px; }
+.toolbar-button { display: grid; width: 24px; height: 24px; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--toolbar-ink); background: transparent; transition: color .18s ease, background .18s ease; }
 .toolbar-button:hover { color: var(--toolbar-hover-ink); background: var(--toolbar-hover-bg); }
-.toolbar-button strong { font-size: 13px; }
-.toolbar-button.italic { font-family: Georgia, serif; font-size: 17px; font-style: italic; }
-.toolbar-button.code { font-family: 'DM Mono', monospace; font-size: 9px; }
-.toolbar-button svg { width: 15px; height: 15px; }
-.toolbar-heading { padding: 0 1px 2px; border-bottom: 2px solid currentColor; font-family: Georgia, serif; font-size: 16px; font-weight: 700; }
-.quote-mark { font-family: Georgia, serif; font-size: 21px; line-height: 20px; }
-.toolbar-divider { width: 1px; height: 18px; margin: 0 8px; background: var(--line); }
-.markdown-label { display: flex; align-items: center; gap: 6px; color: var(--mdlabel-ink); font-family: 'DM Mono', monospace; font-size: 9px; }
-.markdown-dot { display: grid; width: 17px; height: 17px; place-items: center; border-radius: 4px; color: var(--mddot-ink); background: var(--mddot-bg); font-family: Fraunces, serif; font-size: 10px; font-weight: 600; }
+.toolbar-button strong { font-size: 11px; }
+.toolbar-button.italic { font-family: Georgia, serif; font-size: 13px; font-style: italic; }
+.toolbar-button.code { font-family: 'DM Mono', monospace; font-size: 7.5px; }
+.toolbar-button svg { width: 13px; height: 13px; }
+.toolbar-heading { padding: 0 1px 1px; border-bottom: 2px solid currentColor; font-family: Georgia, serif; font-size: 12px; font-weight: 700; }
+.quote-mark { font-family: Georgia, serif; font-size: 17px; line-height: 16px; }
+.ordered-mark { font-family: 'DM Mono', monospace; font-size: 9px; }
+.hr-mark { font-size: 12px; line-height: 12px; }
+.break-mark { font-size: 11px; line-height: 12px; }
+.toolbar-divider { width: 1px; height: 14px; margin: 0 5px; background: var(--line); }
+.markdown-label { display: flex; align-items: center; gap: 5px; color: var(--mdlabel-ink); font-family: 'DM Mono', monospace; font-size: 8.5px; }
+.markdown-dot { display: grid; width: 14px; height: 14px; place-items: center; border-radius: 4px; color: var(--mddot-ink); background: var(--mddot-bg); font-family: Fraunces, serif; font-size: 9px; font-weight: 600; }
 .writing-area { display: block; max-width: none; min-height: 55vh; margin: 0; border-bottom: 0; }
 /* :root disables font synthesis app-wide; the (often uninstalled) DM Mono
    stack can fall back to a face with bold but no italic, which made <em>/<i>
@@ -1609,7 +1612,7 @@ html[data-font="verdana"] body :not(pre):not(code):not(kbd) { font-family: Verda
   .editor-actions .icon-button { width: 30px; }
   .editor-scroll { padding: 30px 17px 24px; }
   .title-input { font-size: 31px; }
-  .editor-toolbar { margin-top: 28px; }
+  .editor-toolbar { margin-top: 10px; }
   .toolbar-right .markdown-label, .toolbar-right .toolbar-divider { display: none; }
   .writing-area { min-height: 40vh; }
   .markdown-input { min-height: 40vh; padding-bottom: 24px; }
@@ -1624,8 +1627,9 @@ html[data-font="verdana"] body :not(pre):not(code):not(kbd) { font-family: Verda
   .filter-row { margin-top: 11px; }
   .note-meta { flex-wrap: wrap; }
   .tag-list { margin-left: 0; }
-  .toolbar-button { width: 28px; }
-  .toolbar-divider { margin: 0 4px; }
+  .toolbar-button { width: 22px; }
+  .toolbar-button svg { width: 12px; height: 12px; }
+  .toolbar-divider { margin: 0 3px; }
 }
 
 .auth-tabs { display: flex; gap: 8px; margin: 18px 0 0; justify-content: center; }
