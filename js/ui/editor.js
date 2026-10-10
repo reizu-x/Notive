@@ -1,7 +1,7 @@
 // js/ui/editor.js — editor-experience helpers: live preview, syntax layer,
 // beautify, cover upload/reposition, recipe fields.
 
-import { beautifyBtn, editorToolbar, markdownInput, modeLabel, modeToggle, noteList, preview, syntaxLayer, typeBadge, checkboxOverlay } from '../core/elements.js';
+import { beautifyBtn, editorToolbar, markdownInput, modeLabel, modeToggle, noteList, preview, syntaxLayer, typeBadge } from '../core/elements.js';
 import { renderMarkdown } from '../core/markdown.js';
 import { inlineMarkdown } from '../core/markdown.js';
 import { COVER_MAX_DIM, EXT_LABELS, cleanCoverSrc, isImageFile, sanitizeIngredients, sanitizeSteps } from '../core/schema.js';
@@ -475,128 +475,53 @@ export function renderPreview(note) {
   if (editorToolbar) editorToolbar.hidden = !(isMd && template !== 'recipe');
   if (!showPreview) autogrow();
   updateSyntaxLayer(note, showPreview);
-  renderCheckboxOverlay(note, showPreview);
 }
-
-// ---- Checkbox overlay: clickable checkboxes over the textarea ----
 
 const TASK_RE = /^(\s*)[-*]\s+\[([ xX])\]\s+(.*)$/;
 
-// Parse textarea content and return array of { lineNum, checked, prefix, text, indent }.
-function parseCheckboxes(source) {
-  if (!source) return [];
-  const lines = source.split('\n');
-  const items = [];
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(TASK_RE);
-    if (m) items.push({ lineNum: i, checked: m[2].toLowerCase() === 'x', prefix: m[1], text: m[3] });
-  }
-  return items;
-}
+// ---- Preview task toggles: the rendered `li.task` boxes ARE the checkboxes --
+// Clicking one flips its `- [ ]`/`- [x]` marker in the note body and
+// re-renders the preview. Write mode stays pure Markdown text — no painted
+// overlay, no font-metric alignment.
 
-// Render clickable checkbox elements over the textarea. Positions are calculated
-// from the textarea's font metrics (must match .markdown-input CSS exactly).
-export function renderCheckboxOverlay(note, showPreview) {
-  if (!checkboxOverlay) return;
-  if (showPreview || !note || note.ext !== 'md') {
-    checkboxOverlay.innerHTML = '';
-    checkboxOverlay.hidden = true;
-    markdownInput.classList.remove('has-checkboxes');
-    return;
-  }
-  const items = parseCheckboxes(markdownInput.value);
-  if (!items.length) {
-    checkboxOverlay.textContent = '';
-    checkboxOverlay.hidden = true;
-    return;
-  }
-  checkboxOverlay.hidden = false;
-
-  // Measure textarea metrics to position checkboxes.
-  const cs = getComputedStyle(markdownInput);
-  const lineHeight = parseFloat(cs.lineHeight) || 22.2; // 12px * 1.85
-  const paddingTop = parseFloat(cs.paddingTop) || 6;
-  const paddingLeft = parseFloat(cs.paddingLeft) || 0;
-  const tabSize = parseInt(cs.tabSize, 10) || 2;
-  const charWidth = measureCharWidth(cs.fontFamily, cs.fontSize);
-
-  const frag = document.createDocumentFragment();
-  for (const item of items) {
-    const expandedIndent = item.prefix.replace(/\t/g, ' '.repeat(tabSize));
-    const offsetX = paddingLeft + expandedIndent.length * charWidth;
-    const offsetY = paddingTop + item.lineNum * lineHeight;
-    // "- [ ] " is6 characters wide — cover them with the checkbox.
-    const coverWidth = 6 * charWidth;
-
-    const el = document.createElement('span');
-    el.className = 'cb-item';
-    el.dataset.line = item.lineNum;
-    el.style.top = `${offsetY}px`;
-    el.style.left = `${offsetX}px`;
-    el.style.width = `${coverWidth}px`;
-
-    const box = document.createElement('span');
-    box.className = item.checked ? 'cb-box checked' : 'cb-box';
-    el.appendChild(box);
-    frag.appendChild(el);
-  }
-  checkboxOverlay.textContent = '';
-  checkboxOverlay.appendChild(frag);
-}
-
-// Measure the pixel width of a single character in the given font.
-let _cachedCharWidth = 0;
-let _cachedFont = '';
-function measureCharWidth(family, size) {
-  const key = `${family}|${size}`;
-  if (_cachedCharWidth && _cachedFont === key) return _cachedCharWidth;
-  const span = document.createElement('span');
-  span.style.cssText = `position:absolute;left:-9999px;font-family:${family};font-size:${size};white-space:pre;`;
-  span.textContent = 'xxxxxxxxxx';
-  document.body.appendChild(span);
-  // Average over ten glyphs: a single 'x' could land on a sub-pixel boundary
-  // and drift the drawn checkbox onto the label text.
-  const width = span.getBoundingClientRect().width || 72;
-  _cachedCharWidth = width / 10;
-  _cachedFont = key;
-  document.body.removeChild(span);
-  return _cachedCharWidth;
-}
-
-// Toggle a checkbox on the given line number in the textarea.
-export function toggleCheckbox(lineNum) {
-  const source = markdownInput.value;
-  const lines = source.split('\n');
-  if (lineNum < 0 || lineNum >= lines.length) return;
-  const m = lines[lineNum].match(TASK_RE);
-  if (!m) return;
-  const newMark = m[2].toLowerCase() === 'x' ? ' ' : 'x';
-  lines[lineNum] = `${m[1]}- [${newMark}] ${m[3]}`;
-  markdownInput.value = lines.join('\n');
-  saveCurrentNote();
+export function togglePreviewTask(li) {
   const note = activeEditorNote();
-  if (note) renderCheckboxOverlay(note, false);
+  if (!note || !li) { showToast('Log in to edit notes'); return; }
+  // Which rendered task is this? Count its position among ALL preview tasks.
+  const all = [...preview.querySelectorAll('li.task')];
+  const index = all.indexOf(li);
+  if (index === -1) return;
+  const lines = String(note.body || '').split('\n');
+  let seen = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].match(TASK_RE);
+    if (!m) continue;
+    seen += 1;
+    if (seen !== index) continue;
+    const checked = m[2].toLowerCase() === 'x';
+    lines[i] = `${m[1]}- [${checked ? ' ' : 'x'}] ${m[3]}`;
+    note.body = lines.join('\n');
+    markdownInput.value = note.body;
+    note.date = 'Now';
+    note.updatedAt = Date.now();
+    clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(() => { persistNotes(); renderNoteList(); }, 450);
+    renderPreview(note);
+    return;
+  }
+  showToast('Task not found in this note');
 }
 
-// Initialize checkbox overlay click handler (called once at boot).
-export function initCheckboxOverlay() {
-  if (!checkboxOverlay) return;
-  checkboxOverlay.addEventListener('click', (event) => {
-    const item = event.target.closest('.cb-item');
-    if (!item) return;
-    const lineNum = parseInt(item.dataset.line, 10);
-    if (!isNaN(lineNum)) toggleCheckbox(lineNum);
+export function initPreviewTaskToggles() {
+  if (!preview || preview.dataset.taskToggles === '1') return;
+  preview.dataset.taskToggles = '1';
+  preview.addEventListener('click', (event) => {
+    const li = event.target.closest('li.task');
+    if (!li) return;
+    event.stopPropagation();
+    event.preventDefault();
+    togglePreviewTask(li);
   });
-  // Web-font metrics can change after first paint (DM Mono often arrives
-  // late): invalidate the cached char width once fonts settle so the
-  // overlay checkboxes line up with the real glyphs.
-  if (document.fonts && typeof document.fonts.ready === 'object') {
-    document.fonts.ready.then(() => {
-      _cachedCharWidth = 0;
-      const note = activeEditorNote();
-      if (note && !markdownInput.hidden) renderCheckboxOverlay(note, false);
-    });
-  }
 }
 
 // Paint (or clear) the overlay for the open note. Only JSON/YAML are colored.

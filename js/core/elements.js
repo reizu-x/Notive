@@ -28,7 +28,6 @@ export const tabOverflowMenuEl = document.getElementById('tab-overflow-menu');
 export const stripBoxEl = document.getElementById('workspace-strip-items');
 export const stripBackEl = document.getElementById('workspace-strip-back');
 export const syntaxLayer = document.getElementById('syntax-layer');
-export const checkboxOverlay = document.getElementById('checkbox-overlay');
 export const recipeBodyEl = document.getElementById('recipe-body');
 export const foldToggle = document.getElementById('toggle-folders');
 export const importNotesBtn = document.getElementById('import-notes');

@@ -1356,16 +1356,6 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
    colored tokens; the textarea text goes transparent (caret stays visible)
    and both share identical font/padding so glyphs line up exactly. */
 .code-wrap { position: relative; }
-.checkbox-overlay { position: absolute; inset: 0; margin: 0; padding: 6px 0 24px; overflow: hidden; pointer-events: none; font-family: 'DM Mono', monospace; font-size: 12px; line-height: 1.85; }
-/* The row must paint over the literal `- [ ] ` glyphs in the textarea so
-   only the drawn checkbox shows: opaque with the editor's own paper color
-   (never a hardcoded white — themes keep their tone). */
-.checkbox-overlay .cb-item { position: absolute; pointer-events: auto; cursor: pointer; display: inline-flex; align-items: center; gap: 0; background: var(--paper); padding-right: 2px; }
-.checkbox-overlay .cb-box { display: inline-grid; width: 14px; height: 14px; place-items: center; border: 1.5px solid var(--task-border); border-radius: 3px; background: transparent; flex-shrink: 0; transition: border-color .15s, background .15s; }
-.checkbox-overlay .cb-box:hover { border-color: var(--task-checked-border); }
-.checkbox-overlay .cb-box.checked { border-color: var(--task-checked-border); background: var(--task-checked-bg); }
-.checkbox-overlay .cb-box.checked::after { width: 5px; height: 3px; border-bottom: 1.5px solid var(--task-checked-ink); border-left: 1.5px solid var(--task-checked-ink); transform: rotate(-45deg) translate(1px, -1px); content: ''; }
-.checkbox-overlay .cb-line-hidden { position: absolute; left: -9999px; opacity: 0; pointer-events: none; }
 .syntax-layer { position: absolute; inset: 0; margin: 0; padding: 6px 0 24px; overflow: hidden; pointer-events: none; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; color: var(--source-ink); font-family: 'DM Mono', monospace; font-size: 12px; line-height: 1.85; tab-size: 2; }
 /* Live presence: remote carets overlaid on the editor. */
 .collab-caret-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
