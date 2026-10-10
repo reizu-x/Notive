@@ -1,28 +1,39 @@
-name: Sync Dev to main
+name: Dev PR to main
 
-# Manual escape hatch only. Automatic promotion is driven from opencode via the
-# `/sync-main` command, which shows the diff and asks for confirmation before
-# fast-forwarding main. This workflow exists so the same sync can be triggered
-# by hand from the GitHub UI (Actions -> Sync Dev to main -> Run workflow).
+# Promotion path: Dev → main as a PULL REQUEST, so the merge needs the
+# branch rule on main (review/approval) to pass. A direct fast-forward is
+# intentionally NOT attempted — with "require pull request" rulesets it is
+# declined server-side. When this workflow runs it (re)opens a PR with the
+# dev→main diff; the merge button stays human.
+
 on:
+  push:
+    branches: [Dev]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pull-requests: write
 
 concurrency:
-  group: sync-dev-to-main
+  group: dev-pr
   cancel-in-progress: true
 
 jobs:
-  sync:
+  open-pr:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Dev
-        uses: actions/checkout@v4
-        with:
-          ref: Dev
-          fetch-depth: 0
-
-      - name: Fast-forward main to Dev
-        run: git push origin HEAD:main
+      - name: Open (or reuse) the Dev → main pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr view --repo reizu-x/Notive --base main --head Dev >/dev/null 2>&1 && {
+            echo "A Dev → main PR is already open."
+            exit 0
+          }
+          gh pr create \
+            --repo reizu-x/Notive \
+            --base main --head Dev \
+            --title "Dev → main: editor rework checkpoint" \
+            --body "Promoting **Dev** to **main**. Review the diff, approve if a second reviewer is on file, then merge from the UI. Title/body can be edited before merging." \
+            --draft=false
