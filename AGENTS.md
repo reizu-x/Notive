@@ -20,6 +20,16 @@
   until unblocked; deploys that need new base layers will fail. Firewall
   (ufw) currently disabled for debugging.
 
+## Branch workflow (2026-10-10)
+
+- Development happens on the **Dev** branch; `git push origin Dev` triggers a
+  **Dev PR to main** workflow that opens (or reuses) the pull request.
+- `main` is protected: promotion goes through the PR UI, and merging needs
+  the branch rule (review/approval) to pass. Direct pushes to `main` are
+  declined by the ruleset — that is intentional.
+- Emergency escape: the workflow can be run manually (Actions → Dev PR to
+  main → Run workflow) after any Dev push.
+
 ## Working agreements
 
 - **Never push to any remote without explicit approval in the current
