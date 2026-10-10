@@ -515,13 +515,22 @@ export function togglePreviewTask(li) {
 export function initPreviewTaskToggles() {
   if (!preview || preview.dataset.taskToggles === '1') return;
   preview.dataset.taskToggles = '1';
+  // Capture phase: the generic "click preview -> back to Write" handler is
+  // bound earlier in the bubble phase and re-renders the panel synchronously
+  // (detaching the clicked li before this listener could read it). Running
+  // first in capture keeps the toggle working. The focus listener is fed by
+  // mousedown's default focus behavior — preventing that stops the panel
+  // from bouncing back to Write before the click lands.
+  preview.addEventListener('mousedown', (event) => {
+    if (event.target.closest('li.task')) event.preventDefault();
+  }, true);
   preview.addEventListener('click', (event) => {
     const li = event.target.closest('li.task');
     if (!li) return;
     event.stopPropagation();
     event.preventDefault();
     togglePreviewTask(li);
-  });
+  }, true);
 }
 
 // Paint (or clear) the overlay for the open note. Only JSON/YAML are colored.
