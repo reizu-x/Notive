@@ -552,11 +552,14 @@ function measureCharWidth(family, size) {
   if (_cachedCharWidth && _cachedFont === key) return _cachedCharWidth;
   const span = document.createElement('span');
   span.style.cssText = `position:absolute;left:-9999px;font-family:${family};font-size:${size};white-space:pre;`;
-  span.textContent = 'x';
+  span.textContent = 'xxxxxxxxxx';
   document.body.appendChild(span);
-  _cachedCharWidth = span.getBoundingClientRect().width || 7.2;
-  document.body.removeChild(span);
+  // Average over ten glyphs: a single 'x' could land on a sub-pixel boundary
+  // and drift the drawn checkbox onto the label text.
+  const width = span.getBoundingClientRect().width || 72;
+  _cachedCharWidth = width / 10;
   _cachedFont = key;
+  document.body.removeChild(span);
   return _cachedCharWidth;
 }
 
@@ -584,6 +587,16 @@ export function initCheckboxOverlay() {
     const lineNum = parseInt(item.dataset.line, 10);
     if (!isNaN(lineNum)) toggleCheckbox(lineNum);
   });
+  // Web-font metrics can change after first paint (DM Mono often arrives
+  // late): invalidate the cached char width once fonts settle so the
+  // overlay checkboxes line up with the real glyphs.
+  if (document.fonts && typeof document.fonts.ready === 'object') {
+    document.fonts.ready.then(() => {
+      _cachedCharWidth = 0;
+      const note = activeEditorNote();
+      if (note && !markdownInput.hidden) renderCheckboxOverlay(note, false);
+    });
+  }
 }
 
 // Paint (or clear) the overlay for the open note. Only JSON/YAML are colored.
