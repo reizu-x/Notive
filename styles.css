@@ -1371,7 +1371,9 @@ html:not([data-theme="light"]) .sync-status .sync-dot.is-error { background: #f2
 .syntax-layer .tok-comment { color: var(--tree-count-ink); font-style: italic; }
 .syntax-layer .tok-anchor { color: var(--side-active-bar); }
 .markdown-preview { min-height: 50vh; padding: 4px 0 12px; color: var(--preview-ink); font-size: 13px; line-height: 1.7; }
-.unified-preview { cursor: text; }
+/* Text cursor belongs to Write mode only; Preview reads as content. */
+.markdown-input { cursor: text; }
+.unified-preview { cursor: default; }
 .unified-preview:focus { outline: none; }
 .markdown-preview h1, .markdown-preview h2, .markdown-preview h3 { margin: 0 0 11px; color: var(--preview-head); font-family: Fraunces, serif; font-weight: 500; letter-spacing: -.025em; line-height: 1.2; }
 .markdown-preview h1 { font-size: 25px; }
